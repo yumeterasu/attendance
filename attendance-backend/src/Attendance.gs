@@ -5,7 +5,7 @@
 var DUPLICATE_GUARD_MS = 60 * 1000; // reject re-scans within 60s of the last log for the same employee
 var SHIFTS = ['7:00-16:00', '7:30-16:30', '8:00-17:00', '8:30-17:30', 'Event 8:00-17:00'];
 var OT_GRACE_MINUTES = 15; // first 15 min after shift end never counts as OT, for either group
-var JP_OT_CAP_MINUTES = 75; // Japanese OT never exceeds this many minutes/day
+var JP_OT_CAP_MINUTES = 75; // default Japanese OT cap, in minutes/day -- overridden per employee by Employees.OTMaxMinutes when set
 var OT_QUARTER_MINUTES = 15; // Thai OT is counted in whole 15-min blocks, no cap
 
 /**
@@ -40,12 +40,15 @@ function minutesPastShiftEnd_(shiftOrEvent, outTimestamp) {
 /**
  * Japanese OT, in minutes: always auto-computed from actual clock-out vs the
  * day's shift end, regardless of which kiosk button was pressed (OUT and
- * OUT OT are equivalent for this group). First 15 min free, capped at 75.
+ * OUT OT are equivalent for this group). First 15 min free, capped at
+ * capMinutes (defaults to JP_OT_CAP_MINUTES if not given/blank -- see
+ * Employees.OTMaxMinutes for the per-employee override).
  */
-function computeJapaneseOtMinutes_(shiftOrEvent, outTimestamp) {
+function computeJapaneseOtMinutes_(shiftOrEvent, outTimestamp, capMinutes) {
   var pastEnd = minutesPastShiftEnd_(shiftOrEvent, outTimestamp);
   if (pastEnd === null || pastEnd <= OT_GRACE_MINUTES) return 0;
-  return Math.min(pastEnd - OT_GRACE_MINUTES, JP_OT_CAP_MINUTES);
+  var cap = capMinutes || JP_OT_CAP_MINUTES;
+  return Math.min(pastEnd - OT_GRACE_MINUTES, cap);
 }
 
 /**
@@ -211,8 +214,9 @@ function recomputeLateAndOt_(year, month, startDay, endDay) {
 
     var key = employeeId2 + '|' + day2;
     var shift = shiftByEmployeeDay.hasOwnProperty(key) ? shiftByEmployeeDay[key] : getScheduledShift_(employeeId2, ts2);
+    var capMinutes = Number(currentEmp.row.OTMaxMinutes) || JP_OT_CAP_MINUTES;
 
-    var otMinutes = shift ? computeJapaneseOtMinutes_(shift, ts2) : 0;
+    var otMinutes = shift ? computeJapaneseOtMinutes_(shift, ts2, capMinutes) : 0;
     sheet.getRange(j + 1, otMinCol + 1).setValue(otMinutes);
     sheet.getRange(j + 1, otCol + 1).setValue(otMinutes > 0);
     outRowsUpdated++;
@@ -322,7 +326,8 @@ function recordAttendance_(employeeId, method, rawScanValue, type, ot) {
     var todayShift = todayIn ? todayIn.shift : '';
     if (emp.Department === 'Japanese') {
       // OUT and OUT OT are equivalent for Japanese -- always auto-computed.
-      otMinutesForRow = todayShift ? computeJapaneseOtMinutes_(todayShift, now) : 0;
+      var capMinutes = Number(emp.OTMaxMinutes) || JP_OT_CAP_MINUTES;
+      otMinutesForRow = todayShift ? computeJapaneseOtMinutes_(todayShift, now, capMinutes) : 0;
       otForRow = otMinutesForRow > 0;
     } else {
       // Everyone else: only counts if they explicitly pressed OUT OT (a plain
