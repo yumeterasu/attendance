@@ -143,6 +143,12 @@ function handleKioskMyAttendance_(params) {
  * Schedule cell was still blank at check-in time -- Late/Shift/OT get frozen
  * in then and are never re-checked automatically.
  *
+ * "Japanese" is decided from each employee's *current* Employees sheet
+ * Department, not the Department value frozen onto the old row -- old rows
+ * can carry a stale label (e.g. "Japanese Staff" from before Department was
+ * standardized to just "Japanese"/"Thai") that would otherwise make this
+ * silently skip them even after the employee record itself is fixed.
+ *
  * Thai/non-Japanese OTQuarters is intentionally left untouched: unlike
  * Japanese OT (always auto-computed regardless of button), Thai OT only
  * counts if the employee pressed "OUT OT" specifically, and AttendanceLog
@@ -150,6 +156,9 @@ function handleKioskMyAttendance_(params) {
  * OTQuarters value -- a blank Schedule and "pressed plain OUT" both look
  * identical (OTQuarters=0) after the fact, so there's no reliable way to
  * recompute it correctly after the fact.
+ *
+ * Also can't help a day with no OUT row at all (forgot to check out) -- there's
+ * no real clock-out time to compute anything from.
  *
  * Safe to run repeatedly on the same range. Edit YEAR/MONTH/START_DAY/END_DAY
  * below, then select runRecomputeLateAndOt in the editor's toolbar dropdown
@@ -161,7 +170,6 @@ function recomputeLateAndOt_(year, month, startDay, endDay) {
   var headers = values[0];
   var tsCol = headers.indexOf('Timestamp');
   var idCol = headers.indexOf('EmployeeID');
-  var deptCol = headers.indexOf('Department');
   var typeCol = headers.indexOf('Type');
   var shiftCol = headers.indexOf('Shift');
   var lateCol = headers.indexOf('Late');
@@ -195,9 +203,12 @@ function recomputeLateAndOt_(year, month, startDay, endDay) {
     var day2 = ts2.getDate();
     if (day2 < startDay || day2 > endDay) continue;
     if (values[j][typeCol] !== 'OUT') continue;
-    if (values[j][deptCol] !== 'Japanese') continue; // see doc comment above
 
     var employeeId2 = String(values[j][idCol]);
+    var currentEmp = findEmployeeRow_(employeeId2);
+    var currentDept = currentEmp ? currentEmp.row.Department : null;
+    if (currentDept !== 'Japanese') continue; // Thai/other OT can't be safely recomputed, see doc comment above
+
     var key = employeeId2 + '|' + day2;
     var shift = shiftByEmployeeDay.hasOwnProperty(key) ? shiftByEmployeeDay[key] : getScheduledShift_(employeeId2, ts2);
 
