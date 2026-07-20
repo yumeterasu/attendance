@@ -210,15 +210,28 @@ function recomputeLateAndOt_(year, month, startDay, endDay) {
   return { inRowsUpdated: inRowsUpdated, outRowsUpdated: outRowsUpdated };
 }
 
-/** Select this function in the editor's toolbar dropdown and click Run. Edit the range below first. */
+/**
+ * Recomputes the whole month shown on whichever "Schedule YYYY-MM" tab is
+ * currently open in the spreadsheet (open that tab first). Select this
+ * function in the editor's toolbar dropdown and click Run. Check View > Logs
+ * for a summary.
+ */
 function runRecomputeLateAndOt() {
-  var YEAR = 2026, MONTH = 7, START_DAY = 17, END_DAY = 17; // <-- edit as needed
+  var activeSheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+  var match = activeSheet.getName().match(/^Schedule (\d{4})-(\d{2})$/);
+  if (!match) {
+    Logger.log('Open the "Schedule YYYY-MM" tab you want to recompute first, then run this again. Active tab was: ' + activeSheet.getName());
+    return;
+  }
 
-  var result = recomputeLateAndOt_(YEAR, MONTH, START_DAY, END_DAY);
+  var year = Number(match[1]);
+  var month = Number(match[2]);
+  var daysInMonth = new Date(year, month, 0).getDate();
+
+  var result = recomputeLateAndOt_(year, month, 1, daysInMonth);
   Logger.log(
-    'Updated ' + result.inRowsUpdated + ' IN row(s) (Shift/Late) and ' +
-    result.outRowsUpdated + ' OUT row(s) (Japanese OT) for ' +
-    YEAR + '-' + MONTH + ', day ' + START_DAY + '-' + END_DAY + '.'
+    'Recomputed ' + activeSheet.getName() + ': updated ' + result.inRowsUpdated + ' IN row(s) (Shift/Late) and ' +
+    result.outRowsUpdated + ' OUT row(s) (Japanese OT).'
   );
 }
 

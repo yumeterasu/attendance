@@ -39,40 +39,30 @@ function menuCreateScheduleSheet_() {
   ui.alert('Done', '"' + sheetName + '" is ready. Fill in each day\'s shift from the dropdown.', ui.ButtonSet.OK);
 }
 
+/**
+ * No prompts -- reads the year/month straight off whichever "Schedule
+ * YYYY-MM" tab is open when this is clicked, and recomputes that whole
+ * month. Safe to run on days that don't need fixing (idempotent), so
+ * defaulting to the full month instead of asking for a day range is fine.
+ */
 function menuRecomputeLateOt_() {
   var ui = SpreadsheetApp.getUi();
-  var now = new Date();
-
-  var yearResp = ui.prompt('Recompute Late/OT', 'Year (e.g. ' + now.getFullYear() + '):', ui.ButtonSet.OK_CANCEL);
-  if (yearResp.getSelectedButton() !== ui.Button.OK) return;
-  var year = Number(yearResp.getResponseText().trim());
-
-  var monthResp = ui.prompt('Recompute Late/OT', 'Month (1-12):', ui.ButtonSet.OK_CANCEL);
-  if (monthResp.getSelectedButton() !== ui.Button.OK) return;
-  var month = Number(monthResp.getResponseText().trim());
-
-  var daysInMonth = year && month >= 1 && month <= 12 ? new Date(year, month, 0).getDate() : 31;
-
-  var startResp = ui.prompt('Recompute Late/OT', 'Start day (1-' + daysInMonth + '):', ui.ButtonSet.OK_CANCEL);
-  if (startResp.getSelectedButton() !== ui.Button.OK) return;
-  var startDay = Number(startResp.getResponseText().trim());
-
-  var endResp = ui.prompt('Recompute Late/OT', 'End day (1-' + daysInMonth + ', same as start day for just one day):', ui.ButtonSet.OK_CANCEL);
-  if (endResp.getSelectedButton() !== ui.Button.OK) return;
-  var endDay = Number(endResp.getResponseText().trim());
-
-  if (
-    !year || !month || month < 1 || month > 12 ||
-    !startDay || !endDay || startDay < 1 || endDay > daysInMonth || startDay > endDay
-  ) {
-    ui.alert('Enter a valid year, month, and day range.');
+  var activeSheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+  var match = activeSheet.getName().match(/^Schedule (\d{4})-(\d{2})$/);
+  if (!match) {
+    ui.alert('Open the Schedule tab for the month you want to recompute first (e.g. "Schedule 2026-07"), then run this again.');
     return;
   }
 
-  var result = recomputeLateAndOt_(year, month, startDay, endDay);
+  var year = Number(match[1]);
+  var month = Number(match[2]);
+  var daysInMonth = new Date(year, month, 0).getDate();
+
+  var result = recomputeLateAndOt_(year, month, 1, daysInMonth);
   ui.alert(
     'Done',
-    'Updated ' + result.inRowsUpdated + ' IN row(s) (Shift/Late) and ' + result.outRowsUpdated + ' OUT row(s) (Japanese OT).\n\n' +
+    'Recomputed ' + activeSheet.getName() + ': updated ' + result.inRowsUpdated + ' IN row(s) (Shift/Late) and ' +
+    result.outRowsUpdated + ' OUT row(s) (Japanese OT).\n\n' +
     'Thai/non-Japanese OT was left untouched -- it can only be trusted from the moment it was recorded, not recomputed after the fact.',
     ui.ButtonSet.OK
   );
