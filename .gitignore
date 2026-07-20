@@ -1,0 +1,29 @@
+# dependencies
+node_modules/
+
+# secrets -- never commit real keys/tokens
+.env
+.env.local
+*.env.local
+
+# Expo / build output
+.expo/
+dist/
+web-build/
+*.apk
+*.aab
+
+# clasp local auth cache (if ever created inside the project instead of the home dir)
+.clasprc.json
+
+# logs
+*.log
+npm-debug.log*
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# editor
+.vscode/
+.idea/
