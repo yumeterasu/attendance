@@ -62,3 +62,51 @@ function debugJapaneseOtForDate() {
     Logger.log(schedValues[j][schedNameCol] + ' (' + schedValues[j][schedIdCol] + ') day ' + DAY + ' = "' + schedValues[j][dayCol] + '"');
   }
 }
+
+/**
+ * Dumps one employee's every IN/OUT row for a whole month -- Shift/Late/OT as
+ * recorded in AttendanceLog -- so you can see exactly which days have OT and
+ * which don't, without needing to already know which day to check. Edit
+ * NAME_OR_ID/YEAR/MONTH below (NAME_OR_ID matches Name or EmployeeID,
+ * case-insensitive substring), then select debugEmployeeMonth in the
+ * editor's toolbar dropdown and Run. Check View > Logs for the output.
+ */
+function debugEmployeeMonth() {
+  var NAME_OR_ID = 'Kahana', YEAR = 2026, MONTH = 7; // <-- edit as needed
+
+  var sheet = getSheet_('AttendanceLog');
+  var values = sheet.getDataRange().getValues();
+  var headers = values[0];
+  var tsCol = headers.indexOf('Timestamp');
+  var idCol = headers.indexOf('EmployeeID');
+  var nameCol = headers.indexOf('Name');
+  var deptCol = headers.indexOf('Department');
+  var typeCol = headers.indexOf('Type');
+  var shiftCol = headers.indexOf('Shift');
+  var lateCol = headers.indexOf('Late');
+  var otMinCol = headers.indexOf('OTMinutes');
+  var otQuarterCol = headers.indexOf('OTQuarters');
+  var tz = Session.getScriptTimeZone();
+  var needle = String(NAME_OR_ID).toLowerCase();
+
+  Logger.log('--- ' + NAME_OR_ID + ', ' + YEAR + '-' + MONTH + ' ---');
+  var found = false;
+  for (var i = 1; i < values.length; i++) {
+    var ts = new Date(values[i][tsCol]);
+    if (ts.getFullYear() !== YEAR || ts.getMonth() + 1 !== MONTH) continue;
+    var name = String(values[i][nameCol] || '');
+    var empId = String(values[i][idCol] || '');
+    if (name.toLowerCase().indexOf(needle) === -1 && empId.toLowerCase().indexOf(needle) === -1) continue;
+
+    found = true;
+    Logger.log(
+      Utilities.formatDate(ts, tz, 'MM-dd') + ' ' + values[i][typeCol] + ' @ ' + Utilities.formatDate(ts, tz, 'HH:mm:ss') +
+      ' | Dept=' + values[i][deptCol] +
+      ' | Shift="' + values[i][shiftCol] + '"' +
+      ' | Late=' + values[i][lateCol] +
+      ' | OTMinutes=' + values[i][otMinCol] +
+      ' | OTQuarters=' + values[i][otQuarterCol]
+    );
+  }
+  if (!found) Logger.log('(no rows found -- check the name/ID spelling and year/month)');
+}
