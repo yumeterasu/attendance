@@ -137,6 +137,92 @@ function handleKioskMyAttendance_(params) {
 }
 
 /**
+ * One-off repair: recomputes Shift + Late (from the current Schedule sheet)
+ * for every IN row, and OTMinutes for every Japanese OUT row, within
+ * [startDay, endDay] of the given month. Fixes rows recorded when the
+ * Schedule cell was still blank at check-in time -- Late/Shift/OT get frozen
+ * in then and are never re-checked automatically.
+ *
+ * Thai/non-Japanese OTQuarters is intentionally left untouched: unlike
+ * Japanese OT (always auto-computed regardless of button), Thai OT only
+ * counts if the employee pressed "OUT OT" specifically, and AttendanceLog
+ * doesn't keep that raw button choice separate from the already-computed
+ * OTQuarters value -- a blank Schedule and "pressed plain OUT" both look
+ * identical (OTQuarters=0) after the fact, so there's no reliable way to
+ * recompute it correctly after the fact.
+ *
+ * Safe to run repeatedly on the same range. Edit YEAR/MONTH/START_DAY/END_DAY
+ * below, then select runRecomputeLateAndOt in the editor's toolbar dropdown
+ * and Run. Check View > Logs for a summary.
+ */
+function recomputeLateAndOt_(year, month, startDay, endDay) {
+  var sheet = getSheet_('AttendanceLog');
+  var values = sheet.getDataRange().getValues();
+  var headers = values[0];
+  var tsCol = headers.indexOf('Timestamp');
+  var idCol = headers.indexOf('EmployeeID');
+  var deptCol = headers.indexOf('Department');
+  var typeCol = headers.indexOf('Type');
+  var shiftCol = headers.indexOf('Shift');
+  var lateCol = headers.indexOf('Late');
+  var otCol = headers.indexOf('OT');
+  var otMinCol = headers.indexOf('OTMinutes');
+
+  var shiftByEmployeeDay = {};
+  var inRowsUpdated = 0;
+  var outRowsUpdated = 0;
+
+  for (var i = 1; i < values.length; i++) {
+    var ts = new Date(values[i][tsCol]);
+    if (ts.getFullYear() !== year || ts.getMonth() + 1 !== month) continue;
+    var day = ts.getDate();
+    if (day < startDay || day > endDay) continue;
+    if (values[i][typeCol] !== 'IN') continue;
+
+    var employeeId = String(values[i][idCol]);
+    var scheduledShift = getScheduledShift_(employeeId, ts);
+    var late = scheduledShift ? isLate_(scheduledShift, ts) : false;
+
+    sheet.getRange(i + 1, shiftCol + 1).setValue(scheduledShift);
+    sheet.getRange(i + 1, lateCol + 1).setValue(late);
+    shiftByEmployeeDay[employeeId + '|' + day] = scheduledShift;
+    inRowsUpdated++;
+  }
+
+  for (var j = 1; j < values.length; j++) {
+    var ts2 = new Date(values[j][tsCol]);
+    if (ts2.getFullYear() !== year || ts2.getMonth() + 1 !== month) continue;
+    var day2 = ts2.getDate();
+    if (day2 < startDay || day2 > endDay) continue;
+    if (values[j][typeCol] !== 'OUT') continue;
+    if (values[j][deptCol] !== 'Japanese') continue; // see doc comment above
+
+    var employeeId2 = String(values[j][idCol]);
+    var key = employeeId2 + '|' + day2;
+    var shift = shiftByEmployeeDay.hasOwnProperty(key) ? shiftByEmployeeDay[key] : getScheduledShift_(employeeId2, ts2);
+
+    var otMinutes = shift ? computeJapaneseOtMinutes_(shift, ts2) : 0;
+    sheet.getRange(j + 1, otMinCol + 1).setValue(otMinutes);
+    sheet.getRange(j + 1, otCol + 1).setValue(otMinutes > 0);
+    outRowsUpdated++;
+  }
+
+  return { inRowsUpdated: inRowsUpdated, outRowsUpdated: outRowsUpdated };
+}
+
+/** Select this function in the editor's toolbar dropdown and click Run. Edit the range below first. */
+function runRecomputeLateAndOt() {
+  var YEAR = 2026, MONTH = 7, START_DAY = 17, END_DAY = 17; // <-- edit as needed
+
+  var result = recomputeLateAndOt_(YEAR, MONTH, START_DAY, END_DAY);
+  Logger.log(
+    'Updated ' + result.inRowsUpdated + ' IN row(s) (Shift/Late) and ' +
+    result.outRowsUpdated + ' OUT row(s) (Japanese OT) for ' +
+    YEAR + '-' + MONTH + ', day ' + START_DAY + '-' + END_DAY + '.'
+  );
+}
+
+/**
  * Confirms the Kiosk Exit PIN before letting the shared tablet back to the
  * Admin screen -- otherwise anyone tapping Exit on the kiosk lands straight
  * in admin tools. If no exit PIN has been set yet (KIOSK_EXIT_PIN script
