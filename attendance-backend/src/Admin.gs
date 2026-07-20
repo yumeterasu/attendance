@@ -8,6 +8,37 @@
  * first admin.
  */
 
+/**
+ * One-off cleanup: updates AttendanceLog's Department column on every row to
+ * match each employee's *current* Employees sheet Department, wherever they
+ * differ (e.g. an old row still says "Japanese Staff" from before Department
+ * was standardized to just "Japanese"/"Thai"). Purely cosmetic/audit-trail --
+ * Report, Summary, and the OT recompute tool all read the current Employees
+ * data directly, never this column, so this has no effect on any
+ * calculation. Safe to run repeatedly. Select syncAttendanceLogDepartments
+ * in the editor's toolbar dropdown and Run. Check View > Logs for a summary.
+ */
+function syncAttendanceLogDepartments() {
+  var sheet = getSheet_('AttendanceLog');
+  var values = sheet.getDataRange().getValues();
+  var headers = values[0];
+  var idCol = headers.indexOf('EmployeeID');
+  var deptCol = headers.indexOf('Department');
+
+  var updated = 0;
+  for (var i = 1; i < values.length; i++) {
+    var employeeId = String(values[i][idCol]);
+    var found = findEmployeeRow_(employeeId);
+    if (!found) continue;
+    var currentDept = found.row.Department;
+    if (values[i][deptCol] !== currentDept) {
+      sheet.getRange(i + 1, deptCol + 1).setValue(currentDept);
+      updated++;
+    }
+  }
+  Logger.log('Updated Department on ' + updated + ' row(s).');
+}
+
 function handleAdminResetCode_(params) {
   if (!checkApiKey_(params.apiKey)) return fail_('unauthorized', 'Invalid API key');
   var admin = requireAdmin_(params.sessionToken);
