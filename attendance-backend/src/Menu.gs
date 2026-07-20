@@ -10,6 +10,7 @@ function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('Attendance Admin')
     .addItem('Create / Update Schedule Sheet...', 'menuCreateScheduleSheet_')
+    .addItem('Recompute Late/OT for Date Range...', 'menuRecomputeLateOt_')
     .addItem('Generate Kiosk Codes for Everyone', 'menuGenerateKioskPins_')
     .addSeparator()
     .addItem('Issue New Setup Code (Admin Pairing)...', 'menuIssueSetupCode_')
@@ -36,6 +37,45 @@ function menuCreateScheduleSheet_() {
 
   var sheetName = buildScheduleSheet_(year, month);
   ui.alert('Done', '"' + sheetName + '" is ready. Fill in each day\'s shift from the dropdown.', ui.ButtonSet.OK);
+}
+
+function menuRecomputeLateOt_() {
+  var ui = SpreadsheetApp.getUi();
+  var now = new Date();
+
+  var yearResp = ui.prompt('Recompute Late/OT', 'Year (e.g. ' + now.getFullYear() + '):', ui.ButtonSet.OK_CANCEL);
+  if (yearResp.getSelectedButton() !== ui.Button.OK) return;
+  var year = Number(yearResp.getResponseText().trim());
+
+  var monthResp = ui.prompt('Recompute Late/OT', 'Month (1-12):', ui.ButtonSet.OK_CANCEL);
+  if (monthResp.getSelectedButton() !== ui.Button.OK) return;
+  var month = Number(monthResp.getResponseText().trim());
+
+  var daysInMonth = year && month >= 1 && month <= 12 ? new Date(year, month, 0).getDate() : 31;
+
+  var startResp = ui.prompt('Recompute Late/OT', 'Start day (1-' + daysInMonth + '):', ui.ButtonSet.OK_CANCEL);
+  if (startResp.getSelectedButton() !== ui.Button.OK) return;
+  var startDay = Number(startResp.getResponseText().trim());
+
+  var endResp = ui.prompt('Recompute Late/OT', 'End day (1-' + daysInMonth + ', same as start day for just one day):', ui.ButtonSet.OK_CANCEL);
+  if (endResp.getSelectedButton() !== ui.Button.OK) return;
+  var endDay = Number(endResp.getResponseText().trim());
+
+  if (
+    !year || !month || month < 1 || month > 12 ||
+    !startDay || !endDay || startDay < 1 || endDay > daysInMonth || startDay > endDay
+  ) {
+    ui.alert('Enter a valid year, month, and day range.');
+    return;
+  }
+
+  var result = recomputeLateAndOt_(year, month, startDay, endDay);
+  ui.alert(
+    'Done',
+    'Updated ' + result.inRowsUpdated + ' IN row(s) (Shift/Late) and ' + result.outRowsUpdated + ' OUT row(s) (Japanese OT).\n\n' +
+    'Thai/non-Japanese OT was left untouched -- it can only be trusted from the moment it was recorded, not recomputed after the fact.',
+    ui.ButtonSet.OK
+  );
 }
 
 function menuGenerateKioskPins_() {
