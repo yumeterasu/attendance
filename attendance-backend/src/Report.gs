@@ -327,12 +327,21 @@ function writeMonthlySummaryData_(sheet, startRow, year, month) {
  * getScheduledShift_ reads it back at check-in time to auto-apply the shift
  * and compute lateness, so employees no longer pick their own shift.
  */
-/** Safe to call anytime -- never wipes cells the admin already filled in, only adds rows for new employees. */
+/**
+ * Safe to call anytime -- never wipes cells the admin already filled in, only
+ * adds rows for employees who are Active and not already on the sheet. So an
+ * employee who joins (or is reactivated) mid-month just needs Create/Update
+ * Schedule Sheet run again for that month -- their row gets added at that
+ * point, with earlier days blank since there's nothing to schedule for them
+ * before they existed. Employees who go inactive mid-month keep whatever row
+ * they already have -- rows are never removed, only skipped when adding new
+ * ones for a future run.
+ */
 function buildScheduleSheet_(year, month) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var sheetName = 'Schedule ' + year + '-' + (month < 10 ? '0' + month : String(month));
   var daysInMonth = new Date(year, month, 0).getDate();
-  var employees = getAllEmployees_();
+  var employees = getAllEmployees_().filter(function (emp) { return isTrue_(emp.Active); });
 
   var existing = ss.getSheetByName(sheetName);
   if (existing) {
