@@ -29,22 +29,28 @@ function writeMonthlyReportData_(sheet, startRow, year, month) {
   var rows = [];
   var backgrounds = [];
   var fontColors = [];
+  var fontWeights = [];
   var blankRowColors = new Array(COLS).fill(null);
   var headerRowColors = new Array(COLS).fill('#d5a6bd'); // name row + column-title row of each employee block
-  var nameRowFontColors = blankRowColors.slice();
-  nameRowFontColors[0] = '#ffffff'; // Name
-  nameRowFontColors[1] = '#ffffff'; // Department
+  var nameRowBackgrounds = headerRowColors.slice();
+  nameRowBackgrounds[0] = '#ffffff'; // Name
+  nameRowBackgrounds[1] = '#ffffff'; // Department
+  var nameRowFontWeights = blankRowColors.slice();
+  nameRowFontWeights[0] = 'bold'; // Name
+  nameRowFontWeights[1] = 'bold'; // Department
   var employeeBlocks = []; // {startRow, endRow}, 1-indexed sheet rows, for the grid border
 
   employees.forEach(function (emp) {
     var blockStartRow = startRow + rows.length;
 
     rows.push([emp.Name + ' (' + emp.EmployeeID + ')', emp.Department, '', '', '', '', '', '']);
-    backgrounds.push(headerRowColors.slice());
-    fontColors.push(nameRowFontColors.slice());
+    backgrounds.push(nameRowBackgrounds.slice());
+    fontColors.push(blankRowColors.slice());
+    fontWeights.push(nameRowFontWeights.slice());
     rows.push(['Date', 'Day', 'Time In', 'Time Out', 'Shift', 'Late', 'OT (min)', 'OT (Quarter)']);
     backgrounds.push(headerRowColors.slice());
     fontColors.push(blankRowColors.slice());
+    fontWeights.push(blankRowColors.slice());
 
     var dayLogs = logsByEmployee[emp.EmployeeID] || {};
     for (var d = 1; d <= daysInMonth; d++) {
@@ -80,6 +86,7 @@ function writeMonthlyReportData_(sheet, startRow, year, month) {
       }
       backgrounds.push(rowBg);
       fontColors.push(rowFont);
+      fontWeights.push(blankRowColors.slice());
     }
 
     employeeBlocks.push({ startRow: blockStartRow, endRow: startRow + rows.length - 1 });
@@ -87,12 +94,14 @@ function writeMonthlyReportData_(sheet, startRow, year, month) {
     rows.push(new Array(COLS).fill(''));
     backgrounds.push(blankRowColors.slice());
     fontColors.push(blankRowColors.slice());
+    fontWeights.push(blankRowColors.slice());
   });
 
   if (rows.length > 0) {
     sheet.getRange(startRow, 1, rows.length, COLS).setValues(rows);
     sheet.getRange(startRow, 1, rows.length, COLS).setBackgrounds(backgrounds);
     sheet.getRange(startRow, 1, rows.length, COLS).setFontColors(fontColors);
+    sheet.getRange(startRow, 1, rows.length, COLS).setFontWeights(fontWeights);
 
     // Full grid border around each employee's block (name/dept header, column
     // header, and every day row) -- matches the border the admin drew by hand.
@@ -196,6 +205,7 @@ function refreshLiveReportSheet_() {
     clearRange.clearContent();
     clearRange.setBackground(null);
     clearRange.setFontColor(null);
+    clearRange.setFontWeight(null);
     clearRange.setBorder(false, false, false, false, false, false);
   }
 
