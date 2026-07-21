@@ -31,6 +31,9 @@ function writeMonthlyReportData_(sheet, startRow, year, month) {
   var fontColors = [];
   var blankRowColors = new Array(COLS).fill(null);
   var headerRowColors = new Array(COLS).fill('#d5a6bd'); // name row + column-title row of each employee block
+  var nameRowFontColors = blankRowColors.slice();
+  nameRowFontColors[0] = '#ffffff'; // Name
+  nameRowFontColors[1] = '#ffffff'; // Department
   var employeeBlocks = []; // {startRow, endRow}, 1-indexed sheet rows, for the grid border
 
   employees.forEach(function (emp) {
@@ -38,7 +41,7 @@ function writeMonthlyReportData_(sheet, startRow, year, month) {
 
     rows.push([emp.Name + ' (' + emp.EmployeeID + ')', emp.Department, '', '', '', '', '', '']);
     backgrounds.push(headerRowColors.slice());
-    fontColors.push(blankRowColors.slice());
+    fontColors.push(nameRowFontColors.slice());
     rows.push(['Date', 'Day', 'Time In', 'Time Out', 'Shift', 'Late', 'OT (min)', 'OT (Quarter)']);
     backgrounds.push(headerRowColors.slice());
     fontColors.push(blankRowColors.slice());
