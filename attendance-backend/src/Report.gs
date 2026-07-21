@@ -12,9 +12,16 @@
  */
 function writeMonthlyReportData_(sheet, startRow, year, month) {
   var tz = Session.getScriptTimeZone();
-  var employees = getAllEmployees_();
   var daysInMonth = new Date(year, month, 0).getDate();
   var logsByEmployee = getMonthLogsByEmployee_(year, month);
+
+  // Show an employee if they're currently Active, or they have any
+  // attendance data this month (e.g. someone who left mid-month still needs
+  // to show up for the month they actually worked) -- otherwise a departed
+  // employee would clutter every future month's report forever.
+  var employees = getAllEmployees_().filter(function (emp) {
+    return isTrue_(emp.Active) || !!logsByEmployee[emp.EmployeeID];
+  });
 
   // Order: Japanese staff first, then Thai staff who did any OT this month,
   // then everyone else -- Employee ID order within each group.
@@ -300,8 +307,12 @@ function refreshLiveSummarySheet_() {
  * rest, Employee ID order within each group).
  */
 function writeMonthlySummaryData_(sheet, startRow, year, month) {
-  var employees = getAllEmployees_();
   var logsByEmployee = getMonthLogsByEmployee_(year, month);
+
+  // Same rule as the Report sheet: Active, or has data this month.
+  var employees = getAllEmployees_().filter(function (emp) {
+    return isTrue_(emp.Active) || !!logsByEmployee[emp.EmployeeID];
+  });
 
   employees = employees.slice().sort(function (a, b) {
     var groupA = reportSortGroup_(a, logsByEmployee[a.EmployeeID]);
