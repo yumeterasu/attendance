@@ -71,7 +71,7 @@ function writeMonthlyReportData_(sheet, startRow, year, month) {
       var otMinutes = dayEntry && dayEntry.otMinutes ? dayEntry.otMinutes : '';
       var otQuarters = dayEntry && dayEntry.otQuarters ? dayEntry.otQuarters : '';
       rows.push([
-        Utilities.formatDate(date, tz, 'yyyy-MM-dd'),
+        Utilities.formatDate(date, tz, 'dd/MM/yyyy'),
         Utilities.formatDate(date, tz, 'EEEE'),
         timeIn,
         timeOut,

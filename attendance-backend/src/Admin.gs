@@ -39,6 +39,26 @@ function syncAttendanceLogDepartments() {
   Logger.log('Updated Department on ' + updated + ' row(s).');
 }
 
+/**
+ * One-off: sets AttendanceLog's Timestamp column to display as
+ * dd/mm/yyyy hh:mm:ss (matching the Report sheet's dd/MM/yyyy Date column),
+ * instead of whatever locale-default format (e.g. M/D/YYYY) it had before.
+ * This only changes how the existing Date values are *displayed* -- the
+ * underlying timestamps, and anything that reads them (Late/OT calculations,
+ * sorting, Report/Summary), are untouched, since they read the real Date
+ * value, not its display text. Covers 100,000 rows, well beyond any
+ * realistic row count, so future check-ins inherit the format automatically
+ * too. Safe to run repeatedly. Select fixAttendanceLogTimestampFormat in the
+ * editor's toolbar dropdown and Run.
+ */
+function fixAttendanceLogTimestampFormat() {
+  var sheet = getSheet_('AttendanceLog');
+  var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  var tsCol = headers.indexOf('Timestamp');
+  sheet.getRange(2, tsCol + 1, 100000, 1).setNumberFormat('dd/mm/yyyy hh:mm:ss');
+  Logger.log('Timestamp column formatted as dd/mm/yyyy hh:mm:ss.');
+}
+
 function handleAdminResetCode_(params) {
   if (!checkApiKey_(params.apiKey)) return fail_('unauthorized', 'Invalid API key');
   var admin = requireAdmin_(params.sessionToken);
