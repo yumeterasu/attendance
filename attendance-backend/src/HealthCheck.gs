@@ -54,6 +54,7 @@ function checkEmployeesSheet_(findings) {
   var values = sheet.getDataRange().getValues();
   var headers = values[0];
   var deptCol = headers.indexOf('Department');
+  var branchCol = headers.indexOf('Branch'); // -1 until the admin adds this column -- skip the check until then
   var activeCol = headers.indexOf('Active');
   var pinCol = headers.indexOf('KioskPIN');
   var nameCol = headers.indexOf('Name');
@@ -79,6 +80,14 @@ function checkEmployeesSheet_(findings) {
         sheetName: 'Employees',
         a1: sheet.getRange(i + 1, deptCol + 1).getA1Notation(),
         message: name + ': Department is "' + dept + '" -- should be exactly "Japanese" or "Thai".'
+      });
+    }
+
+    if (branchCol !== -1 && BRANCHES.indexOf(row[branchCol]) === -1) {
+      findings.push({
+        sheetName: 'Employees',
+        a1: sheet.getRange(i + 1, branchCol + 1).getA1Notation(),
+        message: name + ': Branch is "' + row[branchCol] + '" -- should be exactly one of: ' + BRANCHES.join(', ') + '.'
       });
     }
 

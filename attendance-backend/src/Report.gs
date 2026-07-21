@@ -367,6 +367,24 @@ function buildScheduleSheet_(year, month) {
   var daysInMonth = new Date(year, month, 0).getDate();
   var employees = getAllEmployees_().filter(function (emp) { return isTrue_(emp.Active); });
 
+  // Row order: Branch (BRANCHES order, unrecognized/blank last), then
+  // Japanese before Thai within each branch, then Employee ID. Only affects
+  // where NEW rows land -- rows already sitting on an existing sheet keep
+  // their current position, this never reorders what's already there.
+  employees = employees.slice().sort(function (a, b) {
+    var branchA = BRANCHES.indexOf(a.Branch);
+    var branchB = BRANCHES.indexOf(b.Branch);
+    if (branchA === -1) branchA = BRANCHES.length;
+    if (branchB === -1) branchB = BRANCHES.length;
+    if (branchA !== branchB) return branchA - branchB;
+
+    var deptA = a.Department === 'Japanese' ? 0 : a.Department === 'Thai' ? 1 : 2;
+    var deptB = b.Department === 'Japanese' ? 0 : b.Department === 'Thai' ? 1 : 2;
+    if (deptA !== deptB) return deptA - deptB;
+
+    return String(a.EmployeeID).localeCompare(String(b.EmployeeID));
+  });
+
   var existing = ss.getSheetByName(sheetName);
   if (existing) {
     var values = existing.getDataRange().getValues();
