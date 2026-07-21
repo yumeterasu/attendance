@@ -11,7 +11,6 @@ function onOpen() {
     .createMenu('Attendance Admin')
     .addItem('Health Check', 'menuHealthCheck_')
     .addItem('Create / Update Schedule Sheet...', 'menuCreateScheduleSheet_')
-    .addItem('Recompute Late/OT for Date Range...', 'menuRecomputeLateOt_')
     .addItem('Recompute Late/OT for ALL Months', 'menuRecomputeLateOtAllMonths_')
     .addItem('Generate Kiosk Codes for Everyone', 'menuGenerateKioskPins_')
     .addSeparator()
@@ -42,39 +41,9 @@ function menuCreateScheduleSheet_() {
 }
 
 /**
- * No prompts -- reads the year/month straight off whichever "Schedule
- * YYYY-MM" tab is open when this is clicked, and recomputes that whole
- * month. Safe to run on days that don't need fixing (idempotent), so
- * defaulting to the full month instead of asking for a day range is fine.
- */
-function menuRecomputeLateOt_() {
-  var ui = SpreadsheetApp.getUi();
-  var activeSheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
-  var match = activeSheet.getName().match(/^Schedule (\d{4})-(\d{2})$/);
-  if (!match) {
-    ui.alert('Open the Schedule tab for the month you want to recompute first (e.g. "Schedule 2026-07"), then run this again.');
-    return;
-  }
-
-  var year = Number(match[1]);
-  var month = Number(match[2]);
-  var daysInMonth = new Date(year, month, 0).getDate();
-
-  var result = recomputeLateAndOt_(year, month, 1, daysInMonth);
-  ui.alert(
-    'Done',
-    'Recomputed ' + activeSheet.getName() + ': updated ' + result.inRowsUpdated + ' IN row(s) (Shift/Late) and ' +
-    result.outRowsUpdated + ' OUT row(s) (Japanese OT).\n\n' +
-    'Thai/non-Japanese OT was left untouched -- it can only be trusted from the moment it was recorded, not recomputed after the fact.',
-    ui.ButtonSet.OK
-  );
-}
-
-/**
- * Same recompute as menuRecomputeLateOt_, but runs it across every "Schedule
- * YYYY-MM" tab that exists in the spreadsheet, one after another -- no need
- * to open each tab first. Asks for confirmation first since it touches every
- * month at once.
+ * Runs the recompute across every "Schedule YYYY-MM" tab that exists in the
+ * spreadsheet, one after another -- no need to open each tab first. Asks for
+ * confirmation first since it touches every month at once.
  */
 function menuRecomputeLateOtAllMonths_() {
   var ui = SpreadsheetApp.getUi();
