@@ -412,6 +412,13 @@ export default function KioskScreen({ navigation }: Props) {
       <Dots length={PIN_LENGTH} filled={pin.length} light />
       <Keypad onPress={onPinKeyPress} disabled={isLookingUp} light />
 
+      {isLookingUp && (
+        <View style={styles.checkingRow}>
+          <ActivityIndicator color="#1d1d1f" />
+          <Text style={styles.checkingText}>Checking...</Text>
+        </View>
+      )}
+
       {feedbackOverlay}
 
       <Pressable style={[styles.scheduleButton, styles.cornerButtonLight]} onPress={() => setMode('scheduleEntry')}>
@@ -440,6 +447,8 @@ const styles = StyleSheet.create({
     alignItems: 'center'
   },
   confirmButtonDisabled: { backgroundColor: '#ccc' },
+  checkingRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 24 },
+  checkingText: { color: '#666', fontSize: 14, fontWeight: '600' },
   cancelLink: {
     marginTop: 20,
     backgroundColor: '#eee',

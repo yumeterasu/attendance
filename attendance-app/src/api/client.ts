@@ -1,20 +1,29 @@
 const API_URL = process.env.EXPO_PUBLIC_API_URL ?? '';
 const API_KEY = process.env.EXPO_PUBLIC_API_KEY ?? '';
+const REQUEST_TIMEOUT_MS = 15000; // a hung request with no internet route used to wait forever with no feedback
 
 export type ApiResult<T> =
   | ({ success: true } & T)
   | { success: false; error: string; message: string };
 
 async function postAction<T>(action: string, body: Record<string, unknown>): Promise<ApiResult<T>> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {
     const res = await fetch(API_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify({ action, apiKey: API_KEY, ...body })
+      body: JSON.stringify({ action, apiKey: API_KEY, ...body }),
+      signal: controller.signal
     });
     return (await res.json()) as ApiResult<T>;
-  } catch {
+  } catch (err) {
+    if (err instanceof Error && err.name === 'AbortError') {
+      return { success: false, error: 'timeout', message: 'Taking too long to respond. Check your connection and try again.' };
+    }
     return { success: false, error: 'network_error', message: 'Could not reach the server. Check your connection.' };
+  } finally {
+    clearTimeout(timer);
   }
 }
 
