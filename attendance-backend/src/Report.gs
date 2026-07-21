@@ -105,6 +105,13 @@ function writeMonthlyReportData_(sheet, startRow, year, month) {
   });
 
   if (rows.length > 0) {
+    // Force column A to plain text before writing -- otherwise Sheets
+    // auto-parses date-like strings such as "05/07/2026" as an actual date
+    // (ambiguous day<=12 could be read as month) and re-displays it in its
+    // own default format, while "13/07/2026" can't be misread as a month so
+    // it's left as literal text -- the exact same class of bug as Kiosk PINs
+    // losing a leading zero. Plain text stops Sheets from ever touching it.
+    sheet.getRange(startRow, 1, rows.length, 1).setNumberFormat('@');
     sheet.getRange(startRow, 1, rows.length, COLS).setValues(rows);
     sheet.getRange(startRow, 1, rows.length, COLS).setBackgrounds(backgrounds);
     sheet.getRange(startRow, 1, rows.length, COLS).setFontColors(fontColors);
