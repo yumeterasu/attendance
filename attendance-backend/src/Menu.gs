@@ -12,6 +12,7 @@ function onOpen() {
     .addItem('Health Check', 'menuHealthCheck_')
     .addItem('Create / Update Schedule Sheet...', 'menuCreateScheduleSheet_')
     .addItem('Recompute Late/OT for Date Range...', 'menuRecomputeLateOt_')
+    .addItem('Recompute Late/OT for ALL Months', 'menuRecomputeLateOtAllMonths_')
     .addItem('Generate Kiosk Codes for Everyone', 'menuGenerateKioskPins_')
     .addSeparator()
     .addItem('Issue New Setup Code (Admin Pairing)...', 'menuIssueSetupCode_')
@@ -64,6 +65,53 @@ function menuRecomputeLateOt_() {
     'Done',
     'Recomputed ' + activeSheet.getName() + ': updated ' + result.inRowsUpdated + ' IN row(s) (Shift/Late) and ' +
     result.outRowsUpdated + ' OUT row(s) (Japanese OT).\n\n' +
+    'Thai/non-Japanese OT was left untouched -- it can only be trusted from the moment it was recorded, not recomputed after the fact.',
+    ui.ButtonSet.OK
+  );
+}
+
+/**
+ * Same recompute as menuRecomputeLateOt_, but runs it across every "Schedule
+ * YYYY-MM" tab that exists in the spreadsheet, one after another -- no need
+ * to open each tab first. Asks for confirmation first since it touches every
+ * month at once.
+ */
+function menuRecomputeLateOtAllMonths_() {
+  var ui = SpreadsheetApp.getUi();
+  var scheduleMatches = SpreadsheetApp.getActiveSpreadsheet()
+    .getSheets()
+    .map(function (s) { return s.getName().match(/^Schedule (\d{4})-(\d{2})$/); })
+    .filter(function (m) { return m; });
+
+  if (scheduleMatches.length === 0) {
+    ui.alert('No "Schedule YYYY-MM" sheets found.');
+    return;
+  }
+
+  var monthNames = scheduleMatches.map(function (m) { return m[0]; }).join(', ');
+  var confirm = ui.alert(
+    'Recompute Late/OT for ALL Months',
+    'This recomputes Late/OT across every Schedule month found (' + scheduleMatches.length + '): ' + monthNames + '.\n\nContinue?',
+    ui.ButtonSet.YES_NO
+  );
+  if (confirm !== ui.Button.YES) return;
+
+  var totalIn = 0;
+  var totalOut = 0;
+  var summaryLines = scheduleMatches.map(function (m) {
+    var year = Number(m[1]);
+    var month = Number(m[2]);
+    var daysInMonth = new Date(year, month, 0).getDate();
+    var result = recomputeLateAndOt_(year, month, 1, daysInMonth);
+    totalIn += result.inRowsUpdated;
+    totalOut += result.outRowsUpdated;
+    return m[0] + ': ' + result.inRowsUpdated + ' IN, ' + result.outRowsUpdated + ' OUT';
+  });
+
+  ui.alert(
+    'Done',
+    'Recomputed ' + scheduleMatches.length + ' month(s):\n\n' + summaryLines.join('\n') +
+    '\n\nTotal: ' + totalIn + ' IN row(s), ' + totalOut + ' OUT row(s) updated.\n\n' +
     'Thai/non-Japanese OT was left untouched -- it can only be trusted from the moment it was recorded, not recomputed after the fact.',
     ui.ButtonSet.OK
   );
