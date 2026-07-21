@@ -48,6 +48,43 @@ function runHealthCheck_() {
   return findings;
 }
 
+var HEALTH_CHECK_EMAIL = 'yumeterasu.computer@gmail.com';
+
+/**
+ * Same checks as the menu's Health Check, but silent unless something's
+ * wrong -- emails a summary only when findings.length > 0. Meant to run on a
+ * daily timer (see setupDailyHealthCheckTrigger) instead of waiting for
+ * someone to open the sheet and click the menu.
+ */
+function runHealthCheckAndEmail_() {
+  var findings = runHealthCheck_();
+  if (findings.length === 0) return;
+
+  var lines = findings.map(function (f, i) { return (i + 1) + '. [' + f.sheetName + '] ' + f.message; });
+  var subject = 'Attendance Health Check -- ' + findings.length + ' issue(s) found';
+  var body = lines.join('\n\n') + '\n\nOpen the sheet and run Attendance Admin > Health Check to jump straight to each one.';
+  MailApp.sendEmail(HEALTH_CHECK_EMAIL, subject, body);
+}
+
+/**
+ * One-off: installs a daily trigger that runs runHealthCheckAndEmail_ every
+ * morning. Safe to run more than once -- clears any existing trigger for the
+ * same function first, so it never ends up duplicated. Run once from the
+ * editor: select setupDailyHealthCheckTrigger in the toolbar dropdown, click
+ * Run (you'll be asked to authorize Gmail send access the first time).
+ */
+function setupDailyHealthCheckTrigger() {
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === 'runHealthCheckAndEmail_') ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger('runHealthCheckAndEmail_')
+    .timeBased()
+    .everyDays(1)
+    .atHour(7)
+    .create();
+  Logger.log('Daily Health Check trigger created -- runs around 7am, emails ' + HEALTH_CHECK_EMAIL + ' only if issues are found.');
+}
+
 /** Department spelling, missing Kiosk PIN, and an Active column value that isn't cleanly TRUE/FALSE. */
 function checkEmployeesSheet_(findings) {
   var sheet = getSheet_('Employees');
