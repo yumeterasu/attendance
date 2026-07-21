@@ -12,6 +12,7 @@ function onOpen() {
     .addItem('Health Check', 'menuHealthCheck_')
     .addItem('Add Backdated Check-in/Check-out...', 'menuAddBackdatedAttendance_')
     .addItem('Create / Update Schedule Sheet...', 'menuCreateScheduleSheet_')
+    .addItem('Reorder Schedule by Branch/Department', 'menuReorderScheduleByBranch_')
     .addItem('Recompute Late/OT for ALL Months', 'menuRecomputeLateOtAllMonths_')
     .addItem('Generate Kiosk Codes for Everyone', 'menuGenerateKioskPins_')
     .addSeparator()
@@ -39,6 +40,58 @@ function menuCreateScheduleSheet_() {
 
   var sheetName = buildScheduleSheet_(year, month);
   ui.alert('Done', '"' + sheetName + '" is ready. Fill in each day\'s shift from the dropdown.', ui.ButtonSet.OK);
+}
+
+/**
+ * Re-sorts every row on whichever "Schedule YYYY-MM" tab is currently open
+ * (Branch order from BRANCHES, then Japanese before Thai, then Employee ID)
+ * -- for a sheet whose rows were added before Branch-based ordering existed,
+ * or before everyone's Branch was filled in. Moves each employee's whole row
+ * (every day's shift together) as one unit, so nothing gets mismatched. Only
+ * touches values, not the weekend tint or shift dropdown -- both are
+ * column-based, unaffected by row order.
+ */
+function menuReorderScheduleByBranch_() {
+  var ui = SpreadsheetApp.getUi();
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+  var match = sheet.getName().match(/^Schedule (\d{4})-(\d{2})$/);
+  if (!match) {
+    ui.alert('Open the Schedule tab you want to reorder first (e.g. "Schedule 2026-07"), then run this again.');
+    return;
+  }
+
+  var values = sheet.getDataRange().getValues();
+  var headers = values[0];
+  var idCol = headers.indexOf('EmployeeID');
+  var dataRows = values.slice(1);
+
+  if (dataRows.length === 0) {
+    ui.alert('No employee rows to reorder.');
+    return;
+  }
+
+  var employeesById = {};
+  getAllEmployees_().forEach(function (emp) { employeesById[String(emp.EmployeeID)] = emp; });
+
+  dataRows.sort(function (rowA, rowB) {
+    var empA = employeesById[String(rowA[idCol])];
+    var empB = employeesById[String(rowB[idCol])];
+
+    var branchA = empA ? BRANCHES.indexOf(empA.Branch) : -1;
+    var branchB = empB ? BRANCHES.indexOf(empB.Branch) : -1;
+    if (branchA === -1) branchA = BRANCHES.length;
+    if (branchB === -1) branchB = BRANCHES.length;
+    if (branchA !== branchB) return branchA - branchB;
+
+    var deptA = empA && empA.Department === 'Japanese' ? 0 : empA && empA.Department === 'Thai' ? 1 : 2;
+    var deptB = empB && empB.Department === 'Japanese' ? 0 : empB && empB.Department === 'Thai' ? 1 : 2;
+    if (deptA !== deptB) return deptA - deptB;
+
+    return String(rowA[idCol]).localeCompare(String(rowB[idCol]));
+  });
+
+  sheet.getRange(2, 1, dataRows.length, headers.length).setValues(dataRows);
+  ui.alert('Done', 'Reordered ' + dataRows.length + ' row(s) in ' + sheet.getName() + ' by Branch/Department.', ui.ButtonSet.OK);
 }
 
 /**
