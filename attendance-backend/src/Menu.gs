@@ -9,6 +9,7 @@
 function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('Attendance Admin')
+    .addItem('Health Check', 'menuHealthCheck_')
     .addItem('Create / Update Schedule Sheet...', 'menuCreateScheduleSheet_')
     .addItem('Recompute Late/OT for Date Range...', 'menuRecomputeLateOt_')
     .addItem('Generate Kiosk Codes for Everyone', 'menuGenerateKioskPins_')
