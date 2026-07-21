@@ -286,6 +286,100 @@ function findTodayInLog_(employeeId, now, log) {
   return found;
 }
 
+/** Finds an employee's row for a specific type (IN or OUT) on a specific date, searching the whole AttendanceLog (not just the recent window) since a backdated entry can be from any point in the past. */
+function findLogEntryForDate_(employeeId, type, date) {
+  var sheet = getSheet_('AttendanceLog');
+  var values = sheet.getDataRange().getValues();
+  var headers = values[0];
+  var idCol = headers.indexOf('EmployeeID');
+  var tsCol = headers.indexOf('Timestamp');
+  var typeCol = headers.indexOf('Type');
+  var shiftCol = headers.indexOf('Shift');
+
+  var found = null;
+  for (var i = 1; i < values.length; i++) {
+    if (String(values[i][idCol]) !== String(employeeId)) continue;
+    if (values[i][typeCol] !== type) continue;
+    var ts = new Date(values[i][tsCol]);
+    if (!isSameDay_(ts, date)) continue;
+    if (!found || ts > found.timestamp) {
+      found = { timestamp: ts, shift: shiftCol !== -1 ? String(values[i][shiftCol] || '') : '' };
+    }
+  }
+  return found;
+}
+
+/**
+ * Admin backfill for a missed IN or OUT (e.g. someone forgot to tap the
+ * kiosk). Computes Shift/Late (IN) or Duration/OT (OUT) the exact same way a
+ * live Kiosk check-in would, then appends the row. Skips the duplicate-guard
+ * from recordAttendance_ -- that guard exists to catch accidental rapid
+ * double-taps in real time, which isn't relevant to a deliberate historical
+ * entry -- and searches the full log rather than the recent window, since the
+ * day being backfilled could be from any point in the past.
+ */
+function recordBackdatedAttendance_(employeeId, type, timestamp, ot) {
+  var found = findEmployeeRow_(employeeId);
+  if (!found) throw new Error('Employee not found: ' + employeeId);
+  var emp = found.row;
+
+  var shiftForRow = '';
+  var late = '';
+  var durationMinutes = '';
+  var otForRow = '';
+  var otMinutesForRow = '';
+  var otQuartersForRow = '';
+
+  if (type === 'IN') {
+    var scheduledShift = getScheduledShift_(employeeId, timestamp);
+    if (scheduledShift) {
+      shiftForRow = scheduledShift;
+      late = isLate_(scheduledShift, timestamp);
+    }
+  } else {
+    var matchingIn = findLogEntryForDate_(employeeId, 'IN', timestamp);
+    if (matchingIn) {
+      durationMinutes = Math.round((timestamp.getTime() - matchingIn.timestamp.getTime()) / 60000);
+    }
+
+    var todayShift = matchingIn ? matchingIn.shift : '';
+    if (emp.Department === 'Japanese') {
+      var capMinutes = Number(emp.OTMaxMinutes) || JP_OT_CAP_MINUTES;
+      otMinutesForRow = todayShift ? computeJapaneseOtMinutes_(todayShift, timestamp, capMinutes) : 0;
+      otForRow = otMinutesForRow > 0;
+    } else {
+      otQuartersForRow = ot && todayShift ? computeThaiOtQuarters_(todayShift, timestamp) : 0;
+      otForRow = otQuartersForRow > 0;
+    }
+  }
+
+  appendRow_('AttendanceLog', {
+    Timestamp: timestamp,
+    EmployeeID: emp.EmployeeID,
+    Name: emp.Name,
+    Department: emp.Department,
+    Type: type,
+    Method: 'AdminBackdated',
+    RawScanValue: '',
+    DurationMinutes: durationMinutes,
+    Shift: shiftForRow,
+    Late: late,
+    OT: otForRow,
+    OTMinutes: otMinutesForRow,
+    OTQuarters: otQuartersForRow
+  });
+
+  return {
+    name: emp.Name,
+    department: emp.Department,
+    shift: shiftForRow,
+    late: late,
+    durationMinutes: durationMinutes,
+    otMinutes: otMinutesForRow,
+    otQuarters: otQuartersForRow
+  };
+}
+
 function recordAttendance_(employeeId, method, rawScanValue, type, ot) {
   var found = findEmployeeRow_(employeeId);
   if (!found) return fail_('not_found', 'Employee not found');

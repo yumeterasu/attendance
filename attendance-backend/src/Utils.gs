@@ -107,6 +107,25 @@ function findEmployeeRow_(employeeId) {
   return null;
 }
 
+/** Finds an employee by exact EmployeeID first, falling back to a case-insensitive Name substring match. Returns the row object (no rowNumber) or null. */
+function findEmployeeByNameOrId_(query) {
+  var byId = findEmployeeRow_(query);
+  if (byId) return byId.row;
+
+  var data = getCachedEmployees_();
+  var nameCol = data.headers.indexOf('Name');
+  var needle = String(query).toLowerCase();
+  for (var i = 0; i < data.rows.length; i++) {
+    var name = String(data.rows[i][nameCol] || '');
+    if (name.toLowerCase().indexOf(needle) !== -1) {
+      var record = {};
+      data.headers.forEach(function (h, c) { record[h] = data.rows[i][c]; });
+      return record;
+    }
+  }
+  return null;
+}
+
 /** Finds an employee row by KioskPIN. Returns {row, rowNumber} or null. */
 function findEmployeeByKioskPin_(pin) {
   var data = getCachedEmployees_();

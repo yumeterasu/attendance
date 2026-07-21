@@ -10,6 +10,7 @@ function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('Attendance Admin')
     .addItem('Health Check', 'menuHealthCheck_')
+    .addItem('Add Backdated Check-in/Check-out...', 'menuAddBackdatedAttendance_')
     .addItem('Create / Update Schedule Sheet...', 'menuCreateScheduleSheet_')
     .addItem('Recompute Late/OT for ALL Months', 'menuRecomputeLateOtAllMonths_')
     .addItem('Generate Kiosk Codes for Everyone', 'menuGenerateKioskPins_')
@@ -84,6 +85,89 @@ function menuRecomputeLateOtAllMonths_() {
     'Thai/non-Japanese OT was left untouched -- it can only be trusted from the moment it was recorded, not recomputed after the fact.',
     ui.ButtonSet.OK
   );
+}
+
+/**
+ * Backfills a missed IN or OUT (e.g. someone forgot to tap the kiosk) with
+ * the same Shift/Late/Duration/OT computation a live check-in would use.
+ * Warns (but doesn't block) if that employee already has an entry of the
+ * same type on that date, in case this is an accidental double-entry rather
+ * than a genuine correction.
+ */
+function menuAddBackdatedAttendance_() {
+  var ui = SpreadsheetApp.getUi();
+
+  var empResp = ui.prompt('Add Backdated Check-in/Check-out', 'Employee (Name or Employee ID):', ui.ButtonSet.OK_CANCEL);
+  if (empResp.getSelectedButton() !== ui.Button.OK) return;
+  var employee = findEmployeeByNameOrId_(empResp.getResponseText().trim());
+  if (!employee) {
+    ui.alert('No employee found matching "' + empResp.getResponseText().trim() + '".');
+    return;
+  }
+
+  var typeResp = ui.prompt('Add Backdated Check-in/Check-out', employee.Name + ' -- Type in IN or OUT:', ui.ButtonSet.OK_CANCEL);
+  if (typeResp.getSelectedButton() !== ui.Button.OK) return;
+  var type = typeResp.getResponseText().trim().toUpperCase();
+  if (type !== 'IN' && type !== 'OUT') {
+    ui.alert('Type must be exactly IN or OUT.');
+    return;
+  }
+
+  var dateResp = ui.prompt('Add Backdated Check-in/Check-out', 'Date (YYYY-MM-DD):', ui.ButtonSet.OK_CANCEL);
+  if (dateResp.getSelectedButton() !== ui.Button.OK) return;
+  var dateParts = dateResp.getResponseText().trim().split('-');
+
+  var timeResp = ui.prompt('Add Backdated Check-in/Check-out', 'Time (HH:MM, 24-hour):', ui.ButtonSet.OK_CANCEL);
+  if (timeResp.getSelectedButton() !== ui.Button.OK) return;
+  var timeParts = timeResp.getResponseText().trim().split(':');
+
+  if (dateParts.length !== 3 || timeParts.length !== 2) {
+    ui.alert('Enter the date as YYYY-MM-DD and the time as HH:MM.');
+    return;
+  }
+
+  var timestamp = new Date(
+    Number(dateParts[0]), Number(dateParts[1]) - 1, Number(dateParts[2]),
+    Number(timeParts[0]), Number(timeParts[1]), 0
+  );
+  if (isNaN(timestamp.getTime())) {
+    ui.alert('That date/time didn\'t parse -- double check the format.');
+    return;
+  }
+
+  if (timestamp.getTime() > Date.now()) {
+    var futureConfirm = ui.alert('That date/time is in the future -- continue anyway?', '', ui.ButtonSet.YES_NO);
+    if (futureConfirm !== ui.Button.YES) return;
+  }
+
+  var existing = findLogEntryForDate_(employee.EmployeeID, type, timestamp);
+  if (existing) {
+    var dupConfirm = ui.alert(
+      employee.Name + ' already has a ' + type + ' recorded that day (at ' +
+      Utilities.formatDate(existing.timestamp, Session.getScriptTimeZone(), 'HH:mm') + '). Add another anyway?',
+      '', ui.ButtonSet.YES_NO
+    );
+    if (dupConfirm !== ui.Button.YES) return;
+  }
+
+  var ot = false;
+  if (type === 'OUT' && employee.Department !== 'Japanese') {
+    var otConfirm = ui.alert('Count this as OT (like pressing OUT OT on the kiosk)?', '', ui.ButtonSet.YES_NO);
+    ot = otConfirm === ui.Button.YES;
+  }
+
+  var result = recordBackdatedAttendance_(employee.EmployeeID, type, timestamp, ot);
+  var tz = Session.getScriptTimeZone();
+  var summary = result.name + ': ' + type + ' @ ' + Utilities.formatDate(timestamp, tz, 'yyyy-MM-dd HH:mm');
+  if (type === 'IN') {
+    summary += '\nShift: ' + (result.shift || '(none found in Schedule for that date)') + '\nLate: ' + result.late;
+  } else {
+    summary += '\nDuration: ' + (result.durationMinutes !== '' ? result.durationMinutes + ' min' : '(no matching IN found that date)');
+    summary += result.department === 'Japanese'
+      ? '\nOT: ' + (result.otMinutes || 0) + ' min'
+      : '\nOT: ' + (result.otQuarters || 0) + ' quarter(s)';
+  }
+  ui.alert('Added', summary, ui.ButtonSet.OK);
 }
 
 function menuGenerateKioskPins_() {
