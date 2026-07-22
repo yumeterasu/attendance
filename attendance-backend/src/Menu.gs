@@ -143,75 +143,76 @@ function menuRecomputeLateOtAllMonths_() {
 /**
  * Backfills a missed IN or OUT (e.g. someone forgot to tap the kiosk) with
  * the same Shift/Late/Duration/OT computation a live check-in would use.
- * Warns (but doesn't block) if that employee already has an entry of the
- * same type on that date, in case this is an accidental double-entry rather
- * than a genuine correction.
+ * Shows an HTML dialog (BackdatedEntryDialog.html) instead of a chain of
+ * prompts -- employee has type-ahead suggestions, IN/OUT/OUT OT are buttons,
+ * and the date is 3 separate DD/MM/YYYY fields, no format guessing.
  */
 function menuAddBackdatedAttendance_() {
-  var ui = SpreadsheetApp.getUi();
+  var html = HtmlService.createHtmlOutputFromFile('BackdatedEntryDialog')
+    .setWidth(420)
+    .setHeight(520);
+  SpreadsheetApp.getUi().showModalDialog(html, 'Add Backdated Check-in/Check-out');
+}
 
-  var empResp = ui.prompt('Add Backdated Check-in/Check-out', 'Employee (Name or Employee ID):', ui.ButtonSet.OK_CANCEL);
-  if (empResp.getSelectedButton() !== ui.Button.OK) return;
-  var employee = findEmployeeByNameOrId_(empResp.getResponseText().trim());
+/** Called from BackdatedEntryDialog.html to populate the employee type-ahead list. */
+function getEmployeeListForDialog_() {
+  return getAllEmployees_()
+    .filter(function (emp) { return isTrue_(emp.Active); })
+    .map(function (emp) { return { id: emp.EmployeeID, name: emp.Name }; })
+    .sort(function (a, b) { return a.name.localeCompare(b.name); });
+}
+
+/**
+ * Called from BackdatedEntryDialog.html. payload: { employeeQuery, type
+ * ('IN'|'OUT'|'OUT_OT'), day, month, year, time ('HH:MM'), skipWarnings }.
+ * First call (skipWarnings false) returns { ok:false, warnings:[...] } for
+ * anything that would normally need a Yes/No confirm (future date,
+ * already-has-an-entry-that-day) -- the dialog shows those as confirm()
+ * boxes client-side and resubmits with skipWarnings:true if all are accepted.
+ */
+function submitBackdatedEntry_(payload) {
+  var employee = findEmployeeByNameOrId_(String(payload.employeeQuery || '').trim());
   if (!employee) {
-    ui.alert('No employee found matching "' + empResp.getResponseText().trim() + '".');
-    return;
+    return { ok: false, error: 'No employee found matching "' + payload.employeeQuery + '".' };
   }
 
-  var typeResp = ui.prompt('Add Backdated Check-in/Check-out', employee.Name + ' -- Type in IN or OUT:', ui.ButtonSet.OK_CANCEL);
-  if (typeResp.getSelectedButton() !== ui.Button.OK) return;
-  var type = typeResp.getResponseText().trim().toUpperCase();
+  var type = payload.type === 'OUT_OT' ? 'OUT' : payload.type;
+  var ot = payload.type === 'OUT_OT';
   if (type !== 'IN' && type !== 'OUT') {
-    ui.alert('Type must be exactly IN or OUT.');
-    return;
+    return { ok: false, error: 'Pick IN, OUT, or OUT OT.' };
   }
 
-  var dateResp = ui.prompt('Add Backdated Check-in/Check-out', 'Date (YYYY-MM-DD):', ui.ButtonSet.OK_CANCEL);
-  if (dateResp.getSelectedButton() !== ui.Button.OK) return;
-  var dateParts = dateResp.getResponseText().trim().split('-');
-
-  var timeResp = ui.prompt('Add Backdated Check-in/Check-out', 'Time (HH:MM, 24-hour):', ui.ButtonSet.OK_CANCEL);
-  if (timeResp.getSelectedButton() !== ui.Button.OK) return;
-  var timeParts = timeResp.getResponseText().trim().split(':');
-
-  if (dateParts.length !== 3 || timeParts.length !== 2) {
-    ui.alert('Enter the date as YYYY-MM-DD and the time as HH:MM.');
-    return;
+  var day = Number(payload.day), month = Number(payload.month), year = Number(payload.year);
+  var timeParts = String(payload.time || '').split(':');
+  if (!day || !month || !year || timeParts.length !== 2) {
+    return { ok: false, error: 'Enter a valid date and time.' };
   }
 
-  var timestamp = new Date(
-    Number(dateParts[0]), Number(dateParts[1]) - 1, Number(dateParts[2]),
-    Number(timeParts[0]), Number(timeParts[1]), 0
-  );
+  var timestamp = new Date(year, month - 1, day, Number(timeParts[0]), Number(timeParts[1]), 0);
   if (isNaN(timestamp.getTime())) {
-    ui.alert('That date/time didn\'t parse -- double check the format.');
-    return;
+    return { ok: false, error: 'That date/time didn\'t parse -- double check the values.' };
   }
 
-  if (timestamp.getTime() > Date.now()) {
-    var futureConfirm = ui.alert('That date/time is in the future -- continue anyway?', '', ui.ButtonSet.YES_NO);
-    if (futureConfirm !== ui.Button.YES) return;
-  }
-
-  var existing = findLogEntryForDate_(employee.EmployeeID, type, timestamp);
-  if (existing) {
-    var dupConfirm = ui.alert(
-      employee.Name + ' already has a ' + type + ' recorded that day (at ' +
-      Utilities.formatDate(existing.timestamp, Session.getScriptTimeZone(), 'HH:mm') + '). Add another anyway?',
-      '', ui.ButtonSet.YES_NO
-    );
-    if (dupConfirm !== ui.Button.YES) return;
-  }
-
-  var ot = false;
-  if (type === 'OUT' && employee.Department !== 'Japanese') {
-    var otConfirm = ui.alert('Count this as OT (like pressing OUT OT on the kiosk)?', '', ui.ButtonSet.YES_NO);
-    ot = otConfirm === ui.Button.YES;
+  if (!payload.skipWarnings) {
+    var warnings = [];
+    if (timestamp.getTime() > Date.now()) {
+      warnings.push('That date/time is in the future -- continue anyway?');
+    }
+    var existing = findLogEntryForDate_(employee.EmployeeID, type, timestamp);
+    if (existing) {
+      warnings.push(
+        employee.Name + ' already has a ' + type + ' recorded that day (at ' +
+        Utilities.formatDate(existing.timestamp, Session.getScriptTimeZone(), 'HH:mm') + '). Add another anyway?'
+      );
+    }
+    if (warnings.length > 0) {
+      return { ok: false, warnings: warnings };
+    }
   }
 
   var result = recordBackdatedAttendance_(employee.EmployeeID, type, timestamp, ot);
   var tz = Session.getScriptTimeZone();
-  var summary = result.name + ': ' + type + ' @ ' + Utilities.formatDate(timestamp, tz, 'yyyy-MM-dd HH:mm');
+  var summary = result.name + ': ' + type + (ot ? ' OT' : '') + ' @ ' + Utilities.formatDate(timestamp, tz, 'dd-MM-yyyy HH:mm');
   if (type === 'IN') {
     summary += '\nShift: ' + (result.shift || '(none found in Schedule for that date)') + '\nLate: ' + result.late;
   } else {
@@ -220,7 +221,7 @@ function menuAddBackdatedAttendance_() {
       ? '\nOT: ' + (result.otMinutes || 0) + ' min'
       : '\nOT: ' + (result.otQuarters || 0) + ' quarter(s)';
   }
-  ui.alert('Added', summary, ui.ButtonSet.OK);
+  return { ok: true, summary: summary };
 }
 
 function menuGenerateKioskPins_() {
