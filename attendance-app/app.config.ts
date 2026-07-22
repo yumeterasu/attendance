@@ -29,7 +29,5 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   updates: {
     url: 'https://u.expo.dev/5c2b7471-09bb-4b56-b4d7-4db4f1f4a441'
   },
-  runtimeVersion: {
-    policy: 'sdkVersion'
-  }
+  runtimeVersion: '1.0.0'
 });
