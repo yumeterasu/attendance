@@ -58,6 +58,8 @@ jobs:
       - name: Build APK
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          EXPO_PUBLIC_API_URL: ${{ secrets.EXPO_PUBLIC_API_URL }}
+          EXPO_PUBLIC_API_KEY: ${{ secrets.EXPO_PUBLIC_API_KEY }}
         run: npx eas-cli build --platform android --profile preview --local --non-interactive --output ./build.apk
 
       - uses: actions/upload-artifact@v4
