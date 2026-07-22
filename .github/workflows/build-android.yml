@@ -42,6 +42,14 @@ jobs:
           }
           EOF
 
+      - name: Prebuild native Android project
+        run: npx expo prebuild --platform android
+
+      - name: Tune Gradle memory for the CI runner
+        run: |
+          echo "org.gradle.jvmargs=-Xmx5120m -XX:MaxMetaspaceSize=1024m" >> android/gradle.properties
+          echo "org.gradle.daemon=false" >> android/gradle.properties
+
       - name: Build APK
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
