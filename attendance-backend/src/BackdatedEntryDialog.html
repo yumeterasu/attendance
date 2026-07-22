@@ -15,9 +15,6 @@
       flex: 1; padding: 10px 4px; border: 2px solid #ccc; border-radius: 6px;
       background: #f5f5f5; cursor: pointer; text-align: center; font-size: 13px; user-select: none;
     }
-    .type-btn.selected.in { background: #c8e6c9; border-color: #7cb987; }
-    .type-btn.selected.out { background: #ffe0b2; border-color: #e0a95f; }
-    .type-btn.selected.outot { background: #bbdefb; border-color: #6fa8dc; }
     .date-row { display: flex; gap: 8px; }
     .date-row input { text-align: center; }
     #day, #month { width: 60px; flex: none; }
@@ -57,29 +54,49 @@
 
   <script>
     var selectedType = null;
-
-    google.script.run.withSuccessHandler(function (list) {
-      var dl = document.getElementById('employeeList');
-      list.forEach(function (emp) {
-        var opt = document.createElement('option');
-        opt.value = emp.name;
-        dl.appendChild(opt);
-      });
-    }).getEmployeeListForDialog_();
-
-    Array.prototype.forEach.call(document.querySelectorAll('.type-btn'), function (btn) {
-      btn.addEventListener('click', function () {
-        Array.prototype.forEach.call(document.querySelectorAll('.type-btn'), function (b) {
-          b.classList.remove('selected');
-        });
-        btn.classList.add('selected');
-        selectedType = btn.getAttribute('data-type');
-      });
-    });
+    var TYPE_COLORS = {
+      IN: { bg: '#c8e6c9', border: '#7cb987' },
+      OUT: { bg: '#ffe0b2', border: '#e0a95f' },
+      OUT_OT: { bg: '#bbdefb', border: '#6fa8dc' }
+    };
 
     function showError(msg) {
       document.getElementById('error').textContent = msg || '';
     }
+
+    function setupTypeButtons() {
+      var buttons = document.querySelectorAll('.type-btn');
+      Array.prototype.forEach.call(buttons, function (btn) {
+        btn.addEventListener('click', function () {
+          Array.prototype.forEach.call(buttons, function (b) {
+            b.style.background = '#f5f5f5';
+            b.style.borderColor = '#ccc';
+          });
+          var colors = TYPE_COLORS[btn.getAttribute('data-type')];
+          btn.style.background = colors.bg;
+          btn.style.borderColor = colors.border;
+          selectedType = btn.getAttribute('data-type');
+        });
+      });
+    }
+    setupTypeButtons();
+
+    function loadEmployeeList() {
+      google.script.run
+        .withSuccessHandler(function (list) {
+          var dl = document.getElementById('employeeList');
+          (list || []).forEach(function (emp) {
+            var opt = document.createElement('option');
+            opt.value = emp.name;
+            dl.appendChild(opt);
+          });
+        })
+        .withFailureHandler(function (err) {
+          showError('Could not load employee list: ' + (err && err.message ? err.message : err));
+        })
+        .getEmployeeListForDialog_();
+    }
+    loadEmployeeList();
 
     function submit(skipWarnings) {
       var employee = document.getElementById('employee').value.trim();
