@@ -368,6 +368,41 @@ function writeMonthlySummaryData_(sheet, startRow, year, month) {
  * they already have -- rows are never removed, only skipped when adding new
  * ones for a future run.
  */
+var BRANCH_DEPT_COLORS = {
+  'PP|Japanese': '#00ff00',
+  'PP|Thai': '#ffff00',
+  'TL|Japanese': '#b4a7d6',
+  'TL|Thai': '#ead1dc'
+};
+
+/**
+ * Colors columns A (EmployeeID) and B (Name) by Branch+Department, one row
+ * at a time so it works regardless of row order. Header row (row 1) is
+ * never touched. Employees with a Branch/Department combo not in
+ * BRANCH_DEPT_COLORS (blank Branch, etc.) are left uncolored.
+ */
+function applyBranchDeptColors_(sheet, values, headers) {
+  var idCol = headers.indexOf('EmployeeID');
+  if (idCol === -1) return;
+
+  var employeesById = {};
+  getAllEmployees_().forEach(function (emp) { employeesById[String(emp.EmployeeID)] = emp; });
+
+  var rangesByColor = {};
+  for (var i = 1; i < values.length; i++) {
+    var emp = employeesById[String(values[i][idCol])];
+    if (!emp) continue;
+    var color = BRANCH_DEPT_COLORS[emp.Branch + '|' + emp.Department];
+    if (!color) continue;
+    if (!rangesByColor[color]) rangesByColor[color] = [];
+    rangesByColor[color].push('A' + (i + 1) + ':B' + (i + 1));
+  }
+
+  Object.keys(rangesByColor).forEach(function (color) {
+    sheet.getRangeList(rangesByColor[color]).setBackground(color);
+  });
+}
+
 function buildScheduleSheet_(year, month) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var sheetName = 'Schedule ' + year + '-' + (month < 10 ? '0' + month : String(month));
@@ -420,6 +455,9 @@ function buildScheduleSheet_(year, month) {
       existing.getRange(2, 3, existing.getLastRow() - 1, daysInMonth).setDataValidation(refreshedRule);
     }
     applyWeekendColors_(existing, 1, existing.getLastRow(), year, month, daysInMonth);
+    if (existing.getLastRow() > 1) {
+      applyBranchDeptColors_(existing, existing.getDataRange().getValues(), headers);
+    }
     return sheetName;
   }
 
@@ -444,6 +482,9 @@ function buildScheduleSheet_(year, month) {
   }
 
   applyWeekendColors_(sheet, 1, rows.length, year, month, daysInMonth);
+  if (rows.length > 1) {
+    applyBranchDeptColors_(sheet, rows, header);
+  }
 
   sheet.autoResizeColumns(1, 2);
   return sheetName;
