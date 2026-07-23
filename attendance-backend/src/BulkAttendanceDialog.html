@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <meta charset="utf-8">
+  <style>
+    body { font-family: Arial, sans-serif; font-size: 13px; padding: 4px 8px 12px; color: #202124; }
+    label { display: block; margin-top: 12px; margin-bottom: 4px; font-weight: bold; }
+    .date-row { display: flex; gap: 8px; }
+    .date-row input {
+      text-align: center; padding: 7px 8px; box-sizing: border-box; font-size: 14px;
+      border: 1px solid #ccc; border-radius: 4px;
+    }
+    #day, #month { width: 60px; flex: none; }
+    #year { width: 80px; flex: none; }
+    #loadBtn {
+      margin-top: 10px; width: 100%; padding: 9px; font-size: 13px;
+      background: #eee; color: #202124; border: 1px solid #ccc; border-radius: 6px; cursor: pointer;
+    }
+    #list { margin-top: 14px; max-height: 320px; overflow-y: auto; border-top: 1px solid #eee; }
+    .emp-row { padding: 8px 0; border-bottom: 1px solid #eee; }
+    .emp-name { font-weight: bold; }
+    .emp-meta { color: #666; font-size: 11.5px; margin-top: 1px; }
+    .emp-existing { color: #b8860b; font-size: 11.5px; margin-top: 1px; }
+    .status-buttons { display: flex; gap: 6px; margin-top: 6px; }
+    .status-btn {
+      flex: 1; padding: 6px 4px; border: 2px solid #ccc; border-radius: 6px;
+      background: #f5f5f5; cursor: pointer; text-align: center; font-size: 12px; user-select: none;
+    }
+    .late-input { display: none; margin-top: 6px; }
+    .late-input input {
+      width: 70px; padding: 5px 6px; font-size: 12px; border: 1px solid #ccc; border-radius: 4px;
+    }
+    #submitBtn {
+      margin-top: 16px; width: 100%; padding: 11px; font-size: 14px;
+      background: #4285f4; color: white; border: none; border-radius: 6px; cursor: pointer;
+    }
+    #submitBtn:disabled { background: #aaa; cursor: default; }
+    #error { color: #c5221f; margin-top: 8px; min-height: 16px; font-size: 12px; }
+    #empty { color: #666; font-size: 12.5px; margin-top: 14px; display: none; }
+  </style>
+</head>
+<body>
+  <label>Date (DD / MM / YYYY)</label>
+  <div class="date-row">
+    <input type="text" id="day" placeholder="DD" maxlength="2" inputmode="numeric">
+    <input type="text" id="month" placeholder="MM" maxlength="2" inputmode="numeric">
+    <input type="text" id="year" placeholder="YYYY" maxlength="4" inputmode="numeric">
+  </div>
+  <button id="loadBtn">Load employees scheduled that day</button>
+
+  <div id="empty">No active, scheduled employees found for that date.</div>
+  <div id="list"></div>
+
+  <div id="error"></div>
+  <button id="submitBtn" style="display: none;">Submit</button>
+
+  <script>
+    var STATUS_COLORS = {
+      present: { bg: '#c8e6c9', border: '#7cb987' },
+      late: { bg: '#ffe0b2', border: '#e0a95f' },
+      absent: { bg: '#e0e0e0', border: '#aaa' }
+    };
+    var employees = [];
+
+    function today() {
+      var d = new Date();
+      document.getElementById('day').value = String(d.getDate()).padStart(2, '0');
+      document.getElementById('month').value = String(d.getMonth() + 1).padStart(2, '0');
+      document.getElementById('year').value = String(d.getFullYear());
+    }
+    today();
+
+    function showError(msg) {
+      document.getElementById('error').textContent = msg || '';
+    }
+
+    function dateStr() {
+      var d = document.getElementById('day').value.trim();
+      var m = document.getElementById('month').value.trim();
+      var y = document.getElementById('year').value.trim();
+      if (!d || !m || !y) return null;
+      return y + '-' + m.padStart(2, '0') + '-' + d.padStart(2, '0');
+    }
+
+    function renderList() {
+      var list = document.getElementById('list');
+      list.innerHTML = '';
+      document.getElementById('empty').style.display = employees.length === 0 ? 'block' : 'none';
+      document.getElementById('submitBtn').style.display = employees.length > 0 ? 'block' : 'none';
+
+      employees.forEach(function (emp, idx) {
+        var row = document.createElement('div');
+        row.className = 'emp-row';
+
+        var existingNote = '';
+        if (emp.hasIn && emp.hasOut) existingNote = 'Already has IN and OUT that day';
+        else if (emp.hasIn) existingNote = 'Already has IN that day (will only add OUT)';
+        else if (emp.hasOut) existingNote = 'Already has OUT that day (will only add IN)';
+
+        row.innerHTML =
+          '<div class="emp-name">' + emp.name + '</div>' +
+          '<div class="emp-meta">' + emp.department + ' &middot; ' + emp.shift + '</div>' +
+          (existingNote ? '<div class="emp-existing">' + existingNote + '</div>' : '') +
+          '<div class="status-buttons">' +
+          '<div class="status-btn" data-status="present">On time</div>' +
+          '<div class="status-btn" data-status="late">Late</div>' +
+          '<div class="status-btn" data-status="absent">Absent</div>' +
+          '</div>' +
+          '<div class="late-input"><input type="number" min="1" placeholder="minutes late"></div>';
+
+        list.appendChild(row);
+
+        var buttons = row.querySelectorAll('.status-btn');
+        var lateInputWrap = row.querySelector('.late-input');
+        var lateInput = row.querySelector('.late-input input');
+
+        function selectStatus(status) {
+          emp.status = status;
+          Array.prototype.forEach.call(buttons, function (b) {
+            b.style.background = '#f5f5f5';
+            b.style.borderColor = '#ccc';
+          });
+          var btn = row.querySelector('[data-status="' + status + '"]');
+          var colors = STATUS_COLORS[status];
+          btn.style.background = colors.bg;
+          btn.style.borderColor = colors.border;
+          lateInputWrap.style.display = status === 'late' ? 'block' : 'none';
+        }
+
+        Array.prototype.forEach.call(buttons, function (b) {
+          b.addEventListener('click', function () { selectStatus(b.getAttribute('data-status')); });
+        });
+        lateInput.addEventListener('input', function () { emp.lateMinutes = lateInput.value; });
+
+        emp.status = 'present';
+        emp.lateMinutes = 0;
+        selectStatus('present');
+      });
+    }
+
+    document.getElementById('loadBtn').addEventListener('click', function () {
+      var ds = dateStr();
+      if (!ds) { showError('Enter the full date first.'); return; }
+      showError('');
+      document.getElementById('loadBtn').disabled = true;
+      document.getElementById('loadBtn').textContent = 'Loading...';
+
+      google.script.run
+        .withSuccessHandler(function (rows) {
+          employees = rows;
+          renderList();
+          document.getElementById('loadBtn').disabled = false;
+          document.getElementById('loadBtn').textContent = 'Load employees scheduled that day';
+        })
+        .withFailureHandler(function (err) {
+          showError('Could not load employees: ' + (err && err.message ? err.message : err));
+          document.getElementById('loadBtn').disabled = false;
+          document.getElementById('loadBtn').textContent = 'Load employees scheduled that day';
+        })
+        .getScheduledEmployeesForDate_(ds);
+    });
+
+    document.getElementById('submitBtn').addEventListener('click', function () {
+      var ds = dateStr();
+      if (!ds) { showError('Enter the full date first.'); return; }
+      showError('');
+      document.getElementById('submitBtn').disabled = true;
+
+      google.script.run
+        .withSuccessHandler(function (res) {
+          document.getElementById('submitBtn').disabled = false;
+          var msg = 'Added ' + res.added + ' record(s).\n' +
+            'Skipped ' + res.skippedExisting + ' (already recorded).\n' +
+            'Marked absent (skipped): ' + res.absent + '.';
+          if (res.errors && res.errors.length) {
+            msg += '\n\nErrors:\n' + res.errors.join('\n');
+          }
+          alert(msg);
+          google.script.host.close();
+        })
+        .withFailureHandler(function (err) {
+          document.getElementById('submitBtn').disabled = false;
+          showError(err && err.message ? err.message : String(err));
+        })
+        .submitBulkAttendance_({
+          date: ds,
+          entries: employees.map(function (emp) {
+            return { employeeId: emp.id, status: emp.status, lateMinutes: emp.lateMinutes };
+          })
+        });
+    });
+  </script>
+</body>
+</html>

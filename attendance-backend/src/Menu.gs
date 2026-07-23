@@ -11,6 +11,7 @@ function onOpen() {
     .createMenu('Attendance Admin')
     .addItem('Health Check', 'menuHealthCheck_')
     .addItem('Add Backdated Check-in/Check-out...', 'menuAddBackdatedAttendance_')
+    .addItem('Bulk Mark Attendance for a Day...', 'menuBulkMarkAttendance_')
     .addItem('Create / Update Schedule Sheet...', 'menuCreateScheduleSheet_')
     .addItem('Reorder Schedule by Branch/Department', 'menuReorderScheduleByBranch_')
     .addItem('Recompute Late/OT for ALL Months', 'menuRecomputeLateOtAllMonths_')
@@ -222,6 +223,96 @@ function submitBackdatedEntry_(payload) {
       : '\nOT: ' + (result.otQuarters || 0) + ' quarter(s)';
   }
   return { ok: true, summary: summary };
+}
+
+/**
+ * For days the kiosk was completely unreachable (internet outage) -- lets an
+ * admin bulk-record IN/OUT for everyone scheduled that day in one pass,
+ * defaulting to "on time, no OT" for each person, with per-person overrides
+ * for late arrival or absence. Never overwrites an IN/OUT that's already
+ * recorded for someone that day (e.g. they clocked in before the outage
+ * started) -- only fills in what's missing.
+ */
+function menuBulkMarkAttendance_() {
+  var html = HtmlService.createHtmlOutputFromFile('BulkAttendanceDialog')
+    .setWidth(480)
+    .setHeight(620);
+  SpreadsheetApp.getUi().showModalDialog(html, 'Bulk Mark Attendance for a Day');
+}
+
+/**
+ * Called from BulkAttendanceDialog.html. Returns every active employee
+ * scheduled to work the given date, with their shift and whether they
+ * already have an IN and/or OUT recorded that day.
+ */
+function getScheduledEmployeesForDate_(dateStr) {
+  var parts = dateStr.split('-'); // YYYY-MM-DD
+  var date = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
+  var activeEmployees = getAllEmployees_().filter(function (emp) { return isTrue_(emp.Active); });
+
+  var rows = [];
+  activeEmployees.forEach(function (emp) {
+    var shift = getScheduledShift_(emp.EmployeeID, date);
+    if (!shift) return;
+    rows.push({
+      id: emp.EmployeeID,
+      name: emp.Name,
+      department: emp.Department,
+      shift: shift,
+      hasIn: !!findLogEntryForDate_(emp.EmployeeID, 'IN', date),
+      hasOut: !!findLogEntryForDate_(emp.EmployeeID, 'OUT', date)
+    });
+  });
+  return rows;
+}
+
+/**
+ * Called from BulkAttendanceDialog.html. payload: { date: 'YYYY-MM-DD',
+ * entries: [{ employeeId, status: 'present'|'late'|'absent', lateMinutes }] }.
+ * For present/late, adds IN at shift-start (+ lateMinutes if late) and OUT
+ * at shift-end -- exactly on time, no OT ever assumed -- but only for
+ * whichever of IN/OUT that employee doesn't already have that day. Absent
+ * employees are skipped entirely (no record = didn't work that day).
+ */
+function submitBulkAttendance_(payload) {
+  var dateParts = payload.date.split('-');
+  var year = Number(dateParts[0]), month = Number(dateParts[1]), day = Number(dateParts[2]);
+  var date = new Date(year, month - 1, day);
+
+  var added = 0, skippedExisting = 0, absent = 0, errors = [];
+
+  payload.entries.forEach(function (entry) {
+    if (entry.status === 'absent') { absent++; return; }
+
+    var employee = findEmployeeByNameOrId_(entry.employeeId);
+    if (!employee) { errors.push(entry.employeeId + ': not found'); return; }
+
+    var shift = getScheduledShift_(employee.EmployeeID, date);
+    var startMatch = shift ? shift.match(/(\d{1,2}):(\d{2})/) : null;
+    var endMatch = shift ? getShiftEndTime_(shift) : null;
+    if (!startMatch || !endMatch) { errors.push(employee.Name + ': could not read shift start/end time'); return; }
+
+    var lateMinutes = entry.status === 'late' ? (Number(entry.lateMinutes) || 0) : 0;
+    var inTime = new Date(year, month - 1, day, Number(startMatch[1]), Number(startMatch[2]), 0);
+    inTime = new Date(inTime.getTime() + lateMinutes * 60000);
+    var outTime = new Date(year, month - 1, day, endMatch.hour, endMatch.minute, 0);
+
+    if (findLogEntryForDate_(employee.EmployeeID, 'IN', date)) {
+      skippedExisting++;
+    } else {
+      recordBackdatedAttendance_(employee.EmployeeID, 'IN', inTime, false);
+      added++;
+    }
+
+    if (findLogEntryForDate_(employee.EmployeeID, 'OUT', date)) {
+      skippedExisting++;
+    } else {
+      recordBackdatedAttendance_(employee.EmployeeID, 'OUT', outTime, false);
+      added++;
+    }
+  });
+
+  return { added: added, skippedExisting: skippedExisting, absent: absent, errors: errors };
 }
 
 function menuGenerateKioskPins_() {
