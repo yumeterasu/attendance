@@ -93,6 +93,35 @@ function invalidateEmployeesCache_() {
   CacheService.getScriptCache().remove(EMPLOYEES_CACHE_KEY);
 }
 
+/**
+ * Time-driven trigger target: force-refreshes the Employees cache every
+ * minute (well inside the 5-minute TTL), so it never actually expires
+ * during the day -- the first kiosk scan after a quiet stretch was slow
+ * because it landed right after the cache had gone cold and had to re-read
+ * the whole Employees sheet from scratch. See setupCacheWarmerTrigger.
+ */
+function warmUpEmployeesCache_() {
+  invalidateEmployeesCache_();
+  getCachedEmployees_();
+}
+
+/**
+ * One-off: installs a trigger that runs warmUpEmployeesCache_ every minute,
+ * all day. Safe to run more than once -- clears any existing trigger for
+ * the same function first. Run once from the editor: select
+ * setupCacheWarmerTrigger in the toolbar dropdown, click Run.
+ */
+function setupCacheWarmerTrigger() {
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === 'warmUpEmployeesCache_') ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger('warmUpEmployeesCache_')
+    .timeBased()
+    .everyMinutes(1)
+    .create();
+  Logger.log('Cache warmer trigger created -- refreshes the Employees cache every minute so it never goes cold.');
+}
+
 /** Finds an employee row by EmployeeID. Returns {row, rowNumber} (1-based sheet row) or null. */
 function findEmployeeRow_(employeeId) {
   var data = getCachedEmployees_();
