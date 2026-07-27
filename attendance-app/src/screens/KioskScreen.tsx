@@ -26,6 +26,28 @@ const MONTH_NAMES = [
   'January', 'February', 'March', 'April', 'May', 'June',
   'July', 'August', 'September', 'October', 'November', 'December'
 ];
+const WEEKDAY_HEADERS = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
+
+type ScheduleDay = { day: number; date: string; timeIn: string; timeOut: string; shift: string; late: boolean; ot: boolean };
+type CalendarCell = { day: number; entry?: ScheduleDay } | null;
+
+// Lays the month out as a real calendar grid (leading/trailing blanks so day 1
+// lands under its real weekday), instead of a flat list of only the days that
+// have a record -- makes it easy to spot missed days at a glance.
+function buildCalendarWeeks(year: number, month: number, days: ScheduleDay[]): CalendarCell[][] {
+  const daysInMonth = new Date(year, month, 0).getDate();
+  const firstWeekday = new Date(year, month - 1, 1).getDay();
+  const byDay = new Map(days.map((d) => [d.day, d]));
+
+  const cells: CalendarCell[] = [];
+  for (let i = 0; i < firstWeekday; i++) cells.push(null);
+  for (let day = 1; day <= daysInMonth; day++) cells.push({ day, entry: byDay.get(day) });
+  while (cells.length % 7 !== 0) cells.push(null);
+
+  const weeks: CalendarCell[][] = [];
+  for (let i = 0; i < cells.length; i += 7) weeks.push(cells.slice(i, i + 7));
+  return weeks;
+}
 
 type Feedback =
   | { kind: 'success'; type: 'IN' | 'OUT'; name: string; timestamp: string; late?: boolean; ot?: boolean; queued?: boolean }
@@ -35,7 +57,7 @@ type ScheduleData = {
   name: string;
   year: number;
   month: number;
-  days: { day: number; date: string; timeIn: string; timeOut: string; shift: string; late: boolean; ot: boolean }[];
+  days: ScheduleDay[];
 };
 
 type Mode = 'checkin' | 'exit' | 'scheduleEntry' | 'scheduleResult';
@@ -332,48 +354,77 @@ export default function KioskScreen({ navigation }: Props) {
 
   if (mode === 'scheduleEntry') {
     return (
-      <View style={styles.container}>
-        <Text style={styles.title}>Enter Your Code to View Schedule</Text>
-        <Dots length={PIN_LENGTH} filled={schedulePin.length} error={scheduleError} />
-        <Keypad onPress={onScheduleKeyPress} />
+      <View style={[styles.container, styles.containerCream]}>
+        <Text style={[styles.title, styles.titleDark]}>Enter Your Code to View Schedule</Text>
+        <Dots length={PIN_LENGTH} filled={schedulePin.length} error={scheduleError} light />
+        <Keypad onPress={onScheduleKeyPress} light />
         {scheduleError && <Text style={styles.errorText}>Code not recognized</Text>}
         <Pressable
-          style={styles.cornerButton}
+          style={[styles.cornerButton, styles.cornerButtonLight]}
           onPress={() => {
             setMode('checkin');
             setSchedulePin('');
           }}
         >
-          <Text style={styles.cornerButtonText}>Cancel</Text>
+          <Text style={styles.cornerButtonTextLight}>Cancel</Text>
         </Pressable>
       </View>
     );
   }
 
   if (mode === 'scheduleResult' && scheduleData) {
+    const weeks = buildCalendarWeeks(scheduleData.year, scheduleData.month, scheduleData.days);
+
     return (
-      <View style={styles.container}>
-        <Text style={styles.title}>{scheduleData.name}</Text>
-        <Text style={styles.subtitle}>
+      <View style={[styles.container, styles.containerCream]}>
+        <Text style={[styles.title, styles.titleDark]}>{scheduleData.name}</Text>
+        <Text style={styles.subtitleDark}>
           {MONTH_NAMES[scheduleData.month - 1]} {scheduleData.year}
         </Text>
 
-        <ScrollView style={styles.scheduleList} contentContainerStyle={{ paddingBottom: 24 }}>
-          {scheduleData.days.length === 0 && <Text style={styles.scheduleEmpty}>No records yet this month.</Text>}
-          {scheduleData.days.map((d) => (
-            <View key={d.date} style={styles.scheduleRow}>
-              <View style={styles.scheduleDateCol}>
-                <Text style={styles.scheduleDate}>{d.date}</Text>
-                {!!d.shift && <Text style={styles.scheduleShift}>{d.shift}</Text>}
-              </View>
-              <Text style={styles.scheduleTime}>{d.timeIn || '--:--'}</Text>
-              <Text style={styles.scheduleArrow}>→</Text>
-              <Text style={styles.scheduleTime}>{d.timeOut || '--:--'}</Text>
-              {d.late && <Text style={styles.scheduleLate}>Late</Text>}
-              {d.ot && <Text style={styles.scheduleOt}>OT</Text>}
+        <View style={styles.calendarWeekRow}>
+          {WEEKDAY_HEADERS.map((h, i) => (
+            <Text key={i} style={styles.calendarHeaderCell}>{h}</Text>
+          ))}
+        </View>
+        <ScrollView style={styles.calendarWrap} contentContainerStyle={{ paddingBottom: 12 }}>
+          {weeks.map((week, wi) => (
+            <View key={wi} style={styles.calendarWeekRow}>
+              {week.map((cell, ci) => (
+                <View key={ci} style={styles.calendarCell}>
+                  {cell && (
+                    <>
+                      <Text style={styles.calendarDayNum}>{cell.day}</Text>
+                      {cell.entry && (
+                        <>
+                          <Text style={styles.calendarTime}>{cell.entry.timeIn || '--:--'}</Text>
+                          <Text style={styles.calendarTime}>{cell.entry.timeOut || '--:--'}</Text>
+                          {(cell.entry.late || cell.entry.ot) && (
+                            <View style={styles.calendarDotsRow}>
+                              {cell.entry.late && <View style={[styles.calendarDot, styles.calendarDotLate]} />}
+                              {cell.entry.ot && <View style={[styles.calendarDot, styles.calendarDotOt]} />}
+                            </View>
+                          )}
+                        </>
+                      )}
+                    </>
+                  )}
+                </View>
+              ))}
             </View>
           ))}
         </ScrollView>
+
+        <View style={styles.calendarLegend}>
+          <View style={styles.legendItem}>
+            <View style={[styles.calendarDot, styles.calendarDotLate]} />
+            <Text style={styles.legendText}>Late</Text>
+          </View>
+          <View style={styles.legendItem}>
+            <View style={[styles.calendarDot, styles.calendarDotOt]} />
+            <Text style={styles.legendText}>OT</Text>
+          </View>
+        </View>
 
         <Pressable
           style={styles.doneButton}
@@ -502,6 +553,7 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#000', alignItems: 'center', justifyContent: 'center', padding: 24 },
   containerDanger: { backgroundColor: '#2a0e0e' },
   containerLight: { backgroundColor: '#fff' },
+  containerCream: { backgroundColor: '#f6f1e7' },
   title: { color: '#fff', fontSize: 22, fontWeight: '700', marginBottom: 8, textAlign: 'center' },
   titleDark: { color: '#1d1d1f' },
   subtitleDark: { color: '#777', fontSize: 15, marginBottom: 8 },
@@ -626,33 +678,36 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     borderRadius: 10
   },
-  scheduleList: { width: '100%', maxWidth: 420, maxHeight: '55%' },
-  scheduleEmpty: { color: 'rgba(255,255,255,0.5)', textAlign: 'center', marginTop: 24 },
-  scheduleRow: {
-    flexDirection: 'row',
+  calendarWrap: { width: '100%', maxWidth: 460, maxHeight: '52%' },
+  calendarWeekRow: { flexDirection: 'row', width: '100%', maxWidth: 460 },
+  calendarHeaderCell: {
+    flex: 1,
+    textAlign: 'center',
+    color: '#a89e8d',
+    fontSize: 12,
+    fontWeight: '700',
+    paddingBottom: 6
+  },
+  calendarCell: {
+    flex: 1,
+    aspectRatio: 0.78,
     alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255,255,255,0.1)'
+    justifyContent: 'flex-start',
+    paddingTop: 6,
+    borderWidth: 1,
+    borderColor: '#e2d9c8'
   },
-  scheduleDateCol: { flex: 1 },
-  scheduleDate: { color: '#fff', fontSize: 14 },
-  scheduleShift: { color: 'rgba(255,255,255,0.5)', fontSize: 12, marginTop: 2 },
-  scheduleTime: { color: '#fff', fontSize: 14, fontWeight: '600', width: 56, textAlign: 'center' },
-  scheduleArrow: { color: 'rgba(255,255,255,0.4)', fontSize: 14, width: 20, textAlign: 'center' },
-  scheduleLate: {
-    color: '#e57373',
-    fontSize: 11,
-    fontWeight: '700',
-    marginLeft: 8
+  calendarDayNum: { color: '#241f1a', fontSize: 12, fontWeight: '700' },
+  calendarTime: { color: '#7a7167', fontSize: 9.5, marginTop: 2 },
+  calendarDotsRow: { flexDirection: 'row', gap: 3, marginTop: 3 },
+  calendarDot: { width: 6, height: 6, borderRadius: 3 },
+  calendarDotLate: { backgroundColor: '#c0392b' },
+  calendarDotOt: {
+    backgroundColor: '#e65100'
   },
-  scheduleOt: {
-    color: '#e65100',
-    fontSize: 11,
-    fontWeight: '700',
-    marginLeft: 8
-  },
+  calendarLegend: { flexDirection: 'row', gap: 20, marginTop: 12 },
+  legendItem: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  legendText: { color: '#7a7167', fontSize: 12, fontWeight: '600' },
   doneButton: {
     marginTop: 24,
     backgroundColor: '#455a64',
