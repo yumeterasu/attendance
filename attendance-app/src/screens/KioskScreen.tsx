@@ -354,7 +354,7 @@ export default function KioskScreen({ navigation }: Props) {
 
   if (mode === 'scheduleEntry') {
     return (
-      <View style={[styles.container, styles.containerCream]}>
+      <View style={[styles.container, styles.containerSchedule]}>
         <Text style={[styles.title, styles.titleDark]}>Enter Your Code to View Schedule</Text>
         <Dots length={PIN_LENGTH} filled={schedulePin.length} error={scheduleError} light />
         <Keypad onPress={onScheduleKeyPress} light />
@@ -376,7 +376,7 @@ export default function KioskScreen({ navigation }: Props) {
     const weeks = buildCalendarWeeks(scheduleData.year, scheduleData.month, scheduleData.days);
 
     return (
-      <View style={[styles.container, styles.containerCream]}>
+      <View style={[styles.container, styles.containerSchedule]}>
         <Text style={[styles.title, styles.titleDark]}>{scheduleData.name}</Text>
         <Text style={styles.subtitleDark}>
           {MONTH_NAMES[scheduleData.month - 1]} {scheduleData.year}
@@ -553,7 +553,7 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#000', alignItems: 'center', justifyContent: 'center', padding: 24 },
   containerDanger: { backgroundColor: '#2a0e0e' },
   containerLight: { backgroundColor: '#fff' },
-  containerCream: { backgroundColor: '#f6f1e7' },
+  containerSchedule: { backgroundColor: '#eaf2f7' },
   title: { color: '#fff', fontSize: 22, fontWeight: '700', marginBottom: 8, textAlign: 'center' },
   titleDark: { color: '#1d1d1f' },
   subtitleDark: { color: '#777', fontSize: 15, marginBottom: 8 },
@@ -683,7 +683,7 @@ const styles = StyleSheet.create({
   calendarHeaderCell: {
     flex: 1,
     textAlign: 'center',
-    color: '#a89e8d',
+    color: '#7d95a3',
     fontSize: 12,
     fontWeight: '700',
     paddingBottom: 6
@@ -695,10 +695,10 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-start',
     paddingTop: 6,
     borderWidth: 1,
-    borderColor: '#e2d9c8'
+    borderColor: '#cfe0e8'
   },
-  calendarDayNum: { color: '#241f1a', fontSize: 12, fontWeight: '700' },
-  calendarTime: { color: '#7a7167', fontSize: 9.5, marginTop: 2 },
+  calendarDayNum: { color: '#1f333d', fontSize: 12, fontWeight: '700' },
+  calendarTime: { color: '#6b8290', fontSize: 9.5, marginTop: 2 },
   calendarDotsRow: { flexDirection: 'row', gap: 3, marginTop: 3 },
   calendarDot: { width: 6, height: 6, borderRadius: 3 },
   calendarDotLate: { backgroundColor: '#c0392b' },
@@ -707,7 +707,7 @@ const styles = StyleSheet.create({
   },
   calendarLegend: { flexDirection: 'row', gap: 20, marginTop: 12 },
   legendItem: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  legendText: { color: '#7a7167', fontSize: 12, fontWeight: '600' },
+  legendText: { color: '#6b8290', fontSize: 12, fontWeight: '600' },
   doneButton: {
     marginTop: 24,
     backgroundColor: '#455a64',
