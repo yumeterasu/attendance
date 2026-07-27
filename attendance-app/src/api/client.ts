@@ -1,3 +1,5 @@
+import { logAttempt } from '../utils/attemptLog';
+
 const API_URL = process.env.EXPO_PUBLIC_API_URL ?? '';
 const API_KEY = process.env.EXPO_PUBLIC_API_KEY ?? '';
 const REQUEST_TIMEOUT_MS = 15000; // a hung request with no internet route used to wait forever with no feedback
@@ -16,12 +18,18 @@ async function postAction<T>(action: string, body: Record<string, unknown>): Pro
       body: JSON.stringify({ action, apiKey: API_KEY, ...body }),
       signal: controller.signal
     });
-    return (await res.json()) as ApiResult<T>;
+    const result = (await res.json()) as ApiResult<T>;
+    logAttempt({ timestamp: Date.now(), action, result: result.success ? 'success' : 'rejected', message: result.success ? undefined : result.message });
+    return result;
   } catch (err) {
     if (err instanceof Error && err.name === 'AbortError') {
-      return { success: false, error: 'timeout', message: 'Taking too long to respond. Check your connection and try again.' };
+      const result: ApiResult<T> = { success: false, error: 'timeout', message: 'Taking too long to respond. Check your connection and try again.' };
+      logAttempt({ timestamp: Date.now(), action, result: 'timeout' });
+      return result;
     }
-    return { success: false, error: 'network_error', message: 'Could not reach the server. Check your connection.' };
+    const result: ApiResult<T> = { success: false, error: 'network_error', message: 'Could not reach the server. Check your connection.' };
+    logAttempt({ timestamp: Date.now(), action, result: 'network_error' });
+    return result;
   } finally {
     clearTimeout(timer);
   }

@@ -4,8 +4,23 @@ import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../navigation/types';
 import { adminResetCode } from '../api/client';
 import { useSession } from '../context/SessionContext';
+import { AttemptEntry, clearAttemptLog, getAttemptLog } from '../utils/attemptLog';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Admin'>;
+
+const RESULT_LABELS: Record<AttemptEntry['result'], string> = {
+  success: 'OK',
+  timeout: 'Timed out',
+  network_error: 'No connection',
+  rejected: 'Rejected'
+};
+
+const RESULT_COLORS: Record<AttemptEntry['result'], string> = {
+  success: '#2e7d32',
+  timeout: '#e65100',
+  network_error: '#c0392b',
+  rejected: '#777'
+};
 
 export default function AdminScreen({ navigation }: Props) {
   const { session, setKioskLocked } = useSession();
@@ -13,8 +28,17 @@ export default function AdminScreen({ navigation }: Props) {
   const [isResetting, setIsResetting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [issuedCode, setIssuedCode] = useState<{ employeeId: string; setupCode: string } | null>(null);
+  const [attemptLog, setAttemptLog] = useState<AttemptEntry[] | null>(null);
 
   if (!session) return null;
+
+  const onToggleLog = async () => {
+    if (attemptLog !== null) {
+      setAttemptLog(null);
+      return;
+    }
+    setAttemptLog(await getAttemptLog());
+  };
 
   const onReset = async () => {
     setError(null);
@@ -76,6 +100,43 @@ export default function AdminScreen({ navigation }: Props) {
       >
         {isResetting ? <ActivityIndicator color="#fff" /> : <Text style={styles.buttonText}>Issue New Setup Code</Text>}
       </Pressable>
+
+      <View style={styles.divider} />
+
+      <Text style={styles.sectionTitle}>Connection Log</Text>
+      <Text style={styles.kioskHint}>
+        Every kiosk PIN attempt made on this device, including ones that never reached the server -- useful for
+        pinpointing exactly when and why a check-in got stuck.
+      </Text>
+      <Pressable style={[styles.button, styles.buttonSecondary]} onPress={onToggleLog}>
+        <Text style={styles.buttonText}>{attemptLog === null ? 'View Connection Log' : 'Hide Connection Log'}</Text>
+      </Pressable>
+
+      {attemptLog !== null && (
+        <View style={styles.logBox}>
+          {attemptLog.length === 0 && <Text style={styles.logEmpty}>No attempts recorded yet on this device.</Text>}
+          {attemptLog.map((entry, i) => (
+            <View key={i} style={styles.logRow}>
+              <Text style={styles.logTime}>{new Date(entry.timestamp).toLocaleString()}</Text>
+              <Text style={[styles.logResult, { color: RESULT_COLORS[entry.result] }]}>
+                {RESULT_LABELS[entry.result]}
+              </Text>
+              <Text style={styles.logAction}>{entry.action}</Text>
+            </View>
+          ))}
+          {attemptLog.length > 0 && (
+            <Pressable
+              style={styles.clearLogButton}
+              onPress={async () => {
+                await clearAttemptLog();
+                setAttemptLog([]);
+              }}
+            >
+              <Text style={styles.clearLogButtonText}>Clear log</Text>
+            </Pressable>
+          )}
+        </View>
+      )}
     </ScrollView>
   );
 }
@@ -109,5 +170,19 @@ const styles = StyleSheet.create({
   },
   codeLabel: { fontSize: 14, color: '#2e7d32', marginBottom: 8 },
   codeValue: { fontSize: 32, fontWeight: '700', letterSpacing: 4, color: '#1b5e20', marginBottom: 8 },
-  codeHint: { fontSize: 12, color: '#2e7d32', textAlign: 'center', marginBottom: 12 }
+  codeHint: { fontSize: 12, color: '#2e7d32', textAlign: 'center', marginBottom: 12 },
+  logBox: {
+    marginTop: 16,
+    borderWidth: 1,
+    borderColor: '#eee',
+    borderRadius: 8,
+    padding: 12
+  },
+  logEmpty: { fontSize: 13, color: '#999', textAlign: 'center', paddingVertical: 12 },
+  logRow: { paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: '#f2f2f2' },
+  logTime: { fontSize: 11, color: '#999' },
+  logResult: { fontSize: 13, fontWeight: '700', marginTop: 2 },
+  logAction: { fontSize: 11, color: '#aaa', marginTop: 1 },
+  clearLogButton: { marginTop: 8, alignItems: 'center', paddingVertical: 8 },
+  clearLogButtonText: { fontSize: 12, color: '#c0392b', fontWeight: '600' }
 });

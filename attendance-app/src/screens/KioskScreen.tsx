@@ -121,6 +121,11 @@ export default function KioskScreen({ navigation }: Props) {
   const [isProcessing, setIsProcessing] = useState(false);
   const [feedback, setFeedback] = useState<Feedback | null>(null);
   const feedbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Set only for a retriable failure (timeout / no connection) -- unlike
+  // a wrong-PIN rejection, the pin/name/selection stay put so "Try Again"
+  // can resubmit without the employee re-entering anything.
+  const [lookupIssue, setLookupIssue] = useState<string | null>(null);
+  const [confirmIssue, setConfirmIssue] = useState<string | null>(null);
 
   const [exitPin, setExitPin] = useState('');
   const [exitError, setExitError] = useState(false);
@@ -139,6 +144,8 @@ export default function KioskScreen({ navigation }: Props) {
     setPin('');
     setLookupName(null);
     setSelection(null);
+    setLookupIssue(null);
+    setConfirmIssue(null);
   };
 
   // Shared kiosk: if someone looks themselves up and walks away without
@@ -151,17 +158,20 @@ export default function KioskScreen({ navigation }: Props) {
 
   const lookupPin = async (value: string) => {
     if (!isConnected) {
-      showFeedback({ kind: 'error', message: 'No internet connection. Please try again.' });
-      setPin('');
-      return;
+      setLookupIssue('No internet connection.');
+      return; // keep the pin as-is so Try Again can resubmit it directly
     }
 
+    setLookupIssue(null);
     setIsLookingUp(true);
     const res = await kioskLookupPin(value);
     setIsLookingUp(false);
 
     if (res.success) {
       setLookupName(res.name);
+    } else if (res.error === 'timeout' || res.error === 'network_error') {
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      setLookupIssue(res.message);
     } else {
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       showFeedback({ kind: 'error', message: res.message });
@@ -171,6 +181,7 @@ export default function KioskScreen({ navigation }: Props) {
 
   const onPinKeyPress = (key: string) => {
     if (isLookingUp) return;
+    setLookupIssue(null);
     if (key === 'back') return setPin((p) => p.slice(0, -1));
     if (key === 'clear') return setPin('');
 
@@ -184,15 +195,20 @@ export default function KioskScreen({ navigation }: Props) {
     const type = selection === 'IN' ? 'IN' : 'OUT';
     const ot = selection === 'OUT_OT';
 
+    setConfirmIssue(null);
     setIsProcessing(true);
     const res = await kioskCheckin(pin, type, ot);
     setIsProcessing(false);
-    resetCheckin();
 
     if (res.success) {
+      resetCheckin();
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       showFeedback({ kind: 'success', type: res.type, name: res.name, timestamp: res.timestamp, late: res.late, ot: res.ot });
+    } else if (res.error === 'timeout' || res.error === 'network_error') {
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      setConfirmIssue(res.message);
     } else {
+      resetCheckin();
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       showFeedback({ kind: 'error', message: res.message });
     }
@@ -355,68 +371,91 @@ export default function KioskScreen({ navigation }: Props) {
     </>
   );
 
-  // Page 2: PIN recognized -- show whose code this is and let them pick
-  // IN/OUT/OUT OT, then require an explicit Confirm before anything is recorded.
-  if (lookupName !== null) {
-    return (
-      <View style={[styles.container, styles.containerLight]}>
-        <Text style={[styles.title, styles.titleDark]}>Hi, {lookupName}</Text>
-        <Text style={styles.subtitleDark}>Select IN or OUT, then confirm</Text>
-
-        <View style={styles.typeRow}>
-          <Pressable
-            style={[styles.typeButton, styles.typeButtonIn, selection === 'IN' && styles.typeButtonInSelected]}
-            onPress={() => setSelection('IN')}
-            disabled={isProcessing}
-          >
-            <Text style={[styles.typeButtonInText, selection === 'IN' && styles.typeButtonTextSelected]}>IN</Text>
-          </Pressable>
-          <Pressable
-            style={[styles.typeButton, styles.typeButtonOut, selection === 'OUT' && styles.typeButtonOutSelected]}
-            onPress={() => setSelection('OUT')}
-            disabled={isProcessing}
-          >
-            <Text style={[styles.typeButtonOutText, selection === 'OUT' && styles.typeButtonTextSelected]}>OUT</Text>
-          </Pressable>
-          <Pressable
-            style={[styles.typeButton, styles.typeButtonOt, selection === 'OUT_OT' && styles.typeButtonOtSelected]}
-            onPress={() => setSelection('OUT_OT')}
-            disabled={isProcessing}
-          >
-            <Text style={[styles.typeButtonOtText, selection === 'OUT_OT' && styles.typeButtonTextSelected]}>OUT OT</Text>
-          </Pressable>
-        </View>
-
-        <Pressable
-          style={[styles.confirmButton, (!selection || isProcessing) && styles.confirmButtonDisabled]}
-          onPress={onConfirm}
-          disabled={!selection || isProcessing}
-        >
-          {isProcessing ? <ActivityIndicator color="#fff" /> : <Text style={styles.buttonText}>Confirm</Text>}
-        </Pressable>
-
-        <Pressable style={styles.cancelLink} onPress={resetCheckin} disabled={isProcessing}>
-          <Text style={styles.cancelLinkText}>Not you? Cancel</Text>
-        </Pressable>
-
-        {feedbackOverlay}
-      </View>
-    );
-  }
-
-  // Page 1: just the PIN pad.
+  // One continuous screen for the whole check-in flow -- entering the PIN
+  // and confirming IN/OUT never feels like a page change, just this same
+  // frame updating in place. lookupName === null shows the keypad;
+  // otherwise it shows the name + IN/OUT/OUT OT + Confirm.
   return (
     <View style={[styles.container, styles.containerLight]}>
-      <Text style={[styles.title, styles.titleDark]}>Enter Your Code</Text>
+      <View style={styles.netStatusDot}>
+        <View style={[styles.netDot, isConnected ? styles.netDotOnline : styles.netDotOffline]} />
+      </View>
 
-      <Dots length={PIN_LENGTH} filled={pin.length} light />
-      <Keypad onPress={onPinKeyPress} disabled={isLookingUp} light />
+      {lookupName === null ? (
+        <>
+          <Text style={[styles.title, styles.titleDark]}>Enter Your Code</Text>
 
-      {isLookingUp && (
-        <View style={styles.checkingRow}>
-          <ActivityIndicator color="#1d1d1f" />
-          <Text style={styles.checkingText}>Checking...</Text>
-        </View>
+          <Dots length={PIN_LENGTH} filled={pin.length} light />
+          <Keypad onPress={onPinKeyPress} disabled={isLookingUp} light />
+
+          {isLookingUp && (
+            <View style={styles.checkingRow}>
+              <ActivityIndicator color="#1d1d1f" />
+              <Text style={styles.checkingText}>Checking...</Text>
+            </View>
+          )}
+
+          {lookupIssue && !isLookingUp && (
+            <View style={styles.retryBox}>
+              <Text style={styles.retryMessage}>{lookupIssue}</Text>
+              <Pressable style={styles.retryButton} onPress={() => lookupPin(pin)}>
+                <Text style={styles.retryButtonText}>Try Again</Text>
+              </Pressable>
+            </View>
+          )}
+        </>
+      ) : (
+        <>
+          <Text style={[styles.title, styles.titleDark]}>Hi, {lookupName}</Text>
+          <Text style={styles.subtitleDark}>Select IN or OUT, then confirm</Text>
+
+          <View style={styles.typeRow}>
+            <Pressable
+              style={[styles.typeButton, styles.typeButtonIn, selection === 'IN' && styles.typeButtonInSelected]}
+              onPress={() => setSelection('IN')}
+              disabled={isProcessing}
+            >
+              <Text style={[styles.typeButtonInText, selection === 'IN' && styles.typeButtonTextSelected]}>IN</Text>
+            </Pressable>
+            <Pressable
+              style={[styles.typeButton, styles.typeButtonOut, selection === 'OUT' && styles.typeButtonOutSelected]}
+              onPress={() => setSelection('OUT')}
+              disabled={isProcessing}
+            >
+              <Text style={[styles.typeButtonOutText, selection === 'OUT' && styles.typeButtonTextSelected]}>OUT</Text>
+            </Pressable>
+            <Pressable
+              style={[styles.typeButton, styles.typeButtonOt, selection === 'OUT_OT' && styles.typeButtonOtSelected]}
+              onPress={() => setSelection('OUT_OT')}
+              disabled={isProcessing}
+            >
+              <Text style={[styles.typeButtonOtText, selection === 'OUT_OT' && styles.typeButtonTextSelected]}>
+                OUT OT
+              </Text>
+            </Pressable>
+          </View>
+
+          <Pressable
+            style={[styles.confirmButton, (!selection || isProcessing) && styles.confirmButtonDisabled]}
+            onPress={onConfirm}
+            disabled={!selection || isProcessing}
+          >
+            {isProcessing ? <ActivityIndicator color="#fff" /> : <Text style={styles.buttonText}>Confirm</Text>}
+          </Pressable>
+
+          <Pressable style={styles.cancelLink} onPress={resetCheckin} disabled={isProcessing}>
+            <Text style={styles.cancelLinkText}>Not you? Cancel</Text>
+          </Pressable>
+
+          {confirmIssue && !isProcessing && (
+            <View style={styles.retryBox}>
+              <Text style={styles.retryMessage}>{confirmIssue}</Text>
+              <Pressable style={styles.retryButton} onPress={onConfirm}>
+                <Text style={styles.retryButtonText}>Try Again</Text>
+              </Pressable>
+            </View>
+          )}
+        </>
       )}
 
       {feedbackOverlay}
@@ -438,6 +477,14 @@ const styles = StyleSheet.create({
   title: { color: '#fff', fontSize: 22, fontWeight: '700', marginBottom: 8, textAlign: 'center' },
   titleDark: { color: '#1d1d1f' },
   subtitleDark: { color: '#777', fontSize: 15, marginBottom: 8 },
+  netStatusDot: { position: 'absolute', top: 16, right: 16 },
+  netDot: { width: 12, height: 12, borderRadius: 6 },
+  netDotOnline: { backgroundColor: '#7cb987' },
+  netDotOffline: { backgroundColor: '#c0392b' },
+  retryBox: { marginTop: 20, alignItems: 'center' },
+  retryMessage: { color: '#c0392b', fontSize: 13, textAlign: 'center', marginBottom: 10, maxWidth: 280 },
+  retryButton: { backgroundColor: '#1d1d1f', borderRadius: 14, paddingVertical: 12, paddingHorizontal: 32 },
+  retryButtonText: { color: '#fff', fontSize: 15, fontWeight: '700' },
   confirmButton: {
     marginTop: 32,
     backgroundColor: '#2e7d32',
