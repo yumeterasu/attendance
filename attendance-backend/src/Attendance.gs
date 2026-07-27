@@ -133,6 +133,9 @@ function handleKioskSyncOffline_(params) {
 
   var found = findEmployeeByKioskPin_(params.pin);
   if (!found) return fail_('not_found', 'Code not recognized');
+  if (found.row.Active !== true && found.row.Active !== 'TRUE') {
+    return fail_('inactive', 'Employee is not active');
+  }
 
   var timestamp = new Date(params.timestamp);
   if (isNaN(timestamp.getTime())) return fail_('bad_request', 'timestamp did not parse');

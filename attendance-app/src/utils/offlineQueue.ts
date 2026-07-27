@@ -58,7 +58,13 @@ export async function flushQueue(): Promise<{ synced: number; remaining: number 
   while (queue.length > 0) {
     const next = queue[0];
     const res = await kioskSyncOffline(next.pin, next.type, next.ot, next.timestamp, next.clientId);
-    if (!res.success) break; // still offline or server issue -- stop, keep the rest queued in order
+
+    if (!res.success) {
+      if (res.error === 'network_error' || res.error === 'timeout') break; // still offline or server issue -- stop, keep the rest queued in order
+      queue.shift(); // permanent rejection (e.g. employee deactivated since) -- will never succeed, drop it instead of blocking everyone behind it
+      await writeQueue(queue);
+      continue;
+    }
 
     queue.shift();
     synced++;
