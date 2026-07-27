@@ -70,3 +70,17 @@ export function verifyKioskExitPin(pin: string) {
   return postAction<{}>('verifyKioskExitPin', { pin });
 }
 
+export function kioskDirectory() {
+  return postAction<{ employees: { pin: string; name: string }[] }>('kioskDirectory', {});
+}
+
+export function kioskSyncOffline(pin: string, type: 'IN' | 'OUT', ot: boolean, timestamp: string, clientId: string) {
+  return postAction<{ alreadySynced: boolean; name: string }>('kioskSyncOffline', {
+    pin,
+    type,
+    ot: ot ? 'true' : undefined,
+    timestamp,
+    clientId
+  });
+}
+

@@ -5,7 +5,10 @@ import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../navigation/types';
 import { kioskCheckin, kioskLookupPin, kioskMyAttendance, verifyKioskExitPin } from '../api/client';
 import { useNetworkStatus } from '../hooks/useNetworkStatus';
+import { useOfflineSync } from '../hooks/useOfflineSync';
 import { useSession } from '../context/SessionContext';
+import { lookupPinLocally } from '../utils/employeeDirectory';
+import { enqueueCheckin } from '../utils/offlineQueue';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Kiosk'>;
 
@@ -25,7 +28,7 @@ const MONTH_NAMES = [
 ];
 
 type Feedback =
-  | { kind: 'success'; type: 'IN' | 'OUT'; name: string; timestamp: string; late?: boolean; ot?: boolean }
+  | { kind: 'success'; type: 'IN' | 'OUT'; name: string; timestamp: string; late?: boolean; ot?: boolean; queued?: boolean }
   | { kind: 'error'; message: string };
 
 type ScheduleData = {
@@ -111,6 +114,7 @@ function Dots({
 
 export default function KioskScreen({ navigation }: Props) {
   const isConnected = useNetworkStatus();
+  useOfflineSync(isConnected);
   const { setKioskLocked } = useSession();
   const [mode, setMode] = useState<Mode>('checkin');
 
@@ -121,11 +125,11 @@ export default function KioskScreen({ navigation }: Props) {
   const [isProcessing, setIsProcessing] = useState(false);
   const [feedback, setFeedback] = useState<Feedback | null>(null);
   const feedbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // Set only for a retriable failure (timeout / no connection) -- unlike
-  // a wrong-PIN rejection, the pin/name/selection stay put so "Try Again"
-  // can resubmit without the employee re-entering anything.
+  // Set only for a lookup that fails for a retriable reason AND has no local
+  // fallback either -- pin stays put so "Try Again" can resubmit it as-is.
+  // Confirm has no equivalent: a connectivity failure there gets queued
+  // offline automatically instead of asking the employee to retry (see queueOffline).
   const [lookupIssue, setLookupIssue] = useState<string | null>(null);
-  const [confirmIssue, setConfirmIssue] = useState<string | null>(null);
 
   const [exitPin, setExitPin] = useState('');
   const [exitError, setExitError] = useState(false);
@@ -145,7 +149,6 @@ export default function KioskScreen({ navigation }: Props) {
     setLookupName(null);
     setSelection(null);
     setLookupIssue(null);
-    setConfirmIssue(null);
   };
 
   // Shared kiosk: if someone looks themselves up and walks away without
@@ -156,10 +159,22 @@ export default function KioskScreen({ navigation }: Props) {
     return () => clearTimeout(timer);
   }, [lookupName]);
 
+  // Falls back to the on-device PIN->Name copy (see employeeDirectory) when
+  // there's truly no way to reach the server -- returns whether a name was found.
+  const tryLocalLookup = async (value: string): Promise<boolean> => {
+    const localName = await lookupPinLocally(value);
+    if (!localName) return false;
+    setLookupName(localName);
+    return true;
+  };
+
   const lookupPin = async (value: string) => {
     if (!isConnected) {
-      setLookupIssue('No internet connection.');
-      return; // keep the pin as-is so Try Again can resubmit it directly
+      if (await tryLocalLookup(value)) return;
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      showFeedback({ kind: 'error', message: "Code not recognized offline. Connect to the internet and try again." });
+      setPin('');
+      return;
     }
 
     setLookupIssue(null);
@@ -170,6 +185,8 @@ export default function KioskScreen({ navigation }: Props) {
     if (res.success) {
       setLookupName(res.name);
     } else if (res.error === 'timeout' || res.error === 'network_error') {
+      // Connection dropped mid-request -- try the local copy before giving up.
+      if (await tryLocalLookup(value)) return;
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       setLookupIssue(res.message);
     } else {
@@ -190,24 +207,43 @@ export default function KioskScreen({ navigation }: Props) {
     if (next.length === PIN_LENGTH) lookupPin(next);
   };
 
+  // Saves locally and treats it as a success from the employee's point of
+  // view -- useOfflineSync drains this queue automatically once the
+  // connection comes back, no separate "sync now" step for anyone to remember.
+  const queueOffline = async (type: 'IN' | 'OUT', ot: boolean) => {
+    const name = lookupName ?? '';
+    await enqueueCheckin(pin, type, ot);
+    resetCheckin();
+    await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    showFeedback({ kind: 'success', type, name, timestamp: new Date().toISOString(), queued: true });
+  };
+
   const onConfirm = async () => {
     if (!selection) return;
     const type = selection === 'IN' ? 'IN' : 'OUT';
     const ot = selection === 'OUT_OT';
 
-    setConfirmIssue(null);
+    if (!isConnected) {
+      setIsProcessing(true);
+      await queueOffline(type, ot);
+      setIsProcessing(false);
+      return;
+    }
+
     setIsProcessing(true);
     const res = await kioskCheckin(pin, type, ot);
-    setIsProcessing(false);
 
     if (res.success) {
+      setIsProcessing(false);
       resetCheckin();
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       showFeedback({ kind: 'success', type: res.type, name: res.name, timestamp: res.timestamp, late: res.late, ot: res.ot });
     } else if (res.error === 'timeout' || res.error === 'network_error') {
-      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      setConfirmIssue(res.message);
+      // Connection dropped mid-request -- queue it rather than making them retry manually.
+      await queueOffline(type, ot);
+      setIsProcessing(false);
     } else {
+      setIsProcessing(false);
       resetCheckin();
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       showFeedback({ kind: 'error', message: res.message });
@@ -361,6 +397,7 @@ export default function KioskScreen({ navigation }: Props) {
           <Text style={styles.feedbackTime}>{new Date(feedback.timestamp).toLocaleTimeString()}</Text>
           {feedback.late && <Text style={styles.feedbackLate}>Late</Text>}
           {feedback.ot && <Text style={styles.feedbackLate}>OT</Text>}
+          {feedback.queued && <Text style={styles.feedbackLate}>Saved offline — will sync automatically</Text>}
         </View>
       )}
       {feedback && feedback.kind === 'error' && (
@@ -446,15 +483,6 @@ export default function KioskScreen({ navigation }: Props) {
           <Pressable style={styles.cancelLink} onPress={resetCheckin} disabled={isProcessing}>
             <Text style={styles.cancelLinkText}>Not you? Cancel</Text>
           </Pressable>
-
-          {confirmIssue && !isProcessing && (
-            <View style={styles.retryBox}>
-              <Text style={styles.retryMessage}>{confirmIssue}</Text>
-              <Pressable style={styles.retryButton} onPress={onConfirm}>
-                <Text style={styles.retryButtonText}>Try Again</Text>
-              </Pressable>
-            </View>
-          )}
         </>
       )}
 

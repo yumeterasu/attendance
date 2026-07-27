@@ -1,10 +1,11 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { View, Text, TextInput, Pressable, StyleSheet, ActivityIndicator, ScrollView } from 'react-native';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../navigation/types';
 import { adminResetCode } from '../api/client';
 import { useSession } from '../context/SessionContext';
 import { AttemptEntry, clearAttemptLog, getAttemptLog } from '../utils/attemptLog';
+import { getQueueLength } from '../utils/offlineQueue';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Admin'>;
 
@@ -29,6 +30,11 @@ export default function AdminScreen({ navigation }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [issuedCode, setIssuedCode] = useState<{ employeeId: string; setupCode: string } | null>(null);
   const [attemptLog, setAttemptLog] = useState<AttemptEntry[] | null>(null);
+  const [pendingSyncCount, setPendingSyncCount] = useState<number | null>(null);
+
+  useEffect(() => {
+    getQueueLength().then(setPendingSyncCount);
+  }, []);
 
   if (!session) return null;
 
@@ -104,6 +110,13 @@ export default function AdminScreen({ navigation }: Props) {
       <View style={styles.divider} />
 
       <Text style={styles.sectionTitle}>Connection Log</Text>
+      {pendingSyncCount !== null && pendingSyncCount > 0 && (
+        <View style={styles.pendingSyncBadge}>
+          <Text style={styles.pendingSyncText}>
+            {pendingSyncCount} check-in{pendingSyncCount === 1 ? '' : 's'} recorded offline, waiting to sync
+          </Text>
+        </View>
+      )}
       <Text style={styles.kioskHint}>
         Every kiosk PIN attempt made on this device, including ones that never reached the server -- useful for
         pinpointing exactly when and why a check-in got stuck.
@@ -161,6 +174,13 @@ const styles = StyleSheet.create({
   buttonText: { color: '#fff', fontSize: 16, fontWeight: '600' },
   divider: { height: 1, backgroundColor: '#eee', marginVertical: 32 },
   kioskHint: { fontSize: 13, color: '#777', marginBottom: 16, lineHeight: 18 },
+  pendingSyncBadge: {
+    backgroundColor: '#fff3e0',
+    borderRadius: 8,
+    padding: 10,
+    marginBottom: 12
+  },
+  pendingSyncText: { color: '#e65100', fontSize: 13, fontWeight: '600', textAlign: 'center' },
   codeCard: {
     backgroundColor: '#e8f5e9',
     borderRadius: 12,
