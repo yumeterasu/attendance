@@ -14,6 +14,10 @@ function doPost(e) {
       return handleKioskLookupPin_(params);
     case 'kioskMyAttendance':
       return handleKioskMyAttendance_(params);
+    case 'kioskDirectory':
+      return handleKioskDirectory_(params);
+    case 'kioskSyncOffline':
+      return handleKioskSyncOffline_(params);
     case 'verifyKioskExitPin':
       return handleVerifyKioskExitPin_(params);
     case 'adminResetCode':

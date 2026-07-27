@@ -103,6 +103,47 @@ function handleKioskLookupPin_(params) {
 }
 
 /**
+ * Full PIN->Name directory of active employees, for the kiosk app to cache
+ * on-device so PIN lookup keeps working even with zero internet. Refreshed
+ * by the app whenever it does have a connection (see the app's
+ * employeeDirectory util) -- adding/renaming/deactivating someone just
+ * takes effect on the next refresh, no app rebuild involved.
+ */
+function handleKioskDirectory_(params) {
+  if (!checkApiKey_(params.apiKey)) return fail_('unauthorized', 'Invalid API key');
+
+  var employees = getAllEmployees_()
+    .filter(function (emp) { return isTrue_(emp.Active) && emp.KioskPIN; })
+    .map(function (emp) { return { pin: pad4_(emp.KioskPIN), name: emp.Name }; });
+
+  return ok_({ employees: employees });
+}
+
+/**
+ * Syncs one kiosk check-in/out that was queued locally while the tablet had
+ * no connection. See recordOfflineSyncedAttendance_ for the idempotency
+ * (clientId) and backdated-timestamp handling.
+ */
+function handleKioskSyncOffline_(params) {
+  if (!checkApiKey_(params.apiKey)) return fail_('unauthorized', 'Invalid API key');
+  if (!params.pin) return fail_('bad_request', 'pin is required');
+  if (params.type !== 'IN' && params.type !== 'OUT') return fail_('bad_request', 'type must be IN or OUT');
+  if (!params.clientId) return fail_('bad_request', 'clientId is required');
+  if (!params.timestamp) return fail_('bad_request', 'timestamp is required');
+
+  var found = findEmployeeByKioskPin_(params.pin);
+  if (!found) return fail_('not_found', 'Code not recognized');
+
+  var timestamp = new Date(params.timestamp);
+  if (isNaN(timestamp.getTime())) return fail_('bad_request', 'timestamp did not parse');
+
+  var result = recordOfflineSyncedAttendance_(
+    found.row.EmployeeID, params.type, timestamp, params.ot === 'true', params.clientId
+  );
+  return ok_(result);
+}
+
+/**
  * Lets an employee check their own month's check-in/out times right from the
  * kiosk, by re-entering their same 4-digit KioskPIN -- no admin session
  * needed. Defaults to the current year/month if not given.
@@ -371,6 +412,108 @@ function recordBackdatedAttendance_(employeeId, type, timestamp, ot) {
   });
 
   return {
+    name: emp.Name,
+    department: emp.Department,
+    shift: shiftForRow,
+    late: late,
+    durationMinutes: durationMinutes,
+    otMinutes: otMinutesForRow,
+    otQuarters: otQuartersForRow
+  };
+}
+
+/** Finds an AttendanceLog row by its client-generated ClientId (full-sheet search). Returns { timestamp } or null. */
+function findLogEntryByClientId_(clientId) {
+  var sheet = getSheet_('AttendanceLog');
+  var values = sheet.getDataRange().getValues();
+  var headers = values[0];
+  var clientIdCol = headers.indexOf('ClientId');
+  if (clientIdCol === -1) return null;
+  var tsCol = headers.indexOf('Timestamp');
+
+  for (var i = 1; i < values.length; i++) {
+    if (String(values[i][clientIdCol]) === String(clientId)) {
+      return { timestamp: new Date(values[i][tsCol]) };
+    }
+  }
+  return null;
+}
+
+/**
+ * Records a kiosk check-in/out that happened while the tablet was offline,
+ * using the ORIGINAL timestamp captured on the device at the moment of the
+ * tap (not the time the sync request eventually reaches the server) --
+ * Shift/Late/Duration/OT are computed the same way a live check-in would,
+ * just backdated to that real moment.
+ *
+ * Idempotent by clientId: the app generates one id per queued attempt and
+ * keeps retrying the same id until the server confirms it, so a sync that
+ * "succeeded but the response got lost" and gets retried never creates a
+ * second row -- this function just returns the already-recorded result
+ * instead of writing again.
+ */
+function recordOfflineSyncedAttendance_(employeeId, type, timestamp, ot, clientId) {
+  ensureColumns_('AttendanceLog', ['ClientId']);
+
+  var existing = findLogEntryByClientId_(clientId);
+  if (existing) {
+    var found = findEmployeeRow_(employeeId);
+    return { alreadySynced: true, name: found ? found.row.Name : employeeId };
+  }
+
+  var found = findEmployeeRow_(employeeId);
+  if (!found) throw new Error('Employee not found: ' + employeeId);
+  var emp = found.row;
+
+  var shiftForRow = '';
+  var late = '';
+  var durationMinutes = '';
+  var otForRow = '';
+  var otMinutesForRow = '';
+  var otQuartersForRow = '';
+
+  if (type === 'IN') {
+    var scheduledShift = getScheduledShift_(employeeId, timestamp);
+    if (scheduledShift) {
+      shiftForRow = scheduledShift;
+      late = isLate_(scheduledShift, timestamp);
+    }
+  } else {
+    var matchingIn = findLogEntryForDate_(employeeId, 'IN', timestamp);
+    if (matchingIn) {
+      durationMinutes = Math.round((timestamp.getTime() - matchingIn.timestamp.getTime()) / 60000);
+    }
+
+    var todayShift = matchingIn ? matchingIn.shift : '';
+    if (emp.Department === 'Japanese') {
+      var capMinutes = Number(emp.OTMaxMinutes) || JP_OT_CAP_MINUTES;
+      otMinutesForRow = todayShift ? computeJapaneseOtMinutes_(todayShift, timestamp, capMinutes) : 0;
+      otForRow = otMinutesForRow > 0;
+    } else {
+      otQuartersForRow = ot && todayShift ? computeThaiOtQuarters_(todayShift, timestamp) : 0;
+      otForRow = otQuartersForRow > 0;
+    }
+  }
+
+  appendRow_('AttendanceLog', {
+    Timestamp: timestamp,
+    EmployeeID: emp.EmployeeID,
+    Name: emp.Name,
+    Department: emp.Department,
+    Type: type,
+    Method: 'KioskOfflineSync',
+    RawScanValue: '',
+    ClientId: clientId,
+    DurationMinutes: durationMinutes,
+    Shift: shiftForRow,
+    Late: late,
+    OT: otForRow,
+    OTMinutes: otMinutesForRow,
+    OTQuarters: otQuartersForRow
+  });
+
+  return {
+    alreadySynced: false,
     name: emp.Name,
     department: emp.Department,
     shift: shiftForRow,
