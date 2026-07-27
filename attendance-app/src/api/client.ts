@@ -3,7 +3,7 @@ import { logAttempt } from '../utils/attemptLog';
 const API_URL = process.env.EXPO_PUBLIC_API_URL ?? '';
 const API_KEY = process.env.EXPO_PUBLIC_API_KEY ?? '';
 const REQUEST_TIMEOUT_MS = 15000; // a hung request with no internet route used to wait forever with no feedback
-const KIOSK_TIMEOUT_MS = 5000; // lookup/checkin have a local fallback, so fail fast and let it take over instead of making the employee wait
+const KIOSK_TIMEOUT_MS = 3000; // lookup/checkin have a local fallback, so fail fast and let it take over instead of making the employee wait
 
 export type ApiResult<T> =
   | ({ success: true } & T)
