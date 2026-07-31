@@ -15,20 +15,16 @@
       flex: 1; padding: 10px 4px; border: 2px solid #ccc; border-radius: 6px;
       background: #f5f5f5; cursor: pointer; text-align: center; font-size: 13px; user-select: none;
     }
-    .dropdown-wrap { position: relative; }
-    .dropdown-display {
-      width: 100%; padding: 7px 8px; box-sizing: border-box; font-size: 14px;
-      border: 1px solid #ccc; border-radius: 4px; background: #fff; cursor: pointer;
-      color: #999; user-select: none;
+    .employee-box {
+      max-height: 150px; overflow-y: auto; border: 1px solid #ccc; border-radius: 4px; background: #fff;
     }
-    .dropdown-display.has-value { color: #202124; }
-    .dropdown-list {
-      position: absolute; top: 100%; left: 0; right: 0; z-index: 10; margin-top: 2px;
-      max-height: 170px; overflow-y: auto; background: #fff; border: 1px solid #ccc;
-      border-radius: 4px; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
+    .employee-msg { padding: 8px; color: #999; font-size: 13px; }
+    .employee-item {
+      padding: 8px; cursor: pointer; font-size: 14px; border-bottom: 1px solid #eee; user-select: none;
     }
-    .dropdown-item { padding: 8px; cursor: pointer; font-size: 14px; }
-    .dropdown-item:hover { background: #eef2ff; }
+    .employee-item:last-child { border-bottom: none; }
+    .employee-item:hover { background: #eef2ff; }
+    .employee-item.selected { background: #c8e6c9; font-weight: bold; }
     #submitBtn {
       margin-top: 20px; width: 100%; padding: 11px; font-size: 14px;
       background: #4285f4; color: white; border: none; border-radius: 6px; cursor: pointer;
@@ -39,9 +35,8 @@
 </head>
 <body>
   <label>Employee</label>
-  <div class="dropdown-wrap" id="employeeWrap">
-    <div class="dropdown-display" id="employeeDisplay">Select employee...</div>
-    <div class="dropdown-list" id="employeeList" style="display: none;"></div>
+  <div class="employee-box" id="employeeBox">
+    <div class="employee-msg">Loading employees...</div>
   </div>
 
   <label>Type</label>
@@ -90,49 +85,44 @@
     setupTypeButtons();
 
     var selectedEmployeeName = '';
+    var employeeItemEls = [];
 
-    // A plain <select> isn't reliable here -- the browser's native dropdown
-    // popup doesn't consistently open inside Apps Script's sandboxed dialog
-    // iframe. This click-list works the same way the IN/OUT/OUT OT buttons
-    // above already do, so it's proven to work in this exact environment.
+    // A plain <select> and a click-to-open overlay both turned out unreliable
+    // here -- Apps Script's sandboxed dialog iframe doesn't consistently
+    // handle native popups or absolutely-positioned overlays. This list is
+    // always visible (no open/close state, no absolute positioning) so
+    // there's nothing that can fail to show -- just a scrollable list, same
+    // click pattern as the IN/OUT/OUT OT buttons above.
     function loadEmployeeList() {
       google.script.run
         .withSuccessHandler(function (list) {
-          var listEl = document.getElementById('employeeList');
-          var display = document.getElementById('employeeDisplay');
+          var box = document.getElementById('employeeBox');
+          box.innerHTML = '';
           if (!list || !list.length) {
-            display.textContent = 'No active employees found';
+            box.innerHTML = '<div class="employee-msg">No active employees found.</div>';
             return;
           }
           list.forEach(function (emp) {
             var item = document.createElement('div');
-            item.className = 'dropdown-item';
+            item.className = 'employee-item';
             item.textContent = emp.name;
             item.addEventListener('click', function () {
               selectedEmployeeName = emp.name;
-              display.textContent = emp.name;
-              display.classList.add('has-value');
-              listEl.style.display = 'none';
+              employeeItemEls.forEach(function (el) { el.classList.remove('selected'); });
+              item.classList.add('selected');
             });
-            listEl.appendChild(item);
+            box.appendChild(item);
+            employeeItemEls.push(item);
           });
         })
         .withFailureHandler(function (err) {
+          document.getElementById('employeeBox').innerHTML =
+            '<div class="employee-msg">Failed to load employee list.</div>';
           showError('Could not load employee list: ' + (err && err.message ? err.message : err));
         })
         .getEmployeeListForDialog_();
     }
     loadEmployeeList();
-
-    document.getElementById('employeeDisplay').addEventListener('click', function () {
-      var listEl = document.getElementById('employeeList');
-      listEl.style.display = listEl.style.display === 'none' ? 'block' : 'none';
-    });
-    document.addEventListener('click', function (e) {
-      if (!document.getElementById('employeeWrap').contains(e.target)) {
-        document.getElementById('employeeList').style.display = 'none';
-      }
-    });
 
     // Default to today -- most backdated entries are for a recent day, and the
     // native date picker makes it a one-click change if not.
