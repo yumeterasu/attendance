@@ -6,16 +6,29 @@
   <style>
     body { font-family: Arial, sans-serif; font-size: 13px; padding: 4px 8px 12px; color: #202124; }
     label { display: block; margin-top: 14px; margin-bottom: 4px; font-weight: bold; }
-    input[type="text"], input[type="time"], input[type="date"], select {
+    input[type="text"], input[type="time"], input[type="date"] {
       width: 100%; padding: 7px 8px; box-sizing: border-box; font-size: 14px;
       border: 1px solid #ccc; border-radius: 4px; background: #fff; font-family: inherit;
     }
-    select { height: 34px; }
     .type-buttons { display: flex; gap: 8px; }
     .type-btn {
       flex: 1; padding: 10px 4px; border: 2px solid #ccc; border-radius: 6px;
       background: #f5f5f5; cursor: pointer; text-align: center; font-size: 13px; user-select: none;
     }
+    .dropdown-wrap { position: relative; }
+    .dropdown-display {
+      width: 100%; padding: 7px 8px; box-sizing: border-box; font-size: 14px;
+      border: 1px solid #ccc; border-radius: 4px; background: #fff; cursor: pointer;
+      color: #999; user-select: none;
+    }
+    .dropdown-display.has-value { color: #202124; }
+    .dropdown-list {
+      position: absolute; top: 100%; left: 0; right: 0; z-index: 10; margin-top: 2px;
+      max-height: 170px; overflow-y: auto; background: #fff; border: 1px solid #ccc;
+      border-radius: 4px; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
+    }
+    .dropdown-item { padding: 8px; cursor: pointer; font-size: 14px; }
+    .dropdown-item:hover { background: #eef2ff; }
     #submitBtn {
       margin-top: 20px; width: 100%; padding: 11px; font-size: 14px;
       background: #4285f4; color: white; border: none; border-radius: 6px; cursor: pointer;
@@ -25,10 +38,11 @@
   </style>
 </head>
 <body>
-  <label for="employee">Employee</label>
-  <select id="employee">
-    <option value="" disabled selected>Select employee...</option>
-  </select>
+  <label>Employee</label>
+  <div class="dropdown-wrap" id="employeeWrap">
+    <div class="dropdown-display" id="employeeDisplay">Select employee...</div>
+    <div class="dropdown-list" id="employeeList" style="display: none;"></div>
+  </div>
 
   <label>Type</label>
   <div class="type-buttons">
@@ -75,15 +89,32 @@
     }
     setupTypeButtons();
 
+    var selectedEmployeeName = '';
+
+    // A plain <select> isn't reliable here -- the browser's native dropdown
+    // popup doesn't consistently open inside Apps Script's sandboxed dialog
+    // iframe. This click-list works the same way the IN/OUT/OUT OT buttons
+    // above already do, so it's proven to work in this exact environment.
     function loadEmployeeList() {
       google.script.run
         .withSuccessHandler(function (list) {
-          var select = document.getElementById('employee');
-          (list || []).forEach(function (emp) {
-            var opt = document.createElement('option');
-            opt.value = emp.name;
-            opt.textContent = emp.name;
-            select.appendChild(opt);
+          var listEl = document.getElementById('employeeList');
+          var display = document.getElementById('employeeDisplay');
+          if (!list || !list.length) {
+            display.textContent = 'No active employees found';
+            return;
+          }
+          list.forEach(function (emp) {
+            var item = document.createElement('div');
+            item.className = 'dropdown-item';
+            item.textContent = emp.name;
+            item.addEventListener('click', function () {
+              selectedEmployeeName = emp.name;
+              display.textContent = emp.name;
+              display.classList.add('has-value');
+              listEl.style.display = 'none';
+            });
+            listEl.appendChild(item);
           });
         })
         .withFailureHandler(function (err) {
@@ -93,12 +124,22 @@
     }
     loadEmployeeList();
 
+    document.getElementById('employeeDisplay').addEventListener('click', function () {
+      var listEl = document.getElementById('employeeList');
+      listEl.style.display = listEl.style.display === 'none' ? 'block' : 'none';
+    });
+    document.addEventListener('click', function (e) {
+      if (!document.getElementById('employeeWrap').contains(e.target)) {
+        document.getElementById('employeeList').style.display = 'none';
+      }
+    });
+
     // Default to today -- most backdated entries are for a recent day, and the
     // native date picker makes it a one-click change if not.
     document.getElementById('date').valueAsDate = new Date();
 
     function submit(skipWarnings) {
-      var employee = document.getElementById('employee').value;
+      var employee = selectedEmployeeName;
       var dateValue = document.getElementById('date').value; // YYYY-MM-DD
       var time = document.getElementById('time').value;
 
