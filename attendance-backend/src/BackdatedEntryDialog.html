@@ -120,7 +120,7 @@
             '<div class="employee-msg">Failed to load employee list.</div>';
           showError('Could not load employee list: ' + (err && err.message ? err.message : err));
         })
-        .getEmployeeListForDialog_();
+        .getEmployeeListForDialog();
     }
     loadEmployeeList();
 
@@ -149,7 +149,7 @@
           document.getElementById('submitBtn').disabled = false;
           showError(err.message || String(err));
         })
-        .submitBackdatedEntry_({
+        .submitBackdatedEntry({
           employeeQuery: employee,
           type: selectedType,
           year: dateParts[0], month: dateParts[1], day: dateParts[2], time: time,

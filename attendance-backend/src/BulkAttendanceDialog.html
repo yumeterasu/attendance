@@ -158,7 +158,7 @@
           document.getElementById('loadBtn').disabled = false;
           document.getElementById('loadBtn').textContent = 'Load employees scheduled that day';
         })
-        .getScheduledEmployeesForDate_(ds);
+        .getScheduledEmployeesForDate(ds);
     });
 
     document.getElementById('submitBtn').addEventListener('click', function () {
@@ -183,7 +183,7 @@
           document.getElementById('submitBtn').disabled = false;
           showError(err && err.message ? err.message : String(err));
         })
-        .submitBulkAttendance_({
+        .submitBulkAttendance({
           date: ds,
           entries: employees.map(function (emp) {
             return { employeeId: emp.id, status: emp.status, lateMinutes: emp.lateMinutes };

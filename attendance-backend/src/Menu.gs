@@ -155,8 +155,15 @@ function menuAddBackdatedAttendance_() {
   SpreadsheetApp.getUi().showModalDialog(html, 'Add Backdated Check-in/Check-out');
 }
 
-/** Called from BackdatedEntryDialog.html to populate the employee type-ahead list. */
-function getEmployeeListForDialog_() {
+/**
+ * Called from BackdatedEntryDialog.html to populate the employee list.
+ * No trailing underscore -- unlike every other server-side helper in this
+ * project, this one is called directly from google.script.run in an
+ * HtmlService dialog, and Apps Script's client-side shim didn't expose an
+ * underscore-suffixed function name there (threw "is not a function"), even
+ * though the exact same function runs fine when called from anywhere else.
+ */
+function getEmployeeListForDialog() {
   return getAllEmployees_()
     .filter(function (emp) { return isTrue_(emp.Active) && emp.Name; }) // a blank Name would otherwise crash the sort below and hang the dialog on "Loading..." forever
     .map(function (emp) { return { id: emp.EmployeeID, name: String(emp.Name) }; })
@@ -170,8 +177,9 @@ function getEmployeeListForDialog_() {
  * anything that would normally need a Yes/No confirm (future date,
  * already-has-an-entry-that-day) -- the dialog shows those as confirm()
  * boxes client-side and resubmits with skipWarnings:true if all are accepted.
+ * No trailing underscore -- see getEmployeeListForDialog's comment above.
  */
-function submitBackdatedEntry_(payload) {
+function submitBackdatedEntry(payload) {
   var employee = findEmployeeByNameOrId_(String(payload.employeeQuery || '').trim());
   if (!employee) {
     return { ok: false, error: 'No employee found matching "' + payload.employeeQuery + '".' };
@@ -244,8 +252,10 @@ function menuBulkMarkAttendance_() {
  * Called from BulkAttendanceDialog.html. Returns every active employee
  * scheduled to work the given date, with their shift and whether they
  * already have an IN and/or OUT recorded that day.
+ * No trailing underscore -- see getEmployeeListForDialog's comment in this
+ * file for why (google.script.run in an HtmlService dialog didn't expose it).
  */
-function getScheduledEmployeesForDate_(dateStr) {
+function getScheduledEmployeesForDate(dateStr) {
   var parts = dateStr.split('-'); // YYYY-MM-DD
   var date = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
   var activeEmployees = getAllEmployees_().filter(function (emp) { return isTrue_(emp.Active); });
@@ -274,7 +284,7 @@ function getScheduledEmployeesForDate_(dateStr) {
  * whichever of IN/OUT that employee doesn't already have that day. Absent
  * employees are skipped entirely (no record = didn't work that day).
  */
-function submitBulkAttendance_(payload) {
+function submitBulkAttendance(payload) {
   var dateParts = payload.date.split('-');
   var year = Number(dateParts[0]), month = Number(dateParts[1]), day = Number(dateParts[2]);
   var date = new Date(year, month - 1, day);
