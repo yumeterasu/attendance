@@ -222,93 +222,109 @@ function menuAddBackdatedAttendance_() {
 /**
  * For days the kiosk was completely unreachable (internet outage) -- lets an
  * admin bulk-record IN/OUT for everyone scheduled that day in one pass,
- * defaulting to "on time, no OT" for each person, with per-person overrides
+ * defaulting to "on time, no OT" for each person, with text-based overrides
  * for late arrival or absence. Never overwrites an IN/OUT that's already
  * recorded for someone that day (e.g. they clocked in before the outage
  * started) -- only fills in what's missing.
+ *
+ * Uses a chain of native ui.prompt()/ui.alert() calls rather than an
+ * HtmlService dialog -- see menuAddBackdatedAttendance_'s comment for why
+ * (google.script.run inside a dialog only worked for the file's owner, not
+ * other Editors). A per-person button list isn't possible with plain
+ * prompts, so overrides are entered as comma-separated names/IDs instead of
+ * clicked -- everyone scheduled defaults to present/on-time unless named in
+ * one of the two override prompts.
  */
 function menuBulkMarkAttendance_() {
-  var html = HtmlService.createHtmlOutputFromFile('BulkAttendanceDialog')
-    .setWidth(480)
-    .setHeight(620);
-  SpreadsheetApp.getUi().showModalDialog(html, 'Bulk Mark Attendance for a Day');
-}
+  var ui = SpreadsheetApp.getUi();
+  var title = 'Bulk Mark Attendance for a Day';
 
-/**
- * Called from BulkAttendanceDialog.html. Returns every active employee
- * scheduled to work the given date, with their shift and whether they
- * already have an IN and/or OUT recorded that day.
- * No trailing underscore -- see getEmployeeListForDialog's comment in this
- * file for why (google.script.run in an HtmlService dialog didn't expose it).
- */
-function getScheduledEmployeesForDate(dateStr) {
-  var parts = dateStr.split('-'); // YYYY-MM-DD
-  var date = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
-  var activeEmployees = getAllEmployees_().filter(function (emp) { return isTrue_(emp.Active); });
-
-  var rows = [];
-  activeEmployees.forEach(function (emp) {
-    var shift = getScheduledShift_(emp.EmployeeID, date);
-    if (!shift) return;
-    rows.push({
-      id: emp.EmployeeID,
-      name: emp.Name,
-      department: emp.Department,
-      shift: shift,
-      hasIn: !!findLogEntryForDate_(emp.EmployeeID, 'IN', date),
-      hasOut: !!findLogEntryForDate_(emp.EmployeeID, 'OUT', date)
-    });
-  });
-  return rows;
-}
-
-/**
- * Called from BulkAttendanceDialog.html. payload: { date: 'YYYY-MM-DD',
- * entries: [{ employeeId, status: 'present'|'late'|'absent', lateMinutes }] }.
- * For present/late, adds IN at shift-start (+ lateMinutes if late) and OUT
- * at shift-end -- exactly on time, no OT ever assumed -- but only for
- * whichever of IN/OUT that employee doesn't already have that day. Absent
- * employees are skipped entirely (no record = didn't work that day).
- */
-function submitBulkAttendance(payload) {
-  var dateParts = payload.date.split('-');
-  var year = Number(dateParts[0]), month = Number(dateParts[1]), day = Number(dateParts[2]);
+  var dateResp = ui.prompt(title, 'Date (DD/MM/YYYY), e.g. 24/07/2026:', ui.ButtonSet.OK_CANCEL);
+  if (dateResp.getSelectedButton() !== ui.Button.OK) return;
+  var dateParts = dateResp.getResponseText().trim().split('/');
+  if (dateParts.length !== 3) { ui.alert('Enter the date as DD/MM/YYYY.'); return; }
+  var day = Number(dateParts[0]), month = Number(dateParts[1]), year = Number(dateParts[2]);
   var date = new Date(year, month - 1, day);
+  if (isNaN(date.getTime())) { ui.alert('That date did not parse -- double check the values.'); return; }
 
-  var added = 0, skippedExisting = 0, absent = 0, errors = [];
+  var scheduled = getAllEmployees_()
+    .filter(function (emp) { return isTrue_(emp.Active); })
+    .map(function (emp) { return { employee: emp, shift: getScheduledShift_(emp.EmployeeID, date) }; })
+    .filter(function (s) { return s.shift; });
 
-  payload.entries.forEach(function (entry) {
-    if (entry.status === 'absent') { absent++; return; }
+  if (scheduled.length === 0) {
+    ui.alert('No active, scheduled employees found for that date. Make sure the Schedule sheet for that month is filled in.');
+    return;
+  }
 
-    var employee = findEmployeeByNameOrId_(entry.employeeId);
-    if (!employee) { errors.push(entry.employeeId + ': not found'); return; }
+  var namesList = scheduled.map(function (s) { return s.employee.Name; }).join(', ');
+  var absentResp = ui.prompt(
+    title,
+    'Scheduled that day (' + scheduled.length + '): ' + namesList +
+    '\n\nWho was ABSENT? (comma-separated names/IDs, or leave blank for none):',
+    ui.ButtonSet.OK_CANCEL
+  );
+  if (absentResp.getSelectedButton() !== ui.Button.OK) return;
+  var absentNames = absentResp.getResponseText().split(',')
+    .map(function (s) { return s.trim().toUpperCase(); })
+    .filter(String);
 
-    var shift = getScheduledShift_(employee.EmployeeID, date);
-    var startMatch = shift ? shift.match(/(\d{1,2}):(\d{2})/) : null;
-    var endMatch = shift ? getShiftEndTime_(shift) : null;
-    if (!startMatch || !endMatch) { errors.push(employee.Name + ': could not read shift start/end time'); return; }
+  var lateResp = ui.prompt(
+    title,
+    'Who was LATE, and by how many minutes? (format: Name:30, Name2:15 -- or leave blank for none):',
+    ui.ButtonSet.OK_CANCEL
+  );
+  if (lateResp.getSelectedButton() !== ui.Button.OK) return;
+  var lateMinutesByName = {};
+  lateResp.getResponseText().split(',').forEach(function (part) {
+    var pieces = part.split(':');
+    if (pieces.length !== 2) return;
+    var name = pieces[0].trim().toUpperCase();
+    var minutes = Number(pieces[1].trim());
+    if (name && minutes) lateMinutesByName[name] = minutes;
+  });
 
-    var lateMinutes = entry.status === 'late' ? (Number(entry.lateMinutes) || 0) : 0;
+  var added = 0, skippedExisting = 0, absentCount = 0, errors = [];
+
+  scheduled.forEach(function (s) {
+    var emp = s.employee;
+    var key = emp.Name.toUpperCase();
+    var idKey = String(emp.EmployeeID).toUpperCase();
+
+    if (absentNames.indexOf(key) !== -1 || absentNames.indexOf(idKey) !== -1) {
+      absentCount++;
+      return;
+    }
+
+    var startMatch = s.shift.match(/(\d{1,2}):(\d{2})/);
+    var endMatch = getShiftEndTime_(s.shift);
+    if (!startMatch || !endMatch) { errors.push(emp.Name + ': could not read shift start/end time'); return; }
+
+    var lateMinutes = lateMinutesByName[key] || lateMinutesByName[idKey] || 0;
     var inTime = new Date(year, month - 1, day, Number(startMatch[1]), Number(startMatch[2]), 0);
     inTime = new Date(inTime.getTime() + lateMinutes * 60000);
     var outTime = new Date(year, month - 1, day, endMatch.hour, endMatch.minute, 0);
 
-    if (findLogEntryForDate_(employee.EmployeeID, 'IN', date)) {
+    if (findLogEntryForDate_(emp.EmployeeID, 'IN', date)) {
       skippedExisting++;
     } else {
-      recordBackdatedAttendance_(employee.EmployeeID, 'IN', inTime, false);
+      recordBackdatedAttendance_(emp.EmployeeID, 'IN', inTime, false);
       added++;
     }
 
-    if (findLogEntryForDate_(employee.EmployeeID, 'OUT', date)) {
+    if (findLogEntryForDate_(emp.EmployeeID, 'OUT', date)) {
       skippedExisting++;
     } else {
-      recordBackdatedAttendance_(employee.EmployeeID, 'OUT', outTime, false);
+      recordBackdatedAttendance_(emp.EmployeeID, 'OUT', outTime, false);
       added++;
     }
   });
 
-  return { added: added, skippedExisting: skippedExisting, absent: absent, errors: errors };
+  var msg = 'Added ' + added + ' record(s).\n' +
+    'Skipped ' + skippedExisting + ' (already recorded).\n' +
+    'Marked absent (skipped): ' + absentCount + '.';
+  if (errors.length) msg += '\n\nErrors:\n' + errors.join('\n');
+  ui.alert('Done', msg, ui.ButtonSet.OK);
 }
 
 function menuGenerateKioskPins_() {
