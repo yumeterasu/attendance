@@ -6,19 +6,16 @@
   <style>
     body { font-family: Arial, sans-serif; font-size: 13px; padding: 4px 8px 12px; color: #202124; }
     label { display: block; margin-top: 14px; margin-bottom: 4px; font-weight: bold; }
-    input[type="text"], input[type="time"] {
+    input[type="text"], input[type="time"], input[type="date"], select {
       width: 100%; padding: 7px 8px; box-sizing: border-box; font-size: 14px;
-      border: 1px solid #ccc; border-radius: 4px;
+      border: 1px solid #ccc; border-radius: 4px; background: #fff; font-family: inherit;
     }
+    select { height: 34px; }
     .type-buttons { display: flex; gap: 8px; }
     .type-btn {
       flex: 1; padding: 10px 4px; border: 2px solid #ccc; border-radius: 6px;
       background: #f5f5f5; cursor: pointer; text-align: center; font-size: 13px; user-select: none;
     }
-    .date-row { display: flex; gap: 8px; }
-    .date-row input { text-align: center; }
-    #day, #month { width: 60px; flex: none; }
-    #year { width: 80px; flex: none; }
     #submitBtn {
       margin-top: 20px; width: 100%; padding: 11px; font-size: 14px;
       background: #4285f4; color: white; border: none; border-radius: 6px; cursor: pointer;
@@ -29,8 +26,9 @@
 </head>
 <body>
   <label for="employee">Employee</label>
-  <input type="text" id="employee" list="employeeList" placeholder="Type a name...">
-  <datalist id="employeeList"></datalist>
+  <select id="employee">
+    <option value="" disabled selected>Select employee...</option>
+  </select>
 
   <label>Type</label>
   <div class="type-buttons">
@@ -39,12 +37,8 @@
     <div class="type-btn outot" data-type="OUT_OT">OUT OT</div>
   </div>
 
-  <label>Date (DD / MM / YYYY)</label>
-  <div class="date-row">
-    <input type="text" id="day" placeholder="DD" maxlength="2" inputmode="numeric">
-    <input type="text" id="month" placeholder="MM" maxlength="2" inputmode="numeric">
-    <input type="text" id="year" placeholder="YYYY" maxlength="4" inputmode="numeric">
-  </div>
+  <label for="date">Date</label>
+  <input type="date" id="date">
 
   <label for="time">Time (24-hour)</label>
   <input type="time" id="time">
@@ -84,11 +78,12 @@
     function loadEmployeeList() {
       google.script.run
         .withSuccessHandler(function (list) {
-          var dl = document.getElementById('employeeList');
+          var select = document.getElementById('employee');
           (list || []).forEach(function (emp) {
             var opt = document.createElement('option');
             opt.value = emp.name;
-            dl.appendChild(opt);
+            opt.textContent = emp.name;
+            select.appendChild(opt);
           });
         })
         .withFailureHandler(function (err) {
@@ -98,17 +93,21 @@
     }
     loadEmployeeList();
 
+    // Default to today -- most backdated entries are for a recent day, and the
+    // native date picker makes it a one-click change if not.
+    document.getElementById('date').valueAsDate = new Date();
+
     function submit(skipWarnings) {
-      var employee = document.getElementById('employee').value.trim();
-      var day = document.getElementById('day').value.trim();
-      var month = document.getElementById('month').value.trim();
-      var year = document.getElementById('year').value.trim();
+      var employee = document.getElementById('employee').value;
+      var dateValue = document.getElementById('date').value; // YYYY-MM-DD
       var time = document.getElementById('time').value;
 
       if (!employee) { showError('Pick an employee.'); return; }
       if (!selectedType) { showError('Pick IN, OUT, or OUT OT.'); return; }
-      if (!day || !month || !year) { showError('Enter the full date.'); return; }
+      if (!dateValue) { showError('Pick a date.'); return; }
       if (!time) { showError('Enter the time.'); return; }
+
+      var dateParts = dateValue.split('-'); // [YYYY, MM, DD]
 
       showError('');
       document.getElementById('submitBtn').disabled = true;
@@ -122,7 +121,7 @@
         .submitBackdatedEntry_({
           employeeQuery: employee,
           type: selectedType,
-          day: day, month: month, year: year, time: time,
+          year: dateParts[0], month: dateParts[1], day: dateParts[2], time: time,
           skipWarnings: !!skipWarnings
         });
     }

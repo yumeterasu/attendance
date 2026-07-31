@@ -145,8 +145,8 @@ function menuRecomputeLateOtAllMonths_() {
  * Backfills a missed IN or OUT (e.g. someone forgot to tap the kiosk) with
  * the same Shift/Late/Duration/OT computation a live check-in would use.
  * Shows an HTML dialog (BackdatedEntryDialog.html) instead of a chain of
- * prompts -- employee has type-ahead suggestions, IN/OUT/OUT OT are buttons,
- * and the date is 3 separate DD/MM/YYYY fields, no format guessing.
+ * prompts -- employee is a dropdown, IN/OUT/OUT OT are buttons, and the date
+ * is a native date picker, no typing/format guessing required.
  */
 function menuAddBackdatedAttendance_() {
   var html = HtmlService.createHtmlOutputFromFile('BackdatedEntryDialog')
