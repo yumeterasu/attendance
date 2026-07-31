@@ -144,79 +144,65 @@ function menuRecomputeLateOtAllMonths_() {
 /**
  * Backfills a missed IN or OUT (e.g. someone forgot to tap the kiosk) with
  * the same Shift/Late/Duration/OT computation a live check-in would use.
- * Shows an HTML dialog (BackdatedEntryDialog.html) instead of a chain of
- * prompts -- employee is a dropdown, IN/OUT/OUT OT are buttons, and the date
- * is a native date picker, no typing/format guessing required.
+ * Uses a chain of native ui.prompt()/ui.alert() calls rather than an
+ * HtmlService dialog -- an earlier version used a dialog with a dropdown and
+ * a date picker, but google.script.run inside that dialog only worked for
+ * the file's owner, not for other Editors (Apps Script couldn't complete the
+ * authorization flow for them there). Plain prompts run through Sheets' own
+ * UI directly, no separate authorization step, so every Editor can use this.
  */
 function menuAddBackdatedAttendance_() {
-  var html = HtmlService.createHtmlOutputFromFile('BackdatedEntryDialog')
-    .setWidth(420)
-    .setHeight(520);
-  SpreadsheetApp.getUi().showModalDialog(html, 'Add Backdated Check-in/Check-out');
-}
+  var ui = SpreadsheetApp.getUi();
+  var title = 'Add Backdated Check-in/Check-out';
 
-/**
- * Called from BackdatedEntryDialog.html to populate the employee list.
- * No trailing underscore -- unlike every other server-side helper in this
- * project, this one is called directly from google.script.run in an
- * HtmlService dialog, and Apps Script's client-side shim didn't expose an
- * underscore-suffixed function name there (threw "is not a function"), even
- * though the exact same function runs fine when called from anywhere else.
- */
-function getEmployeeListForDialog() {
-  return getAllEmployees_()
-    .filter(function (emp) { return isTrue_(emp.Active) && emp.Name; }) // a blank Name would otherwise crash the sort below and hang the dialog on "Loading..." forever
-    .map(function (emp) { return { id: emp.EmployeeID, name: String(emp.Name) }; })
-    .sort(function (a, b) { return a.name.localeCompare(b.name); });
-}
-
-/**
- * Called from BackdatedEntryDialog.html. payload: { employeeQuery, type
- * ('IN'|'OUT'|'OUT_OT'), day, month, year, time ('HH:MM'), skipWarnings }.
- * First call (skipWarnings false) returns { ok:false, warnings:[...] } for
- * anything that would normally need a Yes/No confirm (future date,
- * already-has-an-entry-that-day) -- the dialog shows those as confirm()
- * boxes client-side and resubmits with skipWarnings:true if all are accepted.
- * No trailing underscore -- see getEmployeeListForDialog's comment above.
- */
-function submitBackdatedEntry(payload) {
-  var employee = findEmployeeByNameOrId_(String(payload.employeeQuery || '').trim());
+  var employeeResp = ui.prompt(title, 'Employee name or ID:', ui.ButtonSet.OK_CANCEL);
+  if (employeeResp.getSelectedButton() !== ui.Button.OK) return;
+  var employee = findEmployeeByNameOrId_(employeeResp.getResponseText().trim());
   if (!employee) {
-    return { ok: false, error: 'No employee found matching "' + payload.employeeQuery + '".' };
+    ui.alert('No employee found matching "' + employeeResp.getResponseText().trim() + '".');
+    return;
   }
 
-  var type = payload.type === 'OUT_OT' ? 'OUT' : payload.type;
-  var ot = payload.type === 'OUT_OT';
-  if (type !== 'IN' && type !== 'OUT') {
-    return { ok: false, error: 'Pick IN, OUT, or OUT OT.' };
-  }
+  var typeResp = ui.prompt(title, employee.Name + ' -- Type IN, OUT, or OTOT (OUT with overtime):', ui.ButtonSet.OK_CANCEL);
+  if (typeResp.getSelectedButton() !== ui.Button.OK) return;
+  var typeInput = typeResp.getResponseText().trim().toUpperCase();
+  var type, ot;
+  if (typeInput === 'IN') { type = 'IN'; ot = false; }
+  else if (typeInput === 'OUT') { type = 'OUT'; ot = false; }
+  else if (typeInput === 'OTOT' || typeInput === 'OUT OT' || typeInput === 'OUT_OT') { type = 'OUT'; ot = true; }
+  else { ui.alert('Type must be IN, OUT, or OTOT.'); return; }
 
-  var day = Number(payload.day), month = Number(payload.month), year = Number(payload.year);
-  var timeParts = String(payload.time || '').split(':');
-  if (!day || !month || !year || timeParts.length !== 2) {
-    return { ok: false, error: 'Enter a valid date and time.' };
-  }
+  var dateResp = ui.prompt(title, 'Date (DD/MM/YYYY), e.g. 24/07/2026:', ui.ButtonSet.OK_CANCEL);
+  if (dateResp.getSelectedButton() !== ui.Button.OK) return;
+  var dateParts = dateResp.getResponseText().trim().split('/');
+  if (dateParts.length !== 3) { ui.alert('Enter the date as DD/MM/YYYY.'); return; }
+  var day = Number(dateParts[0]), month = Number(dateParts[1]), year = Number(dateParts[2]);
+
+  var timeResp = ui.prompt(title, 'Time (24-hour), e.g. 08:30:', ui.ButtonSet.OK_CANCEL);
+  if (timeResp.getSelectedButton() !== ui.Button.OK) return;
+  var timeParts = timeResp.getResponseText().trim().split(':');
+  if (timeParts.length !== 2) { ui.alert('Enter the time as HH:MM.'); return; }
 
   var timestamp = new Date(year, month - 1, day, Number(timeParts[0]), Number(timeParts[1]), 0);
   if (isNaN(timestamp.getTime())) {
-    return { ok: false, error: 'That date/time didn\'t parse -- double check the values.' };
+    ui.alert('That date/time did not parse -- double check the values.');
+    return;
   }
 
-  if (!payload.skipWarnings) {
-    var warnings = [];
-    if (timestamp.getTime() > Date.now()) {
-      warnings.push('That date/time is in the future -- continue anyway?');
-    }
-    var existing = findLogEntryForDate_(employee.EmployeeID, type, timestamp);
-    if (existing) {
-      warnings.push(
-        employee.Name + ' already has a ' + type + ' recorded that day (at ' +
-        Utilities.formatDate(existing.timestamp, Session.getScriptTimeZone(), 'HH:mm') + '). Add another anyway?'
-      );
-    }
-    if (warnings.length > 0) {
-      return { ok: false, warnings: warnings };
-    }
+  var warnings = [];
+  if (timestamp.getTime() > Date.now()) {
+    warnings.push('That date/time is in the future.');
+  }
+  var existing = findLogEntryForDate_(employee.EmployeeID, type, timestamp);
+  if (existing) {
+    warnings.push(
+      employee.Name + ' already has a ' + type + ' recorded that day (at ' +
+      Utilities.formatDate(existing.timestamp, Session.getScriptTimeZone(), 'HH:mm') + ').'
+    );
+  }
+  if (warnings.length > 0) {
+    var confirmResp = ui.alert(title, warnings.join('\n') + '\n\nAdd anyway?', ui.ButtonSet.YES_NO);
+    if (confirmResp !== ui.Button.YES) return;
   }
 
   var result = recordBackdatedAttendance_(employee.EmployeeID, type, timestamp, ot);
@@ -230,7 +216,7 @@ function submitBackdatedEntry(payload) {
       ? '\nOT: ' + (result.otMinutes || 0) + ' min'
       : '\nOT: ' + (result.otQuarters || 0) + ' quarter(s)';
   }
-  return { ok: true, summary: summary };
+  ui.alert('Done', summary, ui.ButtonSet.OK);
 }
 
 /**
