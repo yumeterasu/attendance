@@ -158,8 +158,8 @@ function menuAddBackdatedAttendance_() {
 /** Called from BackdatedEntryDialog.html to populate the employee type-ahead list. */
 function getEmployeeListForDialog_() {
   return getAllEmployees_()
-    .filter(function (emp) { return isTrue_(emp.Active); })
-    .map(function (emp) { return { id: emp.EmployeeID, name: emp.Name }; })
+    .filter(function (emp) { return isTrue_(emp.Active) && emp.Name; }) // a blank Name would otherwise crash the sort below and hang the dialog on "Loading..." forever
+    .map(function (emp) { return { id: emp.EmployeeID, name: String(emp.Name) }; })
     .sort(function (a, b) { return a.name.localeCompare(b.name); });
 }
 
