@@ -221,11 +221,14 @@ function menuAddBackdatedAttendance_() {
 
 /**
  * For days the kiosk was completely unreachable (internet outage) -- lets an
- * admin bulk-record IN/OUT for everyone scheduled that day in one pass,
- * defaulting to "on time, no OT" for each person, with text-based overrides
- * for late arrival or absence. Never overwrites an IN/OUT that's already
- * recorded for someone that day (e.g. they clocked in before the outage
- * started) -- only fills in what's missing.
+ * admin bulk-record IN for everyone scheduled that day in one pass,
+ * defaulting to "on time" for each person, with text-based overrides for
+ * late arrival or absence. OUT is deliberately left out -- arrival is
+ * predictable (people show up when scheduled), but departure time varies too
+ * much to safely assume everyone left at exactly shift-end (OT, early leave,
+ * etc.); check-out still gets recorded normally once the kiosk is back, or
+ * backfilled individually via Add Backdated Check-in/Check-out if needed.
+ * Never overwrites an IN that's already recorded for someone that day.
  *
  * Uses a chain of native ui.prompt()/ui.alert() calls rather than an
  * HtmlService dialog -- see menuAddBackdatedAttendance_'s comment for why
@@ -297,25 +300,16 @@ function menuBulkMarkAttendance_() {
     }
 
     var startMatch = s.shift.match(/(\d{1,2}):(\d{2})/);
-    var endMatch = getShiftEndTime_(s.shift);
-    if (!startMatch || !endMatch) { errors.push(emp.Name + ': could not read shift start/end time'); return; }
+    if (!startMatch) { errors.push(emp.Name + ': could not read shift start time'); return; }
 
     var lateMinutes = lateMinutesByName[key] || lateMinutesByName[idKey] || 0;
     var inTime = new Date(year, month - 1, day, Number(startMatch[1]), Number(startMatch[2]), 0);
     inTime = new Date(inTime.getTime() + lateMinutes * 60000);
-    var outTime = new Date(year, month - 1, day, endMatch.hour, endMatch.minute, 0);
 
     if (findLogEntryForDate_(emp.EmployeeID, 'IN', date)) {
       skippedExisting++;
     } else {
       recordBackdatedAttendance_(emp.EmployeeID, 'IN', inTime, false);
-      added++;
-    }
-
-    if (findLogEntryForDate_(emp.EmployeeID, 'OUT', date)) {
-      skippedExisting++;
-    } else {
-      recordBackdatedAttendance_(emp.EmployeeID, 'OUT', outTime, false);
       added++;
     }
   });
