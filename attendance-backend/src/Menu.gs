@@ -10,6 +10,7 @@ function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('Attendance Admin')
     .addItem('Health Check', 'menuHealthCheck_')
+    .addItem('Who Hasn\'t Checked In Today', 'menuWhoIsAbsentToday_')
     .addItem('Add Backdated Check-in/Check-out...', 'menuAddBackdatedAttendance_')
     .addItem('Bulk Mark Attendance for a Day...', 'menuBulkMarkAttendance_')
     .addItem('Create / Update Schedule Sheet...', 'menuCreateScheduleSheet_')
@@ -20,6 +21,43 @@ function onOpen() {
     .addItem('Issue New Setup Code (Admin Pairing)...', 'menuIssueSetupCode_')
     .addItem('Set Kiosk Exit PIN...', 'menuSetKioskExitPin_')
     .addToUi();
+}
+
+/**
+ * Quick read-only check: everyone Active and scheduled to work today who
+ * doesn't have an IN recorded yet. Uses today's actual date, not a prompt --
+ * this is meant to be a one-click glance, not a lookup for other days (use
+ * the Report sheet for past days).
+ */
+function menuWhoIsAbsentToday_() {
+  var ui = SpreadsheetApp.getUi();
+  var date = new Date();
+
+  var scheduled = getAllEmployees_()
+    .filter(function (emp) { return isTrue_(emp.Active); })
+    .map(function (emp) { return { employee: emp, shift: getScheduledShift_(emp.EmployeeID, date) }; })
+    .filter(function (s) { return s.shift; });
+
+  if (scheduled.length === 0) {
+    ui.alert('No one is scheduled today (or the Schedule sheet for this month is not filled in yet).');
+    return;
+  }
+
+  var missing = scheduled.filter(function (s) {
+    return !findLogEntryForDate_(s.employee.EmployeeID, 'IN', date);
+  });
+
+  if (missing.length === 0) {
+    ui.alert('Everyone scheduled today (' + scheduled.length + ') has checked in.');
+    return;
+  }
+
+  var lines = missing.map(function (s) { return s.employee.Name + ' (' + s.shift + ')'; });
+  ui.alert(
+    'Not checked in yet today',
+    missing.length + ' of ' + scheduled.length + ' scheduled:\n\n' + lines.join('\n'),
+    ui.ButtonSet.OK
+  );
 }
 
 function menuCreateScheduleSheet_() {
