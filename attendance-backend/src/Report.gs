@@ -300,6 +300,8 @@ function refreshLiveSummarySheet_() {
   var sheet = ss.getSheetByName(LIVE_SUMMARY_SHEET_NAME);
   if (!sheet) return;
 
+  ensureColumns_('Employees', ['Salary']); // adds the header if missing so Thai OT Pay can work without a manual setup step
+
   var year = Number(sheet.getRange('B1').getValue());
   var month = Number(sheet.getRange('B2').getValue());
   if (!year || !month || month < 1 || month > 12) return;
