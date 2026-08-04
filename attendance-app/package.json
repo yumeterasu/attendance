@@ -13,6 +13,7 @@
     "@react-navigation/native": "^6.1.18",
     "@react-navigation/native-stack": "^6.10.1",
     "expo": "~54.0.0",
+    "expo-audio": "~1.1.1",
     "expo-camera": "~17.0.10",
     "expo-haptics": "~15.0.8",
     "expo-secure-store": "~15.0.8",

@@ -4,9 +4,10 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   ...config,
   name: 'Attendance',
   slug: 'attendance-app',
-  version: '1.3.1', // bump this with each meaningful feature build so Install page / device settings show something readable, not just a git hash
+  version: '1.4.0', // bump this with each meaningful feature build so Install page / device settings show something readable, not just a git hash
   orientation: 'portrait',
   userInterfaceStyle: 'light',
+  plugins: ['expo-audio'],
   splash: {
     resizeMode: 'contain',
     backgroundColor: '#ffffff'
