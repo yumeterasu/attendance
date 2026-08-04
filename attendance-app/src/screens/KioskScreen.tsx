@@ -69,12 +69,16 @@ function Keypad({
   onPress,
   disabled,
   danger,
-  light
+  light,
+  schedule
 }: {
   onPress: (key: string) => void;
   disabled?: boolean;
   danger?: boolean;
   light?: boolean;
+  // white keys with a visible border -- for the blue Schedule background,
+  // where the plain light-gray keys blended into the background.
+  schedule?: boolean;
 }) {
   return (
     <View style={styles.keypad}>
@@ -83,14 +87,14 @@ function Keypad({
           {row.map((key) => (
             <Pressable
               key={key}
-              style={[styles.key, danger && styles.keyDanger, light && styles.keyLight]}
+              style={[styles.key, danger && styles.keyDanger, light && styles.keyLight, schedule && styles.keySchedule]}
               onPress={() => onPress(key)}
               disabled={disabled}
             >
               <Text
                 style={[
                   key === 'clear' || key === 'back' ? styles.keyTextSmall : styles.keyText,
-                  light && styles.keyTextLight
+                  (light || schedule) && styles.keyTextLight
                 ]}
               >
                 {key === 'clear' ? 'Clear' : key === 'back' ? '⌫' : key}
@@ -108,13 +112,15 @@ function Dots({
   filled,
   error,
   danger,
-  light
+  light,
+  schedule
 }: {
   length: number;
   filled: number;
   error?: boolean;
   danger?: boolean;
   light?: boolean;
+  schedule?: boolean;
 }) {
   return (
     <View style={styles.dots}>
@@ -125,7 +131,15 @@ function Dots({
             styles.dot,
             danger && styles.dotDanger,
             light && styles.dotLight,
-            i < filled && (danger ? styles.dotFilledDanger : light ? styles.dotFilledLight : styles.dotFilled),
+            schedule && styles.dotSchedule,
+            i < filled &&
+              (danger
+                ? styles.dotFilledDanger
+                : schedule
+                ? styles.dotFilledSchedule
+                : light
+                ? styles.dotFilledLight
+                : styles.dotFilled),
             error && styles.dotError
           ]}
         />
@@ -356,8 +370,8 @@ export default function KioskScreen({ navigation }: Props) {
     return (
       <View style={[styles.container, styles.containerSchedule]}>
         <Text style={[styles.title, styles.titleDark]}>Enter Your Code to View Schedule</Text>
-        <Dots length={PIN_LENGTH} filled={schedulePin.length} error={scheduleError} light />
-        <Keypad onPress={onScheduleKeyPress} light />
+        <Dots length={PIN_LENGTH} filled={schedulePin.length} error={scheduleError} schedule />
+        <Keypad onPress={onScheduleKeyPress} schedule />
         {scheduleError && <Text style={styles.errorText}>Code not recognized</Text>}
         <Pressable
           style={[styles.cornerButton, styles.cornerButtonLight]}
@@ -622,6 +636,8 @@ const styles = StyleSheet.create({
   dotFilledDanger: { backgroundColor: '#ff6b6b', borderColor: '#ff6b6b' },
   dotLight: { borderColor: '#ccc' },
   dotFilledLight: { backgroundColor: '#333', borderColor: '#333' },
+  dotSchedule: { borderColor: '#8fb0c1' }, // darker outline so empty dots are visible on the blue Schedule background
+  dotFilledSchedule: { backgroundColor: '#1d3540', borderColor: '#1d3540' },
   dotError: { borderColor: '#c0392b', backgroundColor: '#c0392b' },
   errorText: { color: '#e57373', fontSize: 14, fontWeight: '600', marginTop: 20 },
   keypad: { gap: 16 },
@@ -636,6 +652,7 @@ const styles = StyleSheet.create({
   },
   keyDanger: { backgroundColor: 'rgba(255,107,107,0.15)' },
   keyLight: { backgroundColor: '#f0f0f0' },
+  keySchedule: { backgroundColor: '#ffffff', borderWidth: 1.5, borderColor: '#9bb9c9' },
   keyText: { color: '#fff', fontSize: 30, fontWeight: '600' },
   keyTextSmall: { color: 'rgba(255,255,255,0.7)', fontSize: 16, fontWeight: '600' },
   keyTextLight: { color: '#1d1d1f' },
