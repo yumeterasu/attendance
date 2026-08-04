@@ -251,6 +251,15 @@ function onEdit(e) {
 var LIVE_SUMMARY_SHEET_NAME = 'Summary';
 var LIVE_SUMMARY_DATA_START_ROW = 4;
 
+// OT pay rates for the Summary sheet's "OT Pay (Baht)" column.
+var JP_OT_BAHT_PER_MIN = 8.33; // Japanese: flat baht per OT minute, salary-independent.
+// Thai: baht per OT quarter (15 min) = Salary / 640, i.e.
+//   Salary /30 days /8 work-hours /4 quarters-per-hour, then x1.5 OT multiplier
+//   = Salary / (30*8*4) * 1.5 = Salary / 640.
+// So a Thai employee needs a Salary in the Employees sheet to earn OT pay; blank
+// Salary leaves their OT Pay blank (not eligible).
+var THAI_OT_QUARTER_DIVISOR = 640;
+
 /**
  * One-off: creates (or re-links) the permanent "Summary" sheet and its
  * Year/Month dropdowns. Run once from the editor: select setupLiveSummarySheet
@@ -328,8 +337,8 @@ function writeMonthlySummaryData_(sheet, startRow, year, month) {
     return String(a.EmployeeID).localeCompare(String(b.EmployeeID));
   });
 
-  var COLS = 6; // Employee, Department, Days Worked, Late Count, OT (min), OT (Quarter)
-  var rows = [['Employee', 'Department', 'Days Worked', 'Late Count', 'OT (min)', 'OT (Quarter)']];
+  var COLS = 7; // Employee, Department, Days Worked, Late Count, OT (min), OT (Quarter), OT Pay (Baht)
+  var rows = [['Employee', 'Department', 'Days Worked', 'Late Count', 'OT (min)', 'OT (Quarter)', 'OT Pay (Baht)']];
 
   employees.forEach(function (emp) {
     var dayLogs = logsByEmployee[emp.EmployeeID] || {};
@@ -344,12 +353,36 @@ function writeMonthlySummaryData_(sheet, startRow, year, month) {
       otMinutesTotal += entry.otMinutes || 0;
       otQuartersTotal += entry.otQuarters || 0;
     }
-    rows.push([emp.Name + ' (' + emp.EmployeeID + ')', emp.Department, daysWorked, lateCount, otMinutesTotal, otQuartersTotal]);
+
+    var otPay = computeOtPay_(emp, otMinutesTotal, otQuartersTotal);
+    rows.push([emp.Name + ' (' + emp.EmployeeID + ')', emp.Department, daysWorked, lateCount, otMinutesTotal, otQuartersTotal, otPay]);
   });
 
   sheet.getRange(startRow, 1, rows.length, COLS).setValues(rows);
   sheet.getRange(startRow, 1, 1, COLS).setFontWeight('bold').setBackground('#ffe6dd');
   sheet.autoResizeColumns(1, COLS);
+}
+
+/**
+ * OT pay in baht for one employee's month (Summary sheet's "OT Pay (Baht)").
+ * - Japanese: OT minutes x JP_OT_BAHT_PER_MIN -- flat rate, no Salary needed,
+ *   so always a number (0 when they had no OT).
+ * - Everyone else (Thai): OT quarters x (Salary / THAI_OT_QUARTER_DIVISOR).
+ *   Requires a Salary in the Employees sheet; a blank Salary returns '' so the
+ *   cell stays empty (not eligible) rather than showing 0.
+ * Salary tolerates a comma-formatted value like "20,000".
+ */
+function computeOtPay_(emp, otMinutesTotal, otQuartersTotal) {
+  if (emp.Department === 'Japanese') {
+    return round2_(otMinutesTotal * JP_OT_BAHT_PER_MIN);
+  }
+  var salary = Number(String(emp.Salary == null ? '' : emp.Salary).replace(/,/g, '').trim());
+  if (!(salary > 0)) return ''; // no Salary on file -> not eligible for OT pay
+  return round2_(otQuartersTotal * (salary / THAI_OT_QUARTER_DIVISOR));
+}
+
+function round2_(n) {
+  return Math.round(n * 100) / 100;
 }
 
 /**
