@@ -391,7 +391,14 @@ export default function KioskScreen({ navigation }: Props) {
           {weeks.map((week, wi) => (
             <View key={wi} style={styles.calendarWeekRow}>
               {week.map((cell, ci) => (
-                <View key={ci} style={styles.calendarCell}>
+                <View
+                  key={ci}
+                  style={[
+                    styles.calendarCell,
+                    !cell && styles.calendarCellBlank,
+                    cell && cell.entry && styles.calendarCellWorked
+                  ]}
+                >
                   {cell && (
                     <>
                       <Text style={styles.calendarDayNum}>{cell.day}</Text>
@@ -553,7 +560,7 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#000', alignItems: 'center', justifyContent: 'center', padding: 24 },
   containerDanger: { backgroundColor: '#2a0e0e' },
   containerLight: { backgroundColor: '#fff' },
-  containerSchedule: { backgroundColor: '#eaf2f7' },
+  containerSchedule: { backgroundColor: '#dbe8f0' },
   title: { color: '#fff', fontSize: 22, fontWeight: '700', marginBottom: 8, textAlign: 'center' },
   titleDark: { color: '#1d1d1f' },
   subtitleDark: { color: '#777', fontSize: 15, marginBottom: 8 },
@@ -683,7 +690,7 @@ const styles = StyleSheet.create({
   calendarHeaderCell: {
     flex: 1,
     textAlign: 'center',
-    color: '#7d95a3',
+    color: '#345365',
     fontSize: 12,
     fontWeight: '700',
     paddingBottom: 6
@@ -695,10 +702,13 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-start',
     paddingTop: 6,
     borderWidth: 1,
-    borderColor: '#cfe0e8'
+    borderColor: '#9bb9c9',
+    backgroundColor: '#ffffff'
   },
-  calendarDayNum: { color: '#1f333d', fontSize: 12, fontWeight: '700' },
-  calendarTime: { color: '#6b8290', fontSize: 9.5, marginTop: 2 },
+  calendarCellBlank: { borderColor: 'transparent', backgroundColor: 'transparent' },
+  calendarCellWorked: { backgroundColor: '#eef6fc' }, // days with an actual record get a subtle tint so they stand out from off days
+  calendarDayNum: { color: '#0c1820', fontSize: 13, fontWeight: '800' },
+  calendarTime: { color: '#27454f', fontSize: 9.5, fontWeight: '700', marginTop: 2 },
   calendarDotsRow: { flexDirection: 'row', gap: 3, marginTop: 3 },
   calendarDot: { width: 6, height: 6, borderRadius: 3 },
   calendarDotLate: { backgroundColor: '#c0392b' },
@@ -707,7 +717,7 @@ const styles = StyleSheet.create({
   },
   calendarLegend: { flexDirection: 'row', gap: 20, marginTop: 12 },
   legendItem: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  legendText: { color: '#6b8290', fontSize: 12, fontWeight: '600' },
+  legendText: { color: '#27454f', fontSize: 12, fontWeight: '600' },
   doneButton: {
     marginTop: 24,
     backgroundColor: '#455a64',
