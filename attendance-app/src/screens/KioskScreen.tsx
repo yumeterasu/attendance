@@ -563,9 +563,11 @@ export default function KioskScreen({ navigation }: Props) {
       <Pressable style={[styles.scheduleButton, styles.cornerButtonLight]} onPress={() => setMode('scheduleEntry')}>
         <Text style={styles.cornerButtonTextLight}>My Schedule</Text>
       </Pressable>
-      <Pressable style={[styles.cornerButton, styles.cornerButtonLight]} onPress={() => setMode('exit')}>
-        <Text style={styles.cornerButtonTextLight}>Exit</Text>
-      </Pressable>
+      {lookupName === null && (
+        <Pressable style={[styles.cornerButton, styles.cornerButtonLight]} onPress={() => setMode('exit')}>
+          <Text style={styles.cornerButtonTextLight}>Admin</Text>
+        </Pressable>
+      )}
     </View>
   );
 }
@@ -730,7 +732,7 @@ const styles = StyleSheet.create({
   calendarDot: { width: 6, height: 6, borderRadius: 3 },
   calendarDotLate: { backgroundColor: '#c0392b' },
   calendarDotOt: {
-    backgroundColor: '#e65100'
+    backgroundColor: '#2e7d32'
   },
   calendarLegend: { flexDirection: 'row', gap: 20, marginTop: 12 },
   legendItem: { flexDirection: 'row', alignItems: 'center', gap: 6 },
