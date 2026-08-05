@@ -4,7 +4,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   ...config,
   name: 'Attendance',
   slug: 'attendance-app',
-  version: '1.4.3', // bump this with each meaningful feature build so Install page / device settings show something readable, not just a git hash
+  version: '1.4.4', // bump this with each meaningful feature build so Install page / device settings show something readable, not just a git hash
   orientation: 'portrait',
   userInterfaceStyle: 'light',
   splash: {

@@ -4,6 +4,7 @@ const API_URL = process.env.EXPO_PUBLIC_API_URL ?? '';
 const API_KEY = process.env.EXPO_PUBLIC_API_KEY ?? '';
 const REQUEST_TIMEOUT_MS = 15000; // a hung request with no internet route used to wait forever with no feedback
 const KIOSK_TIMEOUT_MS = 3000; // lookup/checkin have a local fallback, so fail fast and let it take over instead of making the employee wait
+const SCHEDULE_TIMEOUT_MS = 4000; // My Schedule has no local fallback (it needs a live report), so it gets a little more room than the kiosk lookup/checkin calls
 
 export type ApiResult<T> =
   | ({ success: true } & T)
@@ -65,7 +66,7 @@ export function kioskMyAttendance(pin: string) {
     year: number;
     month: number;
     days: { day: number; date: string; timeIn: string; timeOut: string; shift: string; late: boolean; ot: boolean }[];
-  }>('kioskMyAttendance', { pin });
+  }>('kioskMyAttendance', { pin }, SCHEDULE_TIMEOUT_MS);
 }
 
 export function verifyKioskExitPin(pin: string) {

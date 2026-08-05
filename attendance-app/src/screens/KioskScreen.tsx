@@ -173,6 +173,10 @@ export default function KioskScreen({ navigation }: Props) {
   const [schedulePin, setSchedulePin] = useState('');
   const [scheduleError, setScheduleError] = useState(false);
   const [scheduleData, setScheduleData] = useState<ScheduleData | null>(null);
+  // Set only for a lookup that fails for a retriable reason (timeout/no
+  // connection) -- pin stays put so "Try Again" can resubmit it as-is,
+  // same pattern as lookupIssue on the main check-in screen.
+  const [scheduleIssue, setScheduleIssue] = useState<string | null>(null);
 
   const showFeedback = (next: Feedback) => {
     if (feedbackTimerRef.current) clearTimeout(feedbackTimerRef.current);
@@ -322,14 +326,20 @@ export default function KioskScreen({ navigation }: Props) {
       return;
     }
 
+    setScheduleIssue(null);
     const res = await kioskMyAttendance(value);
-    setSchedulePin('');
 
     if (res.success) {
+      setSchedulePin('');
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       setScheduleData({ name: res.name, year: res.year, month: res.month, days: res.days });
       setMode('scheduleResult');
+    } else if (res.error === 'timeout' || res.error === 'network_error') {
+      // Connection dropped mid-request -- offer a retry instead of just flashing an error.
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      setScheduleIssue(res.message);
     } else {
+      setSchedulePin('');
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       setScheduleError(true);
       setTimeout(() => setScheduleError(false), ERROR_FLASH_DURATION_MS);
@@ -371,13 +381,22 @@ export default function KioskScreen({ navigation }: Props) {
       <View style={[styles.container, styles.containerSchedule]}>
         <Text style={[styles.title, styles.titleDark]}>Enter Your Code to View Schedule</Text>
         <Dots length={PIN_LENGTH} filled={schedulePin.length} error={scheduleError} schedule />
-        <Keypad onPress={onScheduleKeyPress} schedule />
+        <Keypad onPress={onScheduleKeyPress} disabled={!!scheduleIssue} schedule />
         {scheduleError && <Text style={styles.errorText}>Code not recognized</Text>}
+        {scheduleIssue && (
+          <View style={styles.retryBox}>
+            <Text style={styles.retryMessage}>{scheduleIssue}</Text>
+            <Pressable style={styles.retryButton} onPress={() => submitSchedulePin(schedulePin)}>
+              <Text style={styles.retryButtonText}>Try Again</Text>
+            </Pressable>
+          </View>
+        )}
         <Pressable
           style={[styles.cornerButton, styles.cornerButtonLight]}
           onPress={() => {
             setMode('checkin');
             setSchedulePin('');
+            setScheduleIssue(null);
           }}
         >
           <Text style={styles.cornerButtonTextLight}>Cancel</Text>
@@ -560,9 +579,11 @@ export default function KioskScreen({ navigation }: Props) {
 
       {feedbackOverlay}
 
-      <Pressable style={[styles.scheduleButton, styles.cornerButtonLight]} onPress={() => setMode('scheduleEntry')}>
-        <Text style={styles.cornerButtonTextLight}>My Schedule</Text>
-      </Pressable>
+      {lookupName === null && (
+        <Pressable style={[styles.scheduleButton, styles.cornerButtonLight]} onPress={() => setMode('scheduleEntry')}>
+          <Text style={styles.cornerButtonTextLight}>My Schedule</Text>
+        </Pressable>
+      )}
       {lookupName === null && (
         <Pressable style={[styles.cornerButton, styles.cornerButtonLight]} onPress={() => setMode('exit')}>
           <Text style={styles.cornerButtonTextLight}>Admin</Text>
@@ -704,32 +725,32 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     borderRadius: 10
   },
-  calendarWrap: { width: '100%', maxWidth: 460, maxHeight: '52%' },
-  calendarWeekRow: { flexDirection: 'row', width: '100%', maxWidth: 460 },
+  calendarWrap: { width: '100%', maxWidth: 500, maxHeight: '62%' },
+  calendarWeekRow: { flexDirection: 'row', width: '100%', maxWidth: 500 },
   calendarHeaderCell: {
     flex: 1,
     textAlign: 'center',
     color: '#345365',
-    fontSize: 12,
+    fontSize: 13,
     fontWeight: '700',
     paddingBottom: 6
   },
   calendarCell: {
     flex: 1,
-    aspectRatio: 0.78,
+    aspectRatio: 0.92, // more compact vertically than before, so a bigger grid still fits without needing to scroll on a typical tablet
     alignItems: 'center',
     justifyContent: 'flex-start',
-    paddingTop: 6,
+    paddingTop: 7,
     borderWidth: 1,
     borderColor: '#9bb9c9',
     backgroundColor: '#ffffff'
   },
   calendarCellBlank: { borderColor: 'transparent', backgroundColor: 'transparent' },
   calendarCellWorked: { backgroundColor: '#eef6fc' }, // days with an actual record get a subtle tint so they stand out from off days
-  calendarDayNum: { color: '#0c1820', fontSize: 13, fontWeight: '800' },
-  calendarTime: { color: '#27454f', fontSize: 9.5, fontWeight: '700', marginTop: 2 },
-  calendarDotsRow: { flexDirection: 'row', gap: 3, marginTop: 3 },
-  calendarDot: { width: 6, height: 6, borderRadius: 3 },
+  calendarDayNum: { color: '#0c1820', fontSize: 15, fontWeight: '800' },
+  calendarTime: { color: '#27454f', fontSize: 11, fontWeight: '700', marginTop: 2 },
+  calendarDotsRow: { flexDirection: 'row', gap: 4, marginTop: 3 },
+  calendarDot: { width: 7, height: 7, borderRadius: 3.5 },
   calendarDotLate: { backgroundColor: '#c0392b' },
   calendarDotOt: {
     backgroundColor: '#2e7d32'
