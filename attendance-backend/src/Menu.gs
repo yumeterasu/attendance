@@ -170,11 +170,19 @@ function menuRecomputeLateOtAllMonths_() {
     return m[0] + ': ' + result.inRowsUpdated + ' IN, ' + result.outRowsUpdated + ' OUT';
   });
 
+  // Report/Summary only pull fresh data when their Year/Month dropdown is
+  // edited (see onEdit in Report.gs) -- refresh both here too so whatever
+  // month they're currently showing reflects the recompute immediately,
+  // without the admin having to flip the dropdown back and forth.
+  refreshLiveReportSheet_();
+  refreshLiveSummarySheet_();
+
   ui.alert(
     'Done',
     'Recomputed ' + scheduleMatches.length + ' month(s):\n\n' + summaryLines.join('\n') +
     '\n\nTotal: ' + totalIn + ' IN row(s), ' + totalOut + ' OUT row(s) updated.\n\n' +
-    'Thai/non-Japanese OT was left untouched -- it can only be trusted from the moment it was recorded, not recomputed after the fact.',
+    'Thai/non-Japanese OT was left untouched -- it can only be trusted from the moment it was recorded, not recomputed after the fact.\n\n' +
+    'Report and Summary tabs have been refreshed to match (whichever month each is currently showing).',
     ui.ButtonSet.OK
   );
 }
