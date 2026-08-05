@@ -9,7 +9,6 @@ import { useOfflineSync } from '../hooks/useOfflineSync';
 import { useSession } from '../context/SessionContext';
 import { lookupPinLocally } from '../utils/employeeDirectory';
 import { enqueueCheckin } from '../utils/offlineQueue';
-import { configureCheckinAudio, playCheckinSound, playCheckoutSound } from '../utils/sound';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Kiosk'>;
 
@@ -188,11 +187,6 @@ export default function KioskScreen({ navigation }: Props) {
     setLookupIssue(null);
   };
 
-  // Prime the audio session once so the first check-in chime isn't delayed.
-  useEffect(() => {
-    configureCheckinAudio();
-  }, []);
-
   // Shared kiosk: if someone looks themselves up and walks away without
   // confirming, don't leave their name on screen for the next person.
   useEffect(() => {
@@ -256,7 +250,6 @@ export default function KioskScreen({ navigation }: Props) {
     const name = lookupName ?? '';
     await enqueueCheckin(pin, type, ot);
     resetCheckin();
-    if (type === 'IN') playCheckinSound(); else playCheckoutSound();
     await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     showFeedback({ kind: 'success', type, name, timestamp: new Date().toISOString(), queued: true });
   };
@@ -279,7 +272,6 @@ export default function KioskScreen({ navigation }: Props) {
     if (res.success) {
       setIsProcessing(false);
       resetCheckin();
-      if (res.type === 'IN') playCheckinSound(); else playCheckoutSound();
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       showFeedback({ kind: 'success', type: res.type, name: res.name, timestamp: res.timestamp, late: res.late, ot: res.ot });
     } else if (res.error === 'timeout' || res.error === 'network_error') {
