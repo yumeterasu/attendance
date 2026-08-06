@@ -10,16 +10,18 @@ var JP_OT_CAP_MINUTES = 75; // default Japanese OT cap, in minutes/day -- overri
 var OT_QUARTER_MINUTES = 15; // Thai OT is counted in whole 15-min blocks, no cap
 
 /**
- * True if timestamp is later than the shift/event's start time on that same
- * calendar day. No grace period. Finds the first "H:MM" anywhere in the
- * string, so both a plain shift ("7:30-16:30") and a labeled event
- * ("Sports Day 8:00-15:00") work the same way. No match -> never late.
+ * True if timestamp is at or past one full minute after the shift/event's
+ * start time on that same calendar day -- e.g. shift 8:00, checking in at
+ * 8:00:00 through 8:00:59 is on time, 8:01:00 is late. Finds the first
+ * "H:MM" anywhere in the string, so both a plain shift ("7:30-16:30") and a
+ * labeled event ("Sports Day 8:00-15:00") work the same way. No match ->
+ * never late.
  */
 function isLate_(shiftOrEvent, timestamp) {
   var match = shiftOrEvent.match(/(\d{1,2}):(\d{2})/);
   if (!match) return false;
   var shiftStart = new Date(timestamp.getFullYear(), timestamp.getMonth(), timestamp.getDate(), Number(match[1]), Number(match[2]), 0);
-  return timestamp.getTime() > shiftStart.getTime();
+  return timestamp.getTime() >= shiftStart.getTime() + 60000;
 }
 
 /** Extracts the shift/event's end time (the LAST "H:MM" found), e.g. "8:00-17:00" -> {hour:17,minute:0}. Null if not found. */
