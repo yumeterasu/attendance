@@ -57,15 +57,18 @@ function computeJapaneseOtMinutes_(shiftOrEvent, outTimestamp, capMinutes) {
 /**
  * Thai (or any non-Japanese) OT, in 15-minute quarters, no cap. Only counted
  * when the employee explicitly pressed OUT OT -- a plain OUT never earns OT
- * even if they happened to leave late (e.g. just stayed chatting). Must
- * complete a full quarter to count it; partial quarters don't round up.
+ * even if they happened to leave late (e.g. just stayed chatting). Rounds UP
+ * to the next quarter as soon as they step into it -- e.g. shift ends 17:00,
+ * grace to 17:15: clocking out anytime 17:16-17:30 earns 1 quarter (not just
+ * exactly at 17:30), 17:31-17:45 earns 2, and so on. Only staying through
+ * the grace period itself (up to and including 17:15) earns 0.
  */
 function computeThaiOtQuarters_(shiftOrEvent, outTimestamp) {
   var pastEnd = minutesPastShiftEnd_(shiftOrEvent, outTimestamp);
   if (pastEnd === null) return 0;
   var pastGrace = pastEnd - OT_GRACE_MINUTES;
   if (pastGrace <= 0) return 0;
-  return Math.floor(pastGrace / OT_QUARTER_MINUTES);
+  return Math.ceil(pastGrace / OT_QUARTER_MINUTES);
 }
 
 /**
