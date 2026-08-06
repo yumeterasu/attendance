@@ -36,7 +36,7 @@ function menuWhoIsAbsentToday_() {
   var scheduled = getAllEmployees_()
     .filter(function (emp) { return isTrue_(emp.Active); })
     .map(function (emp) { return { employee: emp, shift: getScheduledShift_(emp.EmployeeID, date) }; })
-    .filter(function (s) { return s.shift; });
+    .filter(function (s) { return s.shift && s.shift !== 'หยุด'; }); // "หยุด" means intentionally off, not "not scheduled yet" -- exclude from this list
 
   if (scheduled.length === 0) {
     ui.alert('No one is scheduled today (or the Schedule sheet for this month is not filled in yet).');
@@ -299,7 +299,7 @@ function menuBulkMarkAttendance_() {
   var scheduled = getAllEmployees_()
     .filter(function (emp) { return isTrue_(emp.Active); })
     .map(function (emp) { return { employee: emp, shift: getScheduledShift_(emp.EmployeeID, date) }; })
-    .filter(function (s) { return s.shift; });
+    .filter(function (s) { return s.shift && s.shift !== 'หยุด'; }); // "หยุด" means intentionally off, not "not scheduled yet" -- exclude from this list
 
   if (scheduled.length === 0) {
     ui.alert('No active, scheduled employees found for that date. Make sure the Schedule sheet for that month is filled in.');
