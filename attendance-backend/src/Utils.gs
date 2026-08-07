@@ -136,20 +136,37 @@ function findEmployeeRow_(employeeId) {
   return null;
 }
 
-/** Finds an employee by exact EmployeeID first, falling back to a case-insensitive Name substring match. Returns the row object (no rowNumber) or null. */
+/**
+ * Finds an employee by exact EmployeeID first, then an EXACT (case-insensitive)
+ * Name match, and only falls back to a Name substring match if neither found
+ * anything. An exact name always wins over a substring -- otherwise typing
+ * "Kao" for an employee literally named "Kao" could match "Kaori" instead,
+ * just because "kao" happens to be a substring of it. Returns the row object
+ * (no rowNumber), or null if nothing matched at all.
+ */
 function findEmployeeByNameOrId_(query) {
   var byId = findEmployeeRow_(query);
   if (byId) return byId.row;
 
   var data = getCachedEmployees_();
   var nameCol = data.headers.indexOf('Name');
-  var needle = String(query).toLowerCase();
+  var needle = String(query).toLowerCase().trim();
+
   for (var i = 0; i < data.rows.length; i++) {
     var name = String(data.rows[i][nameCol] || '');
-    if (name.toLowerCase().indexOf(needle) !== -1) {
-      var record = {};
-      data.headers.forEach(function (h, c) { record[h] = data.rows[i][c]; });
-      return record;
+    if (name.toLowerCase() === needle) {
+      var exactRecord = {};
+      data.headers.forEach(function (h, c) { exactRecord[h] = data.rows[i][c]; });
+      return exactRecord;
+    }
+  }
+
+  for (var j = 0; j < data.rows.length; j++) {
+    var name2 = String(data.rows[j][nameCol] || '');
+    if (name2.toLowerCase().indexOf(needle) !== -1) {
+      var partialRecord = {};
+      data.headers.forEach(function (h, c) { partialRecord[h] = data.rows[j][c]; });
+      return partialRecord;
     }
   }
   return null;

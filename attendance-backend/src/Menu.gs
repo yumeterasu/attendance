@@ -338,6 +338,16 @@ function menuAddBackdatedAttendance_() {
     return;
   }
 
+  // Extra safety net on top of findEmployeeByNameOrId_ preferring exact name
+  // matches -- a partial-name typo could still resolve to the wrong person,
+  // so confirm who was actually found before asking anything else.
+  var confirmEmployee = ui.alert(
+    title,
+    'Found: ' + employee.Name + ' (' + employee.EmployeeID + '). Is this the right person?',
+    ui.ButtonSet.YES_NO
+  );
+  if (confirmEmployee !== ui.Button.YES) return;
+
   var typeResp = ui.prompt(title, employee.Name + ' -- Type IN, OUT, or OTOT (OUT with overtime):', ui.ButtonSet.OK_CANCEL);
   if (typeResp.getSelectedButton() !== ui.Button.OK) return;
   var typeInput = typeResp.getResponseText().trim().toUpperCase();
