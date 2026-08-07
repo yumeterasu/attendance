@@ -229,6 +229,17 @@ function recomputeLateAndOt_(year, month, startDay, endDay) {
   var otCol = headers.indexOf('OT');
   var otMinCol = headers.indexOf('OTMinutes');
 
+  // Read the month's Schedule sheet ONCE up front instead of calling
+  // getScheduledShift_ per row -- that helper re-reads the whole Schedule
+  // sheet on every call, which is fine for a single live check-in/out but
+  // was blowing past Apps Script's 6-minute execution cap here once
+  // AttendanceLog grew past a few hundred rows (one Schedule sheet read per
+  // matching row, times hundreds of rows).
+  var shiftsForMonth = getScheduledShiftsForMonth_(year, month);
+
+  // Same idea for the writes: mutate `values` in memory and write each
+  // touched column back in one batched call at the end, instead of a
+  // separate setValue() network round-trip per row.
   var shiftByEmployeeDay = {};
   var inRowsUpdated = 0;
   var outRowsUpdated = 0;
@@ -241,11 +252,11 @@ function recomputeLateAndOt_(year, month, startDay, endDay) {
     if (values[i][typeCol] !== 'IN') continue;
 
     var employeeId = String(values[i][idCol]);
-    var scheduledShift = getScheduledShift_(employeeId, ts);
+    var scheduledShift = (shiftsForMonth[employeeId] && shiftsForMonth[employeeId][day]) || '';
     var late = scheduledShift ? isLate_(scheduledShift, ts) : false;
 
-    sheet.getRange(i + 1, shiftCol + 1).setValue(scheduledShift);
-    sheet.getRange(i + 1, lateCol + 1).setValue(late);
+    values[i][shiftCol] = scheduledShift;
+    values[i][lateCol] = late;
     shiftByEmployeeDay[employeeId + '|' + day] = scheduledShift;
     inRowsUpdated++;
   }
@@ -263,16 +274,59 @@ function recomputeLateAndOt_(year, month, startDay, endDay) {
     if (currentDept !== 'Japanese') continue; // Thai/other OT can't be safely recomputed, see doc comment above
 
     var key = employeeId2 + '|' + day2;
-    var shift = shiftByEmployeeDay.hasOwnProperty(key) ? shiftByEmployeeDay[key] : getScheduledShift_(employeeId2, ts2);
+    var shift = shiftByEmployeeDay.hasOwnProperty(key) ? shiftByEmployeeDay[key] : (shiftsForMonth[employeeId2] && shiftsForMonth[employeeId2][day2]) || '';
     var capMinutes = Number(currentEmp.row.OTMaxMinutes) || JP_OT_CAP_MINUTES;
 
     var otMinutes = shift ? computeJapaneseOtMinutes_(shift, ts2, capMinutes) : 0;
-    sheet.getRange(j + 1, otMinCol + 1).setValue(otMinutes);
-    sheet.getRange(j + 1, otCol + 1).setValue(otMinutes > 0);
+    values[j][otMinCol] = otMinutes;
+    values[j][otCol] = otMinutes > 0;
     outRowsUpdated++;
   }
 
+  if (inRowsUpdated > 0 || outRowsUpdated > 0) {
+    var numRows = values.length - 1;
+    sheet.getRange(2, shiftCol + 1, numRows, 1).setValues(values.slice(1).map(function (r) { return [r[shiftCol]]; }));
+    sheet.getRange(2, lateCol + 1, numRows, 1).setValues(values.slice(1).map(function (r) { return [r[lateCol]]; }));
+    sheet.getRange(2, otCol + 1, numRows, 1).setValues(values.slice(1).map(function (r) { return [r[otCol]]; }));
+    sheet.getRange(2, otMinCol + 1, numRows, 1).setValues(values.slice(1).map(function (r) { return [r[otMinCol]]; }));
+  }
+
   return { inRowsUpdated: inRowsUpdated, outRowsUpdated: outRowsUpdated };
+}
+
+/**
+ * Reads a whole "Schedule YYYY-MM" sheet once and returns
+ * { [employeeId]: { [dayOfMonth]: shift } }, or {} if that month's Schedule
+ * sheet doesn't exist. Same lookup semantics as getScheduledShift_ (which
+ * re-reads the sheet on every call -- fine for one-off lookups like a live
+ * check-in/out, but not for recomputing hundreds of rows in a loop).
+ */
+function getScheduledShiftsForMonth_(year, month) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheetName = 'Schedule ' + year + '-' + (month < 10 ? '0' + month : String(month));
+  var sheet = ss.getSheetByName(sheetName);
+  if (!sheet) return {};
+
+  var values = sheet.getDataRange().getValues();
+  var headers = values[0];
+  var idCol = headers.indexOf('EmployeeID');
+  if (idCol === -1) return {};
+
+  var dayCols = {};
+  for (var c = 0; c < headers.length; c++) {
+    if (typeof headers[c] === 'number') dayCols[headers[c]] = c;
+  }
+
+  var result = {};
+  for (var i = 1; i < values.length; i++) {
+    var employeeId = String(values[i][idCol]);
+    var byDay = {};
+    for (var day in dayCols) {
+      byDay[day] = String(values[i][dayCols[day]] || '').trim();
+    }
+    result[employeeId] = byDay;
+  }
+  return result;
 }
 
 /**
