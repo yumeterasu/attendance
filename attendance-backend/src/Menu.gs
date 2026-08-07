@@ -12,6 +12,7 @@ function onOpen() {
     .addItem('Health Check', 'menuHealthCheck_')
     .addItem('Who Hasn\'t Checked In Today', 'menuWhoIsAbsentToday_')
     .addItem('Fix Mis-tapped IN After 16:00 (→ OUT)', 'menuFixLateInAsOut_')
+    .addItem('Add New Employee...', 'menuAddNewEmployee_')
     .addItem('Add Backdated Check-in/Check-out...', 'menuAddBackdatedAttendance_')
     .addItem('Bulk Mark Attendance for a Day...', 'menuBulkMarkAttendance_')
     .addItem('Create / Update Schedule Sheet...', 'menuCreateScheduleSheet_')
@@ -187,6 +188,108 @@ function menuFixLateInAsOut_() {
     summary += '\n\nSkipped (no earlier IN that day to pair with):\n' + skipped.join('\n');
   }
   ui.alert('Done', summary + '\n\nReport and Summary tabs have been refreshed.', ui.ButtonSet.OK);
+}
+
+/**
+ * Adds a new row to the Employees sheet -- auto-generates the next
+ * EmployeeID (highest existing "EMP###" + 1) and a unique Kiosk PIN right
+ * away, instead of the admin typing the row by hand and running "Generate
+ * Kiosk Codes for Everyone" separately afterward. New employee starts
+ * Active, with no Schedule/Salary/OT cap set -- fill those in afterward
+ * ("Create / Update Schedule Sheet..." for Schedule, or edit the Employees
+ * row directly for Salary/OTMaxMinutes).
+ */
+function menuAddNewEmployee_() {
+  var ui = SpreadsheetApp.getUi();
+  var title = 'Add New Employee';
+
+  var nameResp = ui.prompt(title, 'Employee name:', ui.ButtonSet.OK_CANCEL);
+  if (nameResp.getSelectedButton() !== ui.Button.OK) return;
+  var name = nameResp.getResponseText().trim();
+  if (!name) { ui.alert('Name cannot be blank.'); return; }
+
+  var deptResp = ui.prompt(title, name + ' -- Department (Japanese or Thai):', ui.ButtonSet.OK_CANCEL);
+  if (deptResp.getSelectedButton() !== ui.Button.OK) return;
+  var deptInput = deptResp.getResponseText().trim().toLowerCase();
+  var department;
+  if (deptInput === 'japanese') department = 'Japanese';
+  else if (deptInput === 'thai') department = 'Thai';
+  else { ui.alert('Department must be Japanese or Thai.'); return; }
+
+  var branchResp = ui.prompt(title, name + ' -- Branch (' + BRANCHES.join(' or ') + '):', ui.ButtonSet.OK_CANCEL);
+  if (branchResp.getSelectedButton() !== ui.Button.OK) return;
+  var branch = branchResp.getResponseText().trim().toUpperCase();
+  if (BRANCHES.indexOf(branch) === -1) {
+    ui.alert('Branch must be one of: ' + BRANCHES.join(', ') + '.');
+    return;
+  }
+
+  ensureColumns_('Employees', ['KioskPIN', 'CreatedAt']);
+  var sheet = getSheet_('Employees');
+  var values = sheet.getDataRange().getValues();
+  var headers = values[0];
+  var idCol = headers.indexOf('EmployeeID');
+  var pinCol = headers.indexOf('KioskPIN');
+
+  // Next EmployeeID: highest existing "EMP###" number + 1, keeping whatever
+  // zero-padded width the sheet already uses (defaults to 3 digits if the
+  // sheet has nothing matching yet).
+  var maxNum = 0;
+  var padWidth = 3;
+  for (var i = 1; i < values.length; i++) {
+    var match = String(values[i][idCol] || '').match(/^EMP(\d+)$/i);
+    if (!match) continue;
+    var num = Number(match[1]);
+    if (num > maxNum) { maxNum = num; padWidth = match[1].length; }
+  }
+  var newId = 'EMP' + String(maxNum + 1).padStart(padWidth, '0');
+
+  // Unique Kiosk PIN -- same approach as assignMissingKioskPins_.
+  var usedPins = {};
+  for (var j = 1; j < values.length; j++) {
+    var existingPin = String(values[j][pinCol] || '').trim();
+    if (existingPin) usedPins[pad4_(existingPin)] = true;
+  }
+  var newPin;
+  do {
+    newPin = randomKioskPin_();
+  } while (usedPins[newPin]);
+
+  var confirm = ui.alert(
+    title,
+    'Add this employee?\n\n' +
+    'Name: ' + name + '\n' +
+    'Department: ' + department + '\n' +
+    'Branch: ' + branch + '\n' +
+    'EmployeeID: ' + newId + ' (auto)\n' +
+    'Kiosk PIN: ' + newPin + ' (auto)\n' +
+    'Active: Yes',
+    ui.ButtonSet.YES_NO
+  );
+  if (confirm !== ui.Button.YES) return;
+
+  // Force plain-text format on the PIN cell before writing -- otherwise
+  // Sheets can auto-convert e.g. "0422" to the number 422 and silently drop
+  // the leading zero (same issue assignMissingKioskPins_ guards against).
+  sheet.getRange(sheet.getLastRow() + 1, pinCol + 1).setNumberFormat('@');
+
+  appendRow_('Employees', {
+    EmployeeID: newId,
+    Name: name,
+    Department: department,
+    Active: true,
+    Branch: branch,
+    KioskPIN: newPin,
+    CreatedAt: new Date()
+  });
+  invalidateEmployeesCache_();
+
+  ui.alert(
+    'Done',
+    name + ' added.\n\nEmployeeID: ' + newId + '\nKiosk PIN: ' + newPin + '\n\n' +
+    'Give them the Kiosk PIN to check in/out. Add them to this month\'s Schedule via "Create / Update Schedule Sheet..." to set their shifts.',
+    ui.ButtonSet.OK
+  );
 }
 
 function menuCreateScheduleSheet_() {
