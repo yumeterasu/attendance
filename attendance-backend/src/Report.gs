@@ -14,6 +14,13 @@ function writeMonthlyReportData_(sheet, startRow, year, month) {
   var tz = Session.getScriptTimeZone();
   var daysInMonth = new Date(year, month, 0).getDate();
   var logsByEmployee = getMonthLogsByEmployee_(year, month);
+  // Someone on Leave never taps IN, so there's no AttendanceLog row for that
+  // day and the Shift column would otherwise sit blank -- indistinguishable
+  // from a genuinely forgotten clock-in. Read the Schedule sheet once so
+  // Leave days can show "Leave" instead; every other blank day (no
+  // AttendanceLog row AND not scheduled Leave) is left blank as before, on
+  // purpose, so a real missed clock-in still stands out.
+  var scheduledShiftsForMonth = getScheduledShiftsForMonth_(year, month);
 
   // Show an employee if they're currently Active, or they have any
   // attendance data this month (e.g. someone who left mid-month still needs
@@ -66,6 +73,10 @@ function writeMonthlyReportData_(sheet, startRow, year, month) {
       var timeIn = dayEntry && dayEntry.timeIn ? Utilities.formatDate(dayEntry.timeIn, tz, 'HH:mm') : '';
       var timeOut = dayEntry && dayEntry.timeOut ? Utilities.formatDate(dayEntry.timeOut, tz, 'HH:mm') : '';
       var shift = dayEntry ? dayEntry.shift : '';
+      if (!dayEntry) {
+        var scheduledShift = scheduledShiftsForMonth[emp.EmployeeID] && scheduledShiftsForMonth[emp.EmployeeID][d];
+        if (scheduledShift === 'Leave') shift = 'Leave';
+      }
       var isLateDay = !!(dayEntry && dayEntry.late);
       var late = isLateDay ? 'Late' : '';
       var otMinutes = dayEntry && dayEntry.otMinutes ? dayEntry.otMinutes : '';
