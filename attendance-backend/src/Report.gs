@@ -458,6 +458,20 @@ function applyBranchDeptColors_(sheet, values, headers) {
   });
 }
 
+/**
+ * Sort key for a Schedule row's employee: [branchIndex, deptIndex] --
+ * Branch in BRANCHES order (unrecognized/blank last), then Japanese before
+ * Thai within each branch. Employee ID is the final tiebreaker wherever this
+ * is used. Shared by buildScheduleSheet_'s new-sheet path and its
+ * existing-sheet re-sort, so the two orderings can never drift apart.
+ */
+function scheduleSortKey_(emp) {
+  var branchIndex = emp ? BRANCHES.indexOf(emp.Branch) : -1;
+  if (branchIndex === -1) branchIndex = BRANCHES.length;
+  var deptIndex = emp && emp.Department === 'Japanese' ? 0 : emp && emp.Department === 'Thai' ? 1 : 2;
+  return [branchIndex, deptIndex];
+}
+
 function buildScheduleSheet_(year, month) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var sheetName = 'Schedule ' + year + '-' + (month < 10 ? '0' + month : String(month));
@@ -465,20 +479,11 @@ function buildScheduleSheet_(year, month) {
   var employees = getAllEmployees_().filter(function (emp) { return isTrue_(emp.Active); });
 
   // Row order: Branch (BRANCHES order, unrecognized/blank last), then
-  // Japanese before Thai within each branch, then Employee ID. Only affects
-  // where NEW rows land -- rows already sitting on an existing sheet keep
-  // their current position, this never reorders what's already there.
+  // Japanese before Thai within each branch, then Employee ID.
   employees = employees.slice().sort(function (a, b) {
-    var branchA = BRANCHES.indexOf(a.Branch);
-    var branchB = BRANCHES.indexOf(b.Branch);
-    if (branchA === -1) branchA = BRANCHES.length;
-    if (branchB === -1) branchB = BRANCHES.length;
-    if (branchA !== branchB) return branchA - branchB;
-
-    var deptA = a.Department === 'Japanese' ? 0 : a.Department === 'Thai' ? 1 : 2;
-    var deptB = b.Department === 'Japanese' ? 0 : b.Department === 'Thai' ? 1 : 2;
-    if (deptA !== deptB) return deptA - deptB;
-
+    var keyA = scheduleSortKey_(a), keyB = scheduleSortKey_(b);
+    if (keyA[0] !== keyB[0]) return keyA[0] - keyB[0];
+    if (keyA[1] !== keyB[1]) return keyA[1] - keyB[1];
     return String(a.EmployeeID).localeCompare(String(b.EmployeeID));
   });
 
@@ -501,6 +506,30 @@ function buildScheduleSheet_(year, month) {
       var startRow = existing.getLastRow() + 1;
       existing.getRange(startRow, 1, newRows.length, headers.length).setValues(newRows);
     }
+
+    // Re-sort the whole sheet (existing rows + whatever just got appended)
+    // into Branch/Department/EmployeeID order every time this runs -- moves
+    // each employee's whole row (every day's shift together) as one unit, so
+    // nothing gets mismatched. Used to be a separate "Reorder Schedule by
+    // Branch/Department" menu item; folded in here since re-running this
+    // command is already the normal way to add someone mid-month, so the
+    // sheet may as well always come out sorted instead of needing a second
+    // manual step afterward.
+    var employeesById = {};
+    getAllEmployees_().forEach(function (emp) { employeesById[String(emp.EmployeeID)] = emp; });
+    var freshValues = existing.getDataRange().getValues();
+    var dataRows = freshValues.slice(1);
+    if (dataRows.length > 0) {
+      dataRows.sort(function (rowA, rowB) {
+        var keyA = scheduleSortKey_(employeesById[String(rowA[idCol])]);
+        var keyB = scheduleSortKey_(employeesById[String(rowB[idCol])]);
+        if (keyA[0] !== keyB[0]) return keyA[0] - keyB[0];
+        if (keyA[1] !== keyB[1]) return keyA[1] - keyB[1];
+        return String(rowA[idCol]).localeCompare(String(rowB[idCol]));
+      });
+      existing.getRange(2, 1, dataRows.length, headers.length).setValues(dataRows);
+    }
+
     // Colors and the dropdown list are cosmetic/validation only -- safe to
     // refresh across the whole sheet every time. Never touches any shift
     // value already filled in, so a sheet made before "Event" was added to
