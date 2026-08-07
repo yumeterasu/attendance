@@ -59,6 +59,66 @@ function fixAttendanceLogTimestampFormat() {
   Logger.log('Timestamp column formatted as dd/mm/yyyy hh:mm:ss.');
 }
 
+/**
+ * Scheduled deactivation sweep: for every employee still Active with a
+ * LastWorkingDay before today, flips Active to FALSE. Time-driven trigger
+ * target (see setupDailyDeactivationTrigger), so it can't use
+ * SpreadsheetApp.getUi() -- logs a summary to View > Logs instead. Also
+ * called directly by menuDeactivateEmployee_ right after saving a date, so a
+ * past/today date takes effect immediately instead of waiting for tomorrow's
+ * run.
+ */
+function applyScheduledDeactivations_() {
+  ensureColumns_('Employees', ['LastWorkingDay']);
+  var sheet = getSheet_('Employees');
+  var values = sheet.getDataRange().getValues();
+  var headers = values[0];
+  var activeCol = headers.indexOf('Active');
+  var lastDayCol = headers.indexOf('LastWorkingDay');
+  var nameCol = headers.indexOf('Name');
+
+  var now = new Date();
+  var today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+  var deactivated = [];
+  for (var i = 1; i < values.length; i++) {
+    if (!isTrue_(values[i][activeCol])) continue;
+    var lastDayRaw = values[i][lastDayCol];
+    if (!lastDayRaw) continue;
+    var lastDay = new Date(lastDayRaw);
+    if (isNaN(lastDay.getTime())) continue;
+    var lastDayOnly = new Date(lastDay.getFullYear(), lastDay.getMonth(), lastDay.getDate());
+    if (lastDayOnly.getTime() < today.getTime()) {
+      sheet.getRange(i + 1, activeCol + 1).setValue(false);
+      deactivated.push(values[i][nameCol]);
+    }
+  }
+
+  if (deactivated.length > 0) {
+    invalidateEmployeesCache_();
+    Logger.log('Deactivated ' + deactivated.length + ' employee(s) past their last working day: ' + deactivated.join(', '));
+  }
+  return deactivated;
+}
+
+/**
+ * One-off: installs a daily trigger that runs applyScheduledDeactivations_
+ * every morning. Safe to run more than once -- clears any existing trigger
+ * for the same function first. Run once from the editor: select
+ * setupDailyDeactivationTrigger in the toolbar dropdown, click Run.
+ */
+function setupDailyDeactivationTrigger() {
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === 'applyScheduledDeactivations_') ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger('applyScheduledDeactivations_')
+    .timeBased()
+    .everyDays(1)
+    .atHour(2)
+    .create();
+  Logger.log('Daily deactivation trigger created -- runs every day around 2am, deactivating anyone past their LastWorkingDay.');
+}
+
 function handleAdminResetCode_(params) {
   if (!checkApiKey_(params.apiKey)) return fail_('unauthorized', 'Invalid API key');
   var admin = requireAdmin_(params.sessionToken);

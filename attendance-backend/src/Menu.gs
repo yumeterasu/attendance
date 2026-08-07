@@ -13,6 +13,7 @@ function onOpen() {
     .addItem('Who Hasn\'t Checked In Today', 'menuWhoIsAbsentToday_')
     .addItem('Fix Mis-tapped IN After 16:00 (→ OUT)', 'menuFixLateInAsOut_')
     .addItem('Add New Employee...', 'menuAddNewEmployee_')
+    .addItem('Deactivate Employee...', 'menuDeactivateEmployee_')
     .addItem('Add Backdated Check-in/Check-out...', 'menuAddBackdatedAttendance_')
     .addItem('Bulk Mark Attendance for a Day...', 'menuBulkMarkAttendance_')
     .addItem('Create / Update Schedule Sheet...', 'menuCreateScheduleSheet_')
@@ -288,6 +289,75 @@ function menuAddNewEmployee_() {
     'Done',
     name + ' added.\n\nEmployeeID: ' + newId + '\nKiosk PIN: ' + newPin + '\n\n' +
     'Give them the Kiosk PIN to check in/out. Add them to this month\'s Schedule via "Create / Update Schedule Sheet..." to set their shifts.',
+    ui.ButtonSet.OK
+  );
+}
+
+/**
+ * Deactivates an employee, optionally effective on a future date -- they
+ * stay Active (can keep checking in/out normally) through their entered
+ * last working day, and Active switches off automatically the day after via
+ * the daily trigger (see setupDailyDeactivationTrigger in Admin.gs). If the
+ * date entered is today or already in the past, Active switches off right
+ * away instead of waiting for the next trigger run.
+ */
+function menuDeactivateEmployee_() {
+  var ui = SpreadsheetApp.getUi();
+  var title = 'Deactivate Employee';
+
+  var employeeResp = ui.prompt(title, 'Employee name or ID:', ui.ButtonSet.OK_CANCEL);
+  if (employeeResp.getSelectedButton() !== ui.Button.OK) return;
+  var employee = findEmployeeByNameOrId_(employeeResp.getResponseText().trim());
+  if (!employee) {
+    ui.alert('No employee found matching "' + employeeResp.getResponseText().trim() + '".');
+    return;
+  }
+
+  var confirmEmployee = ui.alert(
+    title,
+    'Found: ' + employee.Name + ' (' + employee.EmployeeID + '). Is this the right person?',
+    ui.ButtonSet.YES_NO
+  );
+  if (confirmEmployee !== ui.Button.YES) return;
+
+  var dateResp = ui.prompt(title, employee.Name + ' -- Last working day (DD/MM/YYYY):', ui.ButtonSet.OK_CANCEL);
+  if (dateResp.getSelectedButton() !== ui.Button.OK) return;
+  var dateParts = dateResp.getResponseText().trim().split('/');
+  if (dateParts.length !== 3) { ui.alert('Enter the date as DD/MM/YYYY.'); return; }
+  var day = Number(dateParts[0]), month = Number(dateParts[1]), year = Number(dateParts[2]);
+  var lastWorkingDay = new Date(year, month - 1, day);
+  if (isNaN(lastWorkingDay.getTime())) { ui.alert('That date did not parse -- double check the values.'); return; }
+
+  var now = new Date();
+  var today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  var isFuture = lastWorkingDay.getTime() >= today.getTime();
+  var formattedDate = Utilities.formatDate(lastWorkingDay, Session.getScriptTimeZone(), 'dd/MM/yyyy');
+
+  var confirm = ui.alert(
+    title,
+    'Set ' + employee.Name + '\'s last working day to ' + formattedDate + '?\n\n' +
+    (isFuture
+      ? 'They can keep checking in/out normally through that day. Active will switch off automatically the day after -- no need to come back and do it manually.'
+      : 'That date has already passed, so Active will switch off right away.'),
+    ui.ButtonSet.YES_NO
+  );
+  if (confirm !== ui.Button.YES) return;
+
+  ensureColumns_('Employees', ['LastWorkingDay']);
+  var found = findEmployeeRow_(employee.EmployeeID);
+  updateEmployeeFields_(found.rowNumber, { LastWorkingDay: lastWorkingDay });
+  invalidateEmployeesCache_();
+
+  applyScheduledDeactivations_(); // catches this row immediately if the date is today/past, rather than waiting for tomorrow's trigger run
+  var updated = findEmployeeRow_(employee.EmployeeID);
+  var deactivatedNow = updated && !isTrue_(updated.row.Active);
+
+  ui.alert(
+    'Done',
+    employee.Name + '\'s last working day is set to ' + formattedDate + '.\n\n' +
+    (deactivatedNow
+      ? 'Active has been switched off now.'
+      : 'They remain Active until then -- Active will switch off automatically the day after.'),
     ui.ButtonSet.OK
   );
 }
