@@ -308,6 +308,12 @@ function menuAddNewEmployee_() {
  * the daily trigger (see setupDailyDeactivationTrigger in Admin.gs). If the
  * date entered is today or already in the past, Active switches off right
  * away instead of waiting for the next trigger run.
+ *
+ * Leaving the date blank undoes a previous run instead: if they're still
+ * Active (deactivation was scheduled for a future date but hasn't happened
+ * yet), it just clears that date, so the trigger won't touch them anymore.
+ * If they're already Inactive, it reactivates them and clears the date --
+ * covers "changed their mind and decided to keep working" either way.
  */
 function menuDeactivateEmployee_() {
   var ui = SpreadsheetApp.getUi();
@@ -328,8 +334,18 @@ function menuDeactivateEmployee_() {
   );
   if (confirmEmployee !== ui.Button.YES) return;
 
-  var dateResp = ui.prompt(title, employee.Name + ' -- Last working day (DD/MM/YYYY):', ui.ButtonSet.OK_CANCEL);
+  var dateResp = ui.prompt(
+    title,
+    employee.Name + ' -- Last working day (DD/MM/YYYY), or leave blank to cancel a previous deactivation and keep/restore them Active:',
+    ui.ButtonSet.OK_CANCEL
+  );
   if (dateResp.getSelectedButton() !== ui.Button.OK) return;
+
+  if (!dateResp.getResponseText().trim()) {
+    menuUndoDeactivation_(ui, title, employee);
+    return;
+  }
+
   var dateParts = dateResp.getResponseText().trim().split('/');
   if (dateParts.length !== 3) { ui.alert('Enter the date as DD/MM/YYYY.'); return; }
   var day = Number(dateParts[0]), month = Number(dateParts[1]), year = Number(dateParts[2]);
@@ -368,6 +384,35 @@ function menuDeactivateEmployee_() {
       : 'They remain Active until then -- Active will switch off automatically the day after.'),
     ui.ButtonSet.OK
   );
+}
+
+/** Blank-date branch of menuDeactivateEmployee_ -- see its doc comment. */
+function menuUndoDeactivation_(ui, title, employee) {
+  var found = findEmployeeRow_(employee.EmployeeID);
+  var wasActive = found && isTrue_(found.row.Active);
+  var hadScheduledDate = found && found.row.LastWorkingDay;
+
+  if (wasActive && !hadScheduledDate) {
+    ui.alert(employee.Name + ' is already Active with no last working day set -- nothing to cancel.');
+    return;
+  }
+
+  var confirm = ui.alert(
+    title,
+    wasActive
+      ? 'Cancel ' + employee.Name + '\'s scheduled deactivation? They\'ll stay Active with no last working day set.'
+      : 'Reactivate ' + employee.Name + '? Active will be switched back on and their last working day cleared.',
+    ui.ButtonSet.YES_NO
+  );
+  if (confirm !== ui.Button.YES) return;
+
+  ensureColumns_('Employees', ['LastWorkingDay']);
+  updateEmployeeFields_(found.rowNumber, { Active: true, LastWorkingDay: '' });
+  invalidateEmployeesCache_();
+
+  ui.alert('Done', wasActive
+    ? employee.Name + '\'s scheduled deactivation has been cancelled -- they remain Active.'
+    : employee.Name + ' is Active again.', ui.ButtonSet.OK);
 }
 
 function menuCreateScheduleSheet_() {
