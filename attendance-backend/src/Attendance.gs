@@ -391,6 +391,32 @@ function findTodayInLog_(employeeId, now, log) {
 }
 
 /** Finds an employee's row for a specific type (IN or OUT) on a specific date, searching the whole AttendanceLog (not just the recent window) since a backdated entry can be from any point in the past. */
+/**
+ * Reads AttendanceLog once and returns the set of EmployeeIDs (string keys)
+ * who have at least one IN row on `date`. Use instead of calling
+ * findLogEntryForDate_ inside a loop over many employees -- that helper
+ * re-reads the whole AttendanceLog sheet on every single call, which is
+ * fine for a one-off lookup but not for checking dozens of employees at
+ * once (see menuWhoIsAbsentToday_, menuBulkMarkAttendance_).
+ */
+function getEmployeeIdsWithInOnDate_(date) {
+  var sheet = getSheet_('AttendanceLog');
+  var values = sheet.getDataRange().getValues();
+  var headers = values[0];
+  var idCol = headers.indexOf('EmployeeID');
+  var tsCol = headers.indexOf('Timestamp');
+  var typeCol = headers.indexOf('Type');
+
+  var ids = {};
+  for (var i = 1; i < values.length; i++) {
+    if (values[i][typeCol] !== 'IN') continue;
+    var ts = new Date(values[i][tsCol]);
+    if (!isSameDay_(ts, date)) continue;
+    ids[String(values[i][idCol])] = true;
+  }
+  return ids;
+}
+
 function findLogEntryForDate_(employeeId, type, date) {
   var sheet = getSheet_('AttendanceLog');
   var values = sheet.getDataRange().getValues();
@@ -421,8 +447,16 @@ function findLogEntryForDate_(employeeId, type, date) {
  * double-taps in real time, which isn't relevant to a deliberate historical
  * entry -- and searches the full log rather than the recent window, since the
  * day being backfilled could be from any point in the past.
+ *
+ * `precomputedShift`, if passed (a string, possibly ''), is used instead of
+ * calling getScheduledShift_ -- that helper re-reads the whole Schedule
+ * sheet on every call, fine for this function's normal single-call use (see
+ * menuAddBackdatedAttendance_) but not when a caller is looping over many
+ * employees at once (see menuBulkMarkAttendance_, which already has each
+ * employee's shift from a single batch read). Omit it (undefined) to keep
+ * the old single-lookup behavior.
  */
-function recordBackdatedAttendance_(employeeId, type, timestamp, ot) {
+function recordBackdatedAttendance_(employeeId, type, timestamp, ot, precomputedShift) {
   var found = findEmployeeRow_(employeeId);
   if (!found) throw new Error('Employee not found: ' + employeeId);
   var emp = found.row;
@@ -435,7 +469,7 @@ function recordBackdatedAttendance_(employeeId, type, timestamp, ot) {
   var otQuartersForRow = '';
 
   if (type === 'IN') {
-    var scheduledShift = getScheduledShift_(employeeId, timestamp);
+    var scheduledShift = precomputedShift !== undefined ? precomputedShift : getScheduledShift_(employeeId, timestamp);
     if (scheduledShift) {
       shiftForRow = scheduledShift;
       late = isLate_(scheduledShift, timestamp);

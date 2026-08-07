@@ -30,15 +30,22 @@ function onOpen() {
  * Quick read-only check: everyone Active and scheduled to work today who
  * doesn't have an IN recorded yet. Uses today's actual date, not a prompt --
  * this is meant to be a one-click glance, not a lookup for other days (use
- * the Report sheet for past days).
+ * the Report sheet for past days). Reads the Schedule and AttendanceLog
+ * sheets once each (not once per employee) -- see getScheduledShiftsForMonth_
+ * and getEmployeeIdsWithInOnDate_.
  */
 function menuWhoIsAbsentToday_() {
   var ui = SpreadsheetApp.getUi();
   var date = new Date();
+  var today = date.getDate();
+  var scheduledShiftsForMonth = getScheduledShiftsForMonth_(date.getFullYear(), date.getMonth() + 1);
 
   var scheduled = getAllEmployees_()
     .filter(function (emp) { return isTrue_(emp.Active); })
-    .map(function (emp) { return { employee: emp, shift: getScheduledShift_(emp.EmployeeID, date) }; })
+    .map(function (emp) {
+      var shift = (scheduledShiftsForMonth[emp.EmployeeID] && scheduledShiftsForMonth[emp.EmployeeID][today]) || '';
+      return { employee: emp, shift: shift };
+    })
     .filter(function (s) { return s.shift && s.shift !== 'Leave'; }); // "Leave" means intentionally off, not "not scheduled yet" -- exclude from this list
 
   if (scheduled.length === 0) {
@@ -46,8 +53,9 @@ function menuWhoIsAbsentToday_() {
     return;
   }
 
+  var checkedInIds = getEmployeeIdsWithInOnDate_(date);
   var missing = scheduled.filter(function (s) {
-    return !findLogEntryForDate_(s.employee.EmployeeID, 'IN', date);
+    return !checkedInIds[String(s.employee.EmployeeID)];
   });
 
   if (missing.length === 0) {
@@ -608,9 +616,18 @@ function menuBulkMarkAttendance_() {
   var date = new Date(year, month - 1, day);
   if (isNaN(date.getTime())) { ui.alert('That date did not parse -- double check the values.'); return; }
 
+  // Read Schedule and AttendanceLog once each here, not once per employee
+  // (see getScheduledShiftsForMonth_/getEmployeeIdsWithInOnDate_) -- this
+  // command is meant for marking many employees at once (a full outage
+  // day), so a per-employee re-read of either sheet was the same trap that
+  // "Recompute Late/OT for ALL Months" used to fall into.
+  var scheduledShiftsForMonth = getScheduledShiftsForMonth_(year, month);
   var scheduled = getAllEmployees_()
     .filter(function (emp) { return isTrue_(emp.Active); })
-    .map(function (emp) { return { employee: emp, shift: getScheduledShift_(emp.EmployeeID, date) }; })
+    .map(function (emp) {
+      var shift = (scheduledShiftsForMonth[emp.EmployeeID] && scheduledShiftsForMonth[emp.EmployeeID][day]) || '';
+      return { employee: emp, shift: shift };
+    })
     .filter(function (s) { return s.shift && s.shift !== 'Leave'; }); // "Leave" means intentionally off, not "not scheduled yet" -- exclude from this list
 
   if (scheduled.length === 0) {
@@ -646,6 +663,7 @@ function menuBulkMarkAttendance_() {
   });
 
   var added = 0, skippedExisting = 0, absentCount = 0, errors = [];
+  var checkedInIds = getEmployeeIdsWithInOnDate_(date);
 
   scheduled.forEach(function (s) {
     var emp = s.employee;
@@ -664,10 +682,10 @@ function menuBulkMarkAttendance_() {
     var inTime = new Date(year, month - 1, day, Number(startMatch[1]), Number(startMatch[2]), 0);
     inTime = new Date(inTime.getTime() + lateMinutes * 60000);
 
-    if (findLogEntryForDate_(emp.EmployeeID, 'IN', date)) {
+    if (checkedInIds[String(emp.EmployeeID)]) {
       skippedExisting++;
     } else {
-      recordBackdatedAttendance_(emp.EmployeeID, 'IN', inTime, false);
+      recordBackdatedAttendance_(emp.EmployeeID, 'IN', inTime, false, s.shift);
       added++;
     }
   });
