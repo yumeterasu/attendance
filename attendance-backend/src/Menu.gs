@@ -11,6 +11,7 @@ function onOpen() {
     .createMenu('Attendance Admin')
     .addItem('Health Check', 'menuHealthCheck_')
     .addItem('Who Hasn\'t Checked In Today', 'menuWhoIsAbsentToday_')
+    .addItem('Fix Mis-tapped IN After 16:00 (→ OUT)', 'menuFixLateInAsOut_')
     .addItem('Add Backdated Check-in/Check-out...', 'menuAddBackdatedAttendance_')
     .addItem('Bulk Mark Attendance for a Day...', 'menuBulkMarkAttendance_')
     .addItem('Create / Update Schedule Sheet...', 'menuCreateScheduleSheet_')
@@ -58,6 +59,134 @@ function menuWhoIsAbsentToday_() {
     missing.length + ' of ' + scheduled.length + ' scheduled:\n\n' + lines.join('\n'),
     ui.ButtonSet.OK
   );
+}
+
+/**
+ * Finds IN rows tapped at/after LATE_IN_HOUR_THRESHOLD local time -- no shift
+ * in SHIFTS starts this late, so this is almost certainly a mis-tap where
+ * someone forgot to switch from IN to OUT when leaving for the day (e.g.
+ * NUY on Aug 5-6). Shows what it found and asks for one confirmation before
+ * converting all of them to OUT at once. Whole AttendanceLog history, not
+ * just the current month, since the sheet is small enough to scan in full.
+ *
+ * OT handling on conversion: Japanese OT is always auto-computed from the
+ * (now-OUT) timestamp, same as a live check-out. Thai/other OT is left at 0
+ * (plain OUT) -- there's no way to know after the fact whether "OUT OT" was
+ * actually intended, so it defaults to the safer no-OT reading; use "Add
+ * Backdated Check-in/Check-out..." separately for any case that should carry
+ * OT.
+ */
+var LATE_IN_HOUR_THRESHOLD = 16;
+
+function menuFixLateInAsOut_() {
+  var ui = SpreadsheetApp.getUi();
+  var sheet = getSheet_('AttendanceLog');
+  var values = sheet.getDataRange().getValues();
+  var headers = values[0];
+  var idCol = headers.indexOf('EmployeeID');
+  var nameCol = headers.indexOf('Name');
+  var deptCol = headers.indexOf('Department');
+  var typeCol = headers.indexOf('Type');
+  var tsCol = headers.indexOf('Timestamp');
+  var shiftCol = headers.indexOf('Shift');
+  var lateCol = headers.indexOf('Late');
+  var durationCol = headers.indexOf('DurationMinutes');
+  var otCol = headers.indexOf('OT');
+  var otMinCol = headers.indexOf('OTMinutes');
+  var otQuartersCol = headers.indexOf('OTQuarters');
+
+  var flagged = [];
+  for (var i = 1; i < values.length; i++) {
+    if (values[i][typeCol] !== 'IN') continue;
+    var ts = new Date(values[i][tsCol]);
+    if (ts.getHours() >= LATE_IN_HOUR_THRESHOLD) {
+      flagged.push({ rowIndex: i, timestamp: ts, employeeId: String(values[i][idCol]), name: values[i][nameCol], department: values[i][deptCol] });
+    }
+  }
+
+  if (flagged.length === 0) {
+    ui.alert('No mis-tapped IN taps found (nothing tapped IN at/after ' + LATE_IN_HOUR_THRESHOLD + ':00).');
+    return;
+  }
+
+  var tz = Session.getScriptTimeZone();
+  var byEmployee = {};
+  flagged.forEach(function (f) {
+    if (!byEmployee[f.employeeId]) byEmployee[f.employeeId] = { name: f.name, entries: [] };
+    byEmployee[f.employeeId].entries.push(f.timestamp);
+  });
+  var lines = Object.keys(byEmployee).map(function (id) {
+    var e = byEmployee[id];
+    var times = e.entries.map(function (t) { return Utilities.formatDate(t, tz, 'dd/MM HH:mm'); }).join(', ');
+    return e.name + ' (' + e.entries.length + '): ' + times;
+  });
+
+  var confirm = ui.alert(
+    'Fix Mis-tapped IN After 16:00',
+    'Found ' + flagged.length + ' IN tap(s) at/after ' + LATE_IN_HOUR_THRESHOLD + ':00 -- no shift starts this late, so these look like OUT mistakes:\n\n' +
+    lines.join('\n') +
+    '\n\nConvert them all to OUT? Japanese OT is computed automatically as usual; ' +
+    'Thai/other OT defaults to none (add it separately via "Add Backdated Check-in/Check-out..." if it applies).',
+    ui.ButtonSet.YES_NO
+  );
+  if (confirm !== ui.Button.YES) return;
+
+  var fixedCount = 0;
+  var skipped = [];
+
+  flagged.forEach(function (f) {
+    // Pair with that day's genuine earlier IN to compute duration -- if this
+    // mis-tap is the only IN that day, there's no real clock-in to pair with,
+    // so skip rather than guess at a duration.
+    var realIn = null;
+    for (var j = 1; j < values.length; j++) {
+      if (j === f.rowIndex) continue;
+      if (String(values[j][idCol]) !== f.employeeId) continue;
+      if (values[j][typeCol] !== 'IN') continue;
+      var ts2 = new Date(values[j][tsCol]);
+      if (ts2.getFullYear() === f.timestamp.getFullYear() && ts2.getMonth() === f.timestamp.getMonth() && ts2.getDate() === f.timestamp.getDate()) {
+        if (!realIn || ts2 < realIn) realIn = ts2;
+      }
+    }
+
+    if (!realIn) {
+      skipped.push(f.name + ' (' + Utilities.formatDate(f.timestamp, tz, 'dd/MM HH:mm') + ' -- no earlier IN that day to pair with)');
+      return;
+    }
+
+    var durationMinutes = Math.round((f.timestamp.getTime() - realIn.getTime()) / 60000);
+    var scheduledShift = getScheduledShift_(f.employeeId, f.timestamp);
+    var otMinutesForRow = '';
+    var otQuartersForRow = '';
+    var otForRow = false;
+    if (f.department === 'Japanese') {
+      var emp = findEmployeeRow_(f.employeeId);
+      var capMinutes = emp ? (Number(emp.row.OTMaxMinutes) || JP_OT_CAP_MINUTES) : JP_OT_CAP_MINUTES;
+      otMinutesForRow = scheduledShift ? computeJapaneseOtMinutes_(scheduledShift, f.timestamp, capMinutes) : 0;
+      otForRow = otMinutesForRow > 0;
+    } else {
+      otQuartersForRow = 0; // can't know if OUT OT was intended -- see doc comment above
+    }
+
+    var rowNum = f.rowIndex + 1;
+    sheet.getRange(rowNum, typeCol + 1).setValue('OUT');
+    sheet.getRange(rowNum, shiftCol + 1).setValue('');
+    sheet.getRange(rowNum, lateCol + 1).setValue('');
+    sheet.getRange(rowNum, durationCol + 1).setValue(durationMinutes);
+    sheet.getRange(rowNum, otCol + 1).setValue(otForRow);
+    sheet.getRange(rowNum, otMinCol + 1).setValue(otMinutesForRow);
+    sheet.getRange(rowNum, otQuartersCol + 1).setValue(otQuartersForRow);
+    fixedCount++;
+  });
+
+  refreshLiveReportSheet_();
+  refreshLiveSummarySheet_();
+
+  var summary = 'Fixed ' + fixedCount + ' of ' + flagged.length + ' flagged row(s).';
+  if (skipped.length > 0) {
+    summary += '\n\nSkipped (no earlier IN that day to pair with):\n' + skipped.join('\n');
+  }
+  ui.alert('Done', summary + '\n\nReport and Summary tabs have been refreshed.', ui.ButtonSet.OK);
 }
 
 function menuCreateScheduleSheet_() {
