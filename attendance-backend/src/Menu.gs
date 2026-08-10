@@ -8,20 +8,20 @@
  */
 function onOpen() {
   SpreadsheetApp.getUi()
-    .createMenu('Attendance Admin')
-    .addItem('Health Check', 'menuHealthCheck_')
-    .addItem('Who Hasn\'t Checked In Today', 'menuWhoIsAbsentToday_')
-    .addItem('Fix Mis-tapped IN After 16:00 (→ OUT)', 'menuFixLateInAsOut_')
-    .addItem('Add New Employee...', 'menuAddNewEmployee_')
-    .addItem('Deactivate Employee...', 'menuDeactivateEmployee_')
-    .addItem('Add Backdated Check-in/Check-out...', 'menuAddBackdatedAttendance_')
-    .addItem('Bulk Mark Attendance for a Day...', 'menuBulkMarkAttendance_')
-    .addItem('Create / Update Schedule Sheet...', 'menuCreateScheduleSheet_')
-    .addItem('Recompute Late/OT for ALL Months', 'menuRecomputeLateOtAllMonths_')
-    .addItem('Generate Kiosk Codes for Everyone', 'menuGenerateKioskPins_')
+    .createMenu('แอดมินระบบเช็คชื่อ')
+    .addItem('ตรวจสอบความผิดปกติของระบบ', 'menuHealthCheck_')
+    .addItem('ใครยังไม่เข้างานวันนี้', 'menuWhoIsAbsentToday_')
+    .addItem('แก้ไข IN ที่กดผิดหลัง 16:00 (→ OUT)', 'menuFixLateInAsOut_')
+    .addItem('เพิ่มพนักงานใหม่', 'menuAddNewEmployee_')
+    .addItem('ปิดสถานะพนักงาน (ลาออก)', 'menuDeactivateEmployee_')
+    .addItem('เพิ่มเวลาเข้า-ออกงานย้อนหลัง', 'menuAddBackdatedAttendance_')
+    .addItem('บันทึกเข้างานทีเดียวทั้งวัน', 'menuBulkMarkAttendance_')
+    .addItem('สร้าง/อัปเดตตารางกะ', 'menuCreateScheduleSheet_')
+    .addItem('คำนวณ Late/OT ใหม่ทุกเดือน', 'menuRecomputeLateOtAllMonths_')
+    .addItem('สร้างรหัส Kiosk ให้ทุกคน', 'menuGenerateKioskPins_')
     .addSeparator()
-    .addItem('Issue New Setup Code (Admin Pairing)...', 'menuIssueSetupCode_')
-    .addItem('Set Kiosk Exit PIN...', 'menuSetKioskExitPin_')
+    .addItem('ออกรหัสตั้งค่าแอดมินใหม่', 'menuIssueSetupCode_')
+    .addItem('ตั้งรหัส PIN ออกจากโหมด Kiosk', 'menuSetKioskExitPin_')
     .addToUi();
 }
 
