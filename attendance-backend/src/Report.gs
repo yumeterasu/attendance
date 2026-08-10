@@ -351,8 +351,10 @@ function writeMonthlySummaryData_(sheet, startRow, year, month) {
   });
 
   var COLS = 7; // Employee, Department, Days Worked, Late Count, OT (min), OT (Quarter), OT Pay (Baht)
+  var LATE_COUNT_COL = 4;
   var OT_PAY_COL = 7;
   var rows = [['Employee', 'Department', 'Days Worked', 'Late Count', 'OT (min)', 'OT (Quarter)', 'OT Pay (Baht)']];
+  var lateHighlightRows = []; // sheet row numbers (1-indexed) where Late Count > 0, for the red highlight below
   var otPayHighlightRows = []; // sheet row numbers (1-indexed) where OT Pay > 0, for the light-green highlight below
 
   employees.forEach(function (emp) {
@@ -371,11 +373,19 @@ function writeMonthlySummaryData_(sheet, startRow, year, month) {
 
     var otPay = computeOtPay_(emp, otMinutesTotal, otQuartersTotal);
     rows.push([emp.Name + ' (' + emp.EmployeeID + ')', emp.Department, daysWorked, lateCount, otMinutesTotal, otQuartersTotal, otPay]);
+    if (lateCount > 0) lateHighlightRows.push(startRow + rows.length - 1);
     if (otPay > 0) otPayHighlightRows.push(startRow + rows.length - 1);
   });
 
   sheet.getRange(startRow, 1, rows.length, COLS).setValues(rows);
   sheet.getRange(startRow, 1, 1, COLS).setFontWeight('bold').setBackground('#ffe6dd');
+
+  if (lateHighlightRows.length > 0) {
+    var lateA1Notations = lateHighlightRows.map(function (r) { return sheet.getRange(r, LATE_COUNT_COL).getA1Notation(); });
+    var lateRangeList = sheet.getRangeList(lateA1Notations);
+    lateRangeList.setBackground('#c0392b');
+    lateRangeList.setFontColor('#ffffff');
+  }
 
   if (otPayHighlightRows.length > 0) {
     var a1Notations = otPayHighlightRows.map(function (r) { return sheet.getRange(r, OT_PAY_COL).getA1Notation(); });
