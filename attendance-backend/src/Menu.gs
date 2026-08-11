@@ -479,14 +479,27 @@ function menuRecomputeLateOtAllMonths_() {
   refreshLiveReportSheet_();
   refreshLiveSummarySheet_();
 
-  ui.alert(
-    'Done',
-    'Recomputed ' + scheduleMatches.length + ' month(s):\n\n' + summaryLines.join('\n') +
+  // Same "scheduled but no check-in at all" check Health Check runs, across
+  // every month just recomputed -- surfaces forgotten punches / days that
+  // should have been marked Leave right here, instead of waiting for a
+  // separate Health Check run to notice.
+  var activeEmployees = getAllEmployees_().filter(function (emp) { return isTrue_(emp.Active); });
+  var missingFindings = [];
+  scheduleMatches.forEach(function (m) {
+    checkMissingAttendance_(missingFindings, activeEmployees, Number(m[1]), Number(m[2]));
+  });
+
+  var message = 'Recomputed ' + scheduleMatches.length + ' month(s):\n\n' + summaryLines.join('\n') +
     '\n\nTotal: ' + totalIn + ' IN row(s), ' + totalOut + ' OUT row(s) updated.\n\n' +
     'Thai/non-Japanese OT was left untouched -- it can only be trusted from the moment it was recorded, not recomputed after the fact.\n\n' +
-    'Report and Summary tabs have been refreshed to match (whichever month each is currently showing).',
-    ui.ButtonSet.OK
-  );
+    'Report and Summary tabs have been refreshed to match (whichever month each is currently showing).';
+
+  if (missingFindings.length > 0) {
+    var missingLines = missingFindings.map(function (f, i) { return (i + 1) + '. ' + f.message; });
+    message += '\n\n⚠ ' + missingFindings.length + ' day(s) scheduled with no check-in at all:\n\n' + missingLines.join('\n');
+  }
+
+  ui.alert('Done', message, ui.ButtonSet.OK);
 }
 
 /**

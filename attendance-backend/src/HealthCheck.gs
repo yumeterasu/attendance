@@ -233,18 +233,31 @@ function checkMissingCheckouts_(findings) {
 
 /**
  * Active employees scheduled a real shift (not blank, not "Leave") on a day
- * that's already fully passed this month, but with no check-in recorded at
- * all -- not "forgot to check out" (checkMissingCheckouts_ already covers
- * that), this is nothing on the books whatsoever. Usually means either they
- * genuinely forgot to tap the kiosk all day, or the day should have been
- * marked Leave on the Schedule but wasn't. Not today -- they may not have
- * come in yet.
+ * that's already fully passed, but with no check-in recorded at all -- not
+ * "forgot to check out" (checkMissingCheckouts_ already covers that), this
+ * is nothing on the books whatsoever. Usually means either they genuinely
+ * forgot to tap the kiosk all day, or the day should have been marked Leave
+ * on the Schedule but wasn't.
+ *
+ * year/month default to the current month (Health Check's own use). Pass
+ * them explicitly to check a different month -- e.g. "Recompute Late/OT for
+ * ALL Months" calls this once per month it just recomputed. For the current
+ * month only days before today are checked (today may not be over yet); for
+ * a fully past month every day is checked; a future month is skipped
+ * entirely since no days there have passed yet.
  */
-function checkMissingAttendance_(findings, activeEmployees) {
+function checkMissingAttendance_(findings, activeEmployees, year, month) {
   var now = new Date();
-  var year = now.getFullYear();
-  var month = now.getMonth() + 1;
-  var today = now.getDate();
+  if (year === undefined) year = now.getFullYear();
+  if (month === undefined) month = now.getMonth() + 1;
+
+  var isFutureMonth = year > now.getFullYear() || (year === now.getFullYear() && month > now.getMonth() + 1);
+  if (isFutureMonth) return;
+
+  var isCurrentMonth = year === now.getFullYear() && month === now.getMonth() + 1;
+  var lastDayToCheck = isCurrentMonth ? now.getDate() - 1 : new Date(year, month, 0).getDate();
+  if (lastDayToCheck < 1) return;
+
   var sheetName = 'Schedule ' + year + '-' + (month < 10 ? '0' + month : month);
   var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
   if (!sheet) return; // checkCurrentSchedule_ already reports a missing Schedule sheet
@@ -268,7 +281,7 @@ function checkMissingAttendance_(findings, activeEmployees) {
 
   activeEmployees.forEach(function (emp) {
     var shiftsByDay = scheduledShiftsForMonth[emp.EmployeeID] || {};
-    for (var day = 1; day < today; day++) {
+    for (var day = 1; day <= lastDayToCheck; day++) {
       var shift = shiftsByDay[day];
       if (!shift || shift === 'Leave') continue;
       if (hasInByKey[String(emp.EmployeeID) + '|' + day]) continue;
