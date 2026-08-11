@@ -276,11 +276,6 @@ function menuAddNewEmployee_() {
   );
   if (confirm !== ui.Button.YES) return;
 
-  // Force plain-text format on the PIN cell before writing -- otherwise
-  // Sheets can auto-convert e.g. "0422" to the number 422 and silently drop
-  // the leading zero (same issue assignMissingKioskPins_ guards against).
-  sheet.getRange(sheet.getLastRow() + 1, pinCol + 1).setNumberFormat('@');
-
   appendRow_('Employees', {
     EmployeeID: newId,
     Name: name,
@@ -290,6 +285,17 @@ function menuAddNewEmployee_() {
     KioskPIN: newPin,
     CreatedAt: new Date()
   });
+
+  // Force plain-text format on the PIN cell and re-set the value -- setting
+  // the format on the row *before* appendRow_ wrote to it didn't reliably
+  // stick (appendRow_ writes the whole row through Sheet.appendRow(), a
+  // different code path than Range.setValue(), and it could still
+  // auto-convert e.g. "0422" to the number 422, silently dropping the
+  // leading zero). Formatting the cell that already holds the value, then
+  // writing it again, is the same proven approach assignMissingKioskPins_
+  // uses.
+  var newRow = sheet.getLastRow();
+  sheet.getRange(newRow, pinCol + 1).setNumberFormat('@').setValue(newPin);
   invalidateEmployeesCache_();
 
   ui.alert(
