@@ -142,9 +142,15 @@ function handleAdminResetCode_(params) {
 /**
  * Kiosk PINs: every employee gets a unique 4-digit code typed on the shared
  * tablet's keypad to check in/out -- no login, no QR. Safe to call anytime;
- * only fills in PINs for rows that don't have one yet. View codes directly in
- * the Employees sheet's KioskPIN column. Triggered from the "Attendance
- * Admin" Google Sheets menu (see Menu.gs), not from the app.
+ * only fills in PINs for rows that don't have one yet, and repairs any PIN
+ * that lost a leading zero (e.g. a manual edit turned "0422" into 422). View
+ * codes directly in the Employees sheet's KioskPIN column.
+ *
+ * No longer wired to a menu item -- "Add New Employee..." assigns a PIN at
+ * creation time now, so the routine bulk-assignment case doesn't come up
+ * anymore. Health Check's checkEmployeesSheet_ detects both problems this
+ * still fixes (missing PIN, PIN not 4 digits) and flags them for a manual
+ * fix; this function is kept as the one-off repair path for that.
  */
 function assignMissingKioskPins_() {
   ensureColumns_('Employees', ['KioskPIN']);

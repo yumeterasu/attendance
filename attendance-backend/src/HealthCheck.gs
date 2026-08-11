@@ -129,11 +129,18 @@ function checkEmployeesSheet_(findings) {
       });
     }
 
-    if (!String(row[pinCol] || '').trim()) {
+    var pin = String(row[pinCol] || '').trim();
+    if (!pin) {
       findings.push({
         sheetName: 'Employees',
         a1: sheet.getRange(i + 1, pinCol + 1).getA1Notation(),
-        message: name + ': Active but has no Kiosk PIN -- run "Generate Kiosk Codes for Everyone".'
+        message: name + ': Active but has no Kiosk PIN -- needs one assigned.'
+      });
+    } else if (pin.length !== 4) {
+      findings.push({
+        sheetName: 'Employees',
+        a1: sheet.getRange(i + 1, pinCol + 1).getA1Notation(),
+        message: name + ': Kiosk PIN is "' + pin + '" (' + pin.length + ' digit' + (pin.length === 1 ? '' : 's') + ') -- should always be 4. Likely lost a leading zero from a manual edit.'
       });
     }
   }

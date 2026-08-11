@@ -18,7 +18,6 @@ function onOpen() {
     .addItem('บันทึกเข้างานทีเดียวทั้งวัน', 'menuBulkMarkAttendance_')
     .addItem('สร้าง/อัปเดตตารางกะ', 'menuCreateScheduleSheet_')
     .addItem('คำนวณ Late/OT ใหม่ทุกเดือน', 'menuRecomputeLateOtAllMonths_')
-    .addItem('สร้างรหัส Kiosk ให้ทุกคน', 'menuGenerateKioskPins_')
     .addSeparator()
     .addItem('ออกรหัสตั้งค่าแอดมินใหม่', 'menuIssueSetupCode_')
     .addItem('ตั้งรหัส PIN ออกจากโหมด Kiosk', 'menuSetKioskExitPin_')
@@ -706,12 +705,6 @@ function menuBulkMarkAttendance_() {
     'Marked absent (skipped): ' + absentCount + '.';
   if (errors.length) msg += '\n\nErrors:\n' + errors.join('\n');
   ui.alert('Done', msg, ui.ButtonSet.OK);
-}
-
-function menuGenerateKioskPins_() {
-  var ui = SpreadsheetApp.getUi();
-  var assigned = assignMissingKioskPins_();
-  ui.alert('Done', assigned + ' new code' + (assigned === 1 ? '' : 's') + ' assigned. View them in the Employees sheet\'s KioskPIN column.', ui.ButtonSet.OK);
 }
 
 function menuIssueSetupCode_() {
