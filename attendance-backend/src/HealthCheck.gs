@@ -2,9 +2,9 @@
  * Health Check: scans Employees, this month's Schedule sheet, and this
  * month's AttendanceLog for the kinds of mistakes a fat-fingered edit tends
  * to cause (typo'd Department, missing Kiosk PIN, shift typed instead of
- * picked from the dropdown, forgotten checkout, etc.), then jumps straight to
- * the first one found instead of making you hunt for it. Menu: Attendance
- * Admin > Health Check.
+ * picked from the dropdown, forgotten checkout, a scheduled day with no
+ * check-in at all, etc.), then jumps straight to the first one found instead
+ * of making you hunt for it. Menu: Attendance Admin > Health Check.
  */
 function menuHealthCheck_() {
   var ui = SpreadsheetApp.getUi();
@@ -44,6 +44,7 @@ function runHealthCheck_() {
   checkEmployeesSheet_(findings);
   checkCurrentSchedule_(findings, activeEmployees);
   checkMissingCheckouts_(findings);
+  checkMissingAttendance_(findings, activeEmployees);
 
   return findings;
 }
@@ -227,5 +228,55 @@ function checkMissingCheckouts_(findings) {
       a1: sheet.getRange(info.rowNumber, typeCol + 1).getA1Notation(),
       message: info.name + ': has IN on day ' + day2 + ' but no matching OUT -- forgot to check out?'
     });
+  });
+}
+
+/**
+ * Active employees scheduled a real shift (not blank, not "Leave") on a day
+ * that's already fully passed this month, but with no check-in recorded at
+ * all -- not "forgot to check out" (checkMissingCheckouts_ already covers
+ * that), this is nothing on the books whatsoever. Usually means either they
+ * genuinely forgot to tap the kiosk all day, or the day should have been
+ * marked Leave on the Schedule but wasn't. Not today -- they may not have
+ * come in yet.
+ */
+function checkMissingAttendance_(findings, activeEmployees) {
+  var now = new Date();
+  var year = now.getFullYear();
+  var month = now.getMonth() + 1;
+  var today = now.getDate();
+  var sheetName = 'Schedule ' + year + '-' + (month < 10 ? '0' + month : month);
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
+  if (!sheet) return; // checkCurrentSchedule_ already reports a missing Schedule sheet
+
+  var scheduledShiftsForMonth = getScheduledShiftsForMonth_(year, month);
+
+  var logSheet = getSheet_('AttendanceLog');
+  var logValues = logSheet.getDataRange().getValues();
+  var logHeaders = logValues[0];
+  var logIdCol = logHeaders.indexOf('EmployeeID');
+  var logTsCol = logHeaders.indexOf('Timestamp');
+  var logTypeCol = logHeaders.indexOf('Type');
+
+  var hasInByKey = {};
+  for (var i = 1; i < logValues.length; i++) {
+    if (logValues[i][logTypeCol] !== 'IN') continue;
+    var ts = new Date(logValues[i][logTsCol]);
+    if (ts.getFullYear() !== year || ts.getMonth() + 1 !== month) continue;
+    hasInByKey[String(logValues[i][logIdCol]) + '|' + ts.getDate()] = true;
+  }
+
+  activeEmployees.forEach(function (emp) {
+    var shiftsByDay = scheduledShiftsForMonth[emp.EmployeeID] || {};
+    for (var day = 1; day < today; day++) {
+      var shift = shiftsByDay[day];
+      if (!shift || shift === 'Leave') continue;
+      if (hasInByKey[String(emp.EmployeeID) + '|' + day]) continue;
+      findings.push({
+        sheetName: sheetName,
+        a1: null,
+        message: emp.Name + ', day ' + day + ': scheduled "' + shift + '" but no check-in recorded at all -- forgot to punch, or should this day be marked Leave instead?'
+      });
+    }
   });
 }
