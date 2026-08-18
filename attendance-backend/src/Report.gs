@@ -598,6 +598,130 @@ function applyWeekendColors_(sheet, startRow, numRows, year, month, daysInMonth)
   }
 }
 
+// Cells this far or more off the scheduled shift's start time, where some
+// other shift option matches the actual check-in better, get highlighted --
+// see highlightShiftMismatches_.
+var SHIFT_MISMATCH_MINUTES_THRESHOLD = 15;
+var SHIFT_MISMATCH_COLOR = '#f9a825';
+
+/** First "H:MM" found in a shift/event string, as minutes since midnight. Null for blank/Leave/Holiday/Half Day Leave/anything unparseable. Same "first match = start" rule as isLate_. */
+function getShiftStartMinutes_(shiftOrEvent) {
+  var match = String(shiftOrEvent || '').match(/(\d{1,2}):(\d{2})/);
+  if (!match) return null;
+  return Number(match[1]) * 60 + Number(match[2]);
+}
+
+function minutesToHHMM_(totalMinutes) {
+  var h = Math.floor(totalMinutes / 60);
+  var m = totalMinutes % 60;
+  return (h < 10 ? '0' + h : h) + ':' + (m < 10 ? '0' + m : m);
+}
+
+/**
+ * Highlights Schedule cells where the actual recorded check-in is a
+ * noticeably better match for a DIFFERENT shift option than the one
+ * currently entered -- usually means the real agreed shift changed but this
+ * particular cell never got updated, so what looks like "Late" is really
+ * just a stale schedule entry. A cell is flagged when the actual check-in is
+ * more than SHIFT_MISMATCH_MINUTES_THRESHOLD minutes off the scheduled
+ * shift's start AND some other SHIFTS option (with a real time -- Leave/
+ * Holiday/Half Day Leave never match anything) is closer to the actual time
+ * than the one currently scheduled.
+ *
+ * Snapshot check, not live -- resets every day-cell background (then
+ * re-applies the weekend tint) before highlighting, so a mismatch fixed
+ * since the last run doesn't stay highlighted forever.
+ */
+function highlightShiftMismatches_(sheet, year, month) {
+  var daysInMonth = new Date(year, month, 0).getDate();
+  var timedShifts = SHIFTS.filter(function (s) { return getShiftStartMinutes_(s) !== null; });
+
+  var values = sheet.getDataRange().getValues();
+  var headers = values[0];
+  var idCol = headers.indexOf('EmployeeID');
+  var nameCol = headers.indexOf('Name');
+  var lastRow = sheet.getLastRow();
+  var numDataRows = lastRow - 1;
+
+  if (numDataRows > 0) {
+    sheet.getRange(2, 3, numDataRows, daysInMonth).setBackground(null);
+  }
+  applyWeekendColors_(sheet, 1, lastRow, year, month, daysInMonth);
+
+  // Actual IN time (local minutes-since-midnight) per employeeId|day, read
+  // once instead of once per cell. Earliest IN wins on a day with more than
+  // one (offline-sync duplicate, etc.) -- same rule getMonthLogsByEmployee_
+  // already uses.
+  var logSheet = getSheet_('AttendanceLog');
+  var logValues = logSheet.getDataRange().getValues();
+  var logHeaders = logValues[0];
+  var logIdCol = logHeaders.indexOf('EmployeeID');
+  var logTsCol = logHeaders.indexOf('Timestamp');
+  var logTypeCol = logHeaders.indexOf('Type');
+  var actualInMinutesByKey = {};
+  for (var i = 1; i < logValues.length; i++) {
+    if (logValues[i][logTypeCol] !== 'IN') continue;
+    var ts = new Date(logValues[i][logTsCol]);
+    if (ts.getFullYear() !== year || ts.getMonth() + 1 !== month) continue;
+    var key = String(logValues[i][logIdCol]) + '|' + ts.getDate();
+    var minutes = ts.getHours() * 60 + ts.getMinutes();
+    if (!(key in actualInMinutesByKey) || minutes < actualInMinutesByKey[key]) {
+      actualInMinutesByKey[key] = minutes;
+    }
+  }
+
+  var flaggedA1 = [];
+  var lines = [];
+  for (var r = 1; r < values.length; r++) {
+    var employeeId = String(values[r][idCol]);
+    for (var d = 1; d <= daysInMonth; d++) {
+      var dayCol = headers.indexOf(d);
+      if (dayCol === -1) continue;
+      var scheduledShift = String(values[r][dayCol] || '').trim();
+      var scheduledStart = getShiftStartMinutes_(scheduledShift);
+      if (scheduledStart === null) continue; // blank, Leave, Holiday, Half Day Leave, or unparseable -- nothing to compare
+
+      var key = employeeId + '|' + d;
+      if (!(key in actualInMinutesByKey)) continue; // no check-in that day -- a different concern (see checkMissingAttendance_)
+      var actualMinutes = actualInMinutesByKey[key];
+
+      // Arriving early never causes a false Late flag (isLate_ only fires
+      // when actual > scheduled start), so it's never worth flagging here --
+      // only look at check-ins AFTER the scheduled start, which is exactly
+      // what a stale (too-early) schedule entry would cause.
+      var currentDistance = actualMinutes - scheduledStart;
+      if (currentDistance <= SHIFT_MISMATCH_MINUTES_THRESHOLD) continue;
+
+      // Only compare against LATER shift options -- the question is "does a
+      // later shift explain this as on-time," not "is some earlier shift
+      // numerically closer" (that would just re-flag ordinary early
+      // arrivals relative to a later shift, the same false-positive noise
+      // this guards against).
+      var closerShift = null;
+      var closerDistance = currentDistance;
+      timedShifts.forEach(function (s) {
+        var start = getShiftStartMinutes_(s);
+        if (start <= scheduledStart) return;
+        var dist = Math.abs(actualMinutes - start);
+        if (dist < closerDistance) { closerDistance = dist; closerShift = s; }
+      });
+      if (!closerShift) continue; // no later shift fits better -- genuinely late, not a wrong entry
+
+      flaggedA1.push(sheet.getRange(r + 1, dayCol + 1).getA1Notation());
+      lines.push(
+        values[r][nameCol] + ', day ' + d + ': scheduled "' + scheduledShift + '" but checked in ' +
+        minutesToHHMM_(actualMinutes) + ' -- closer to "' + closerShift + '"'
+      );
+    }
+  }
+
+  if (flaggedA1.length > 0) {
+    sheet.getRangeList(flaggedA1).setBackground(SHIFT_MISMATCH_COLOR);
+  }
+
+  return { flaggedCount: flaggedA1.length, lines: lines };
+}
+
 /** Returns the scheduled shift string for an employee on a given date, or '' if none is set. */
 function getScheduledShift_(employeeId, date) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();

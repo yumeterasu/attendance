@@ -17,6 +17,7 @@ function onOpen() {
     .addItem('เพิ่มเวลาเข้า-ออกงานย้อนหลัง', 'menuAddBackdatedAttendance_')
     .addItem('บันทึกเข้างานทีเดียวทั้งวัน', 'menuBulkMarkAttendance_')
     .addItem('สร้าง/อัปเดตตารางกะ', 'menuCreateScheduleSheet_')
+    .addItem('ไฮไลต์ Shift ที่อาจไม่ตรงกับเวลาจริง', 'menuHighlightShiftMismatches_')
     .addItem('คำนวณ Late/OT ใหม่ทุกเดือน', 'menuRecomputeLateOtAllMonths_')
     .addSeparator()
     .addItem('ออกรหัสตั้งค่าแอดมินใหม่', 'menuIssueSetupCode_')
@@ -438,6 +439,49 @@ function menuCreateScheduleSheet_() {
 
   var sheetName = buildScheduleSheet_(year, month);
   ui.alert('Done', '"' + sheetName + '" is ready. Fill in each day\'s shift from the dropdown.', ui.ButtonSet.OK);
+}
+
+/**
+ * Highlights Schedule cells where the actual check-in looks like it belongs
+ * to a different shift than what's entered -- see highlightShiftMismatches_
+ * in Report.gs for the matching rule. Run this first to see what needs
+ * fixing, fix those cells, then run "Recompute Late/OT for ALL Months" to
+ * update the Late/OT numbers to match.
+ */
+function menuHighlightShiftMismatches_() {
+  var ui = SpreadsheetApp.getUi();
+  var title = 'Highlight Shift Mismatches';
+  var now = new Date();
+
+  var yearResp = ui.prompt(title, 'Year (e.g. ' + now.getFullYear() + '):', ui.ButtonSet.OK_CANCEL);
+  if (yearResp.getSelectedButton() !== ui.Button.OK) return;
+  var year = Number(yearResp.getResponseText().trim());
+
+  var monthResp = ui.prompt(title, 'Month (1-12):', ui.ButtonSet.OK_CANCEL);
+  if (monthResp.getSelectedButton() !== ui.Button.OK) return;
+  var month = Number(monthResp.getResponseText().trim());
+
+  if (!year || !month || month < 1 || month > 12) {
+    ui.alert('Enter a valid year and a month between 1 and 12.');
+    return;
+  }
+
+  var sheetName = 'Schedule ' + year + '-' + (month < 10 ? '0' + month : month);
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
+  if (!sheet) {
+    ui.alert('No "' + sheetName + '" sheet found.');
+    return;
+  }
+
+  var result = highlightShiftMismatches_(sheet, year, month);
+
+  ui.alert(
+    'Done',
+    result.flaggedCount === 0
+      ? 'No mismatches found -- every scheduled shift is within ' + SHIFT_MISMATCH_MINUTES_THRESHOLD + ' minutes of the actual check-in (or has no closer match among the other shift options).'
+      : 'Highlighted ' + result.flaggedCount + ' cell(s) in ' + sheetName + ' where the actual check-in looks closer to a different shift:\n\n' + result.lines.join('\n'),
+    ui.ButtonSet.OK
+  );
 }
 
 /**
