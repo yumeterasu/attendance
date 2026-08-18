@@ -14,12 +14,14 @@ function writeMonthlyReportData_(sheet, startRow, year, month) {
   var tz = Session.getScriptTimeZone();
   var daysInMonth = new Date(year, month, 0).getDate();
   var logsByEmployee = getMonthLogsByEmployee_(year, month);
-  // Someone on Leave never taps IN, so there's no AttendanceLog row for that
-  // day and the Shift column would otherwise sit blank -- indistinguishable
-  // from a genuinely forgotten clock-in. Read the Schedule sheet once so
-  // Leave days can show "Leave" instead; every other blank day (no
-  // AttendanceLog row AND not scheduled Leave) is left blank as before, on
-  // purpose, so a real missed clock-in still stands out.
+  // Someone on Leave (or a company Holiday) never taps IN, so there's no
+  // AttendanceLog row for that day and the Shift column would otherwise sit
+  // blank -- indistinguishable from a genuinely forgotten clock-in. Read the
+  // Schedule sheet once so those days can show "Leave"/"Holiday" instead
+  // (see FULL_DAY_OFF_SHIFTS); every other blank day (no AttendanceLog row
+  // and not scheduled as a full day off -- including "Half Day Leave",
+  // which still expects a real clock-in for the other half) is left blank
+  // as before, on purpose, so a real missed clock-in still stands out.
   var scheduledShiftsForMonth = getScheduledShiftsForMonth_(year, month);
 
   // Show an employee if they're currently Active, or they have any
@@ -75,7 +77,7 @@ function writeMonthlyReportData_(sheet, startRow, year, month) {
       var shift = dayEntry ? dayEntry.shift : '';
       if (!dayEntry) {
         var scheduledShift = scheduledShiftsForMonth[emp.EmployeeID] && scheduledShiftsForMonth[emp.EmployeeID][d];
-        if (scheduledShift === 'Leave') shift = 'Leave';
+        if (FULL_DAY_OFF_SHIFTS.indexOf(scheduledShift) !== -1) shift = scheduledShift;
       }
       var isLateDay = !!(dayEntry && dayEntry.late);
       var late = isLateDay ? 'Late' : '';

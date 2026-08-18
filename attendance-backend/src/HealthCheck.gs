@@ -239,12 +239,14 @@ function checkMissingCheckouts_(findings) {
 }
 
 /**
- * Active employees scheduled a real shift (not blank, not "Leave") on a day
- * that's already fully passed, but with no check-in recorded at all -- not
- * "forgot to check out" (checkMissingCheckouts_ already covers that), this
- * is nothing on the books whatsoever. Usually means either they genuinely
- * forgot to tap the kiosk all day, or the day should have been marked Leave
- * on the Schedule but wasn't.
+ * Active employees scheduled a real shift (not blank, not a full day off --
+ * see FULL_DAY_OFF_SHIFTS -- "Half Day Leave" still counts, they're expected
+ * in for half the day) on a day that's already fully passed, but with no
+ * check-in recorded at all -- not "forgot to check out"
+ * (checkMissingCheckouts_ already covers that), this is nothing on the
+ * books whatsoever. Usually means either they genuinely forgot to tap the
+ * kiosk all day, or the day should have been marked Leave/Holiday on the
+ * Schedule but wasn't.
  *
  * year/month default to the current month (Health Check's own use). Pass
  * them explicitly to check a different month -- e.g. "Recompute Late/OT for
@@ -290,7 +292,7 @@ function checkMissingAttendance_(findings, activeEmployees, year, month) {
     var shiftsByDay = scheduledShiftsForMonth[emp.EmployeeID] || {};
     for (var day = 1; day <= lastDayToCheck; day++) {
       var shift = shiftsByDay[day];
-      if (!shift || shift === 'Leave') continue;
+      if (!shift || FULL_DAY_OFF_SHIFTS.indexOf(shift) !== -1) continue; // "Half Day Leave" stays checked -- still expected in for half the day
       if (hasInByKey[String(emp.EmployeeID) + '|' + day]) continue;
       findings.push({
         sheetName: sheetName,
