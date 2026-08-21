@@ -70,9 +70,14 @@ var HEALTH_CHECK_EMAIL = 'yumeterasu.computer@gmail.com';
 
 /**
  * Same checks as the menu's Health Check, but silent unless something's
- * wrong -- emails a summary only when findings.length > 0. Meant to run on a
- * daily timer (see setupDailyHealthCheckTrigger) instead of waiting for
- * someone to open the sheet and click the menu.
+ * wrong -- emails a summary only when findings.length > 0. Used to run on a
+ * daily timer (see removeDailyHealthCheckTrigger) -- disabled because Health
+ * Check now scans/repairs Employees, AttendanceLog, and every Schedule tab
+ * (see checkAndFixCriticalSheets_, checkAndFixScheduleHeaders_), and running
+ * all of that automatically around 7am collided with the shift-start
+ * check-in rush, slowing the Kiosk's PIN lookup down enough to time out and
+ * show an error. Attendance Admin > Health Check in the menu still runs the
+ * exact same checks on demand -- just no longer on an automatic schedule.
  */
 function runHealthCheckAndEmail_() {
   var findings = runHealthCheck_();
@@ -85,22 +90,20 @@ function runHealthCheckAndEmail_() {
 }
 
 /**
- * One-off: installs a daily trigger that runs runHealthCheckAndEmail_ every
- * morning. Safe to run more than once -- clears any existing trigger for the
- * same function first, so it never ends up duplicated. Run once from the
- * editor: select setupDailyHealthCheckTrigger in the toolbar dropdown, click
- * Run (you'll be asked to authorize Gmail send access the first time).
+ * One-off: removes the daily runHealthCheckAndEmail_ trigger, if one exists.
+ * Safe to run more than once -- does nothing if there's no trigger left to
+ * remove. Run once from the editor: select removeDailyHealthCheckTrigger in
+ * the toolbar dropdown, click Run.
  */
-function setupDailyHealthCheckTrigger() {
+function removeDailyHealthCheckTrigger() {
+  var removed = 0;
   ScriptApp.getProjectTriggers().forEach(function (t) {
-    if (t.getHandlerFunction() === 'runHealthCheckAndEmail_') ScriptApp.deleteTrigger(t);
+    if (t.getHandlerFunction() === 'runHealthCheckAndEmail_') {
+      ScriptApp.deleteTrigger(t);
+      removed++;
+    }
   });
-  ScriptApp.newTrigger('runHealthCheckAndEmail_')
-    .timeBased()
-    .everyDays(1)
-    .atHour(7)
-    .create();
-  Logger.log('Daily Health Check trigger created -- runs around 7am, emails ' + HEALTH_CHECK_EMAIL + ' only if issues are found.');
+  Logger.log(removed > 0 ? 'Daily Health Check trigger removed.' : 'No daily Health Check trigger was installed.');
 }
 
 // Sheets whose exact tab NAME and header row must never drift -- every
