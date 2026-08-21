@@ -18,6 +18,7 @@ function onOpen() {
     .addItem('บันทึกเข้างานทีเดียวทั้งวัน', 'menuBulkMarkAttendance_')
     .addItem('สร้าง/อัปเดตตารางกะ', 'menuCreateScheduleSheet_')
     .addItem('ไฮไลต์ Shift ที่อาจไม่ตรงกับเวลาจริง', 'menuHighlightShiftMismatches_')
+    .addItem('คำนวณ Late/OT ใหม่ (เลือกเดือน)', 'menuRecomputeLateOtOneMonth_')
     .addItem('คำนวณ Late/OT ใหม่ทุกเดือน', 'menuRecomputeLateOtAllMonths_')
     .addSeparator()
     .addItem('ออกรหัสตั้งค่าแอดมินใหม่', 'menuIssueSetupCode_')
@@ -486,9 +487,78 @@ function menuHighlightShiftMismatches_() {
 }
 
 /**
+ * Recomputes Late/OT for ONE chosen month -- the normal way to run this, day
+ * to day. Cheaper than menuRecomputeLateOtAllMonths_ (which redoes every
+ * month that exists, all in one execution) and doesn't get slower as more
+ * Schedule months pile up over time, since only the one requested month's
+ * worth of work happens per click.
+ */
+function menuRecomputeLateOtOneMonth_() {
+  var ui = SpreadsheetApp.getUi();
+  var title = 'Recompute Late/OT for One Month';
+  var now = new Date();
+
+  var yearResp = ui.prompt(title, 'Year (e.g. ' + now.getFullYear() + '):', ui.ButtonSet.OK_CANCEL);
+  if (yearResp.getSelectedButton() !== ui.Button.OK) return;
+  var year = Number(yearResp.getResponseText().trim());
+
+  var monthResp = ui.prompt(title, 'Month (1-12):', ui.ButtonSet.OK_CANCEL);
+  if (monthResp.getSelectedButton() !== ui.Button.OK) return;
+  var month = Number(monthResp.getResponseText().trim());
+
+  if (!year || !month || month < 1 || month > 12) {
+    ui.alert('Enter a valid year and a month between 1 and 12.');
+    return;
+  }
+
+  var sheetName = 'Schedule ' + year + '-' + (month < 10 ? '0' + month : month);
+  var scheduleSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
+  if (!scheduleSheet) {
+    ui.alert('No "' + sheetName + '" sheet found -- nothing to recompute against.');
+    return;
+  }
+
+  var confirm = ui.alert(title, 'Recompute Late/OT for ' + sheetName + '?', ui.ButtonSet.YES_NO);
+  if (confirm !== ui.Button.YES) return;
+
+  var daysInMonth = new Date(year, month, 0).getDate();
+  var result = recomputeLateAndOt_(year, month, 1, daysInMonth);
+
+  // Report/Summary only pull fresh data when their Year/Month dropdown is
+  // edited (see onEdit in Report.gs) -- refresh both here too so whatever
+  // month they're currently showing reflects the recompute immediately,
+  // without the admin having to flip the dropdown back and forth.
+  refreshLiveReportSheet_();
+  refreshLiveSummarySheet_();
+
+  // Same "scheduled but no check-in at all" check Health Check runs, for
+  // the month just recomputed -- surfaces forgotten punches / days that
+  // should have been marked Leave right here, instead of waiting for a
+  // separate Health Check run to notice.
+  var activeEmployees = getAllEmployees_().filter(function (emp) { return isTrue_(emp.Active); });
+  var missingFindings = [];
+  checkMissingAttendance_(missingFindings, activeEmployees, year, month);
+
+  var message = 'Recomputed ' + sheetName + ':\n\n' +
+    result.inRowsUpdated + ' IN row(s), ' + result.outRowsUpdated + ' OUT row(s) updated.\n\n' +
+    'Thai/non-Japanese OT was left untouched -- it can only be trusted from the moment it was recorded, not recomputed after the fact.\n\n' +
+    'Report and Summary tabs have been refreshed to match (whichever month each is currently showing).';
+
+  if (missingFindings.length > 0) {
+    var missingLines = missingFindings.map(function (f, i) { return (i + 1) + '. ' + f.message; });
+    message += '\n\n⚠ ' + missingFindings.length + ' day(s) scheduled with no check-in at all:\n\n' + missingLines.join('\n');
+  }
+
+  ui.alert('Done', message, ui.ButtonSet.OK);
+}
+
+/**
  * Runs the recompute across every "Schedule YYYY-MM" tab that exists in the
- * spreadsheet, one after another -- no need to open each tab first. Asks for
- * confirmation first since it touches every month at once.
+ * spreadsheet, one after another -- no need to open each tab first. Slower
+ * as more months pile up (redoes ALL of them every time, in one execution --
+ * see menuRecomputeLateOtOneMonth_ for the normal day-to-day version, scoped
+ * to just one month). Asks for confirmation first since it touches every
+ * month at once.
  */
 function menuRecomputeLateOtAllMonths_() {
   var ui = SpreadsheetApp.getUi();

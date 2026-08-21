@@ -243,8 +243,11 @@ function handleKioskMyAttendance_(params) {
  */
 function recomputeLateAndOt_(year, month, startDay, endDay) {
   var sheet = getSheet_('AttendanceLog');
-  var values = sheet.getDataRange().getValues();
-  var headers = values[0];
+  var lastRow = sheet.getLastRow();
+  var lastCol = sheet.getLastColumn();
+  if (lastRow < 2) return { inRowsUpdated: 0, outRowsUpdated: 0 };
+
+  var headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
   var tsCol = headers.indexOf('Timestamp');
   var idCol = headers.indexOf('EmployeeID');
   var typeCol = headers.indexOf('Type');
@@ -252,6 +255,32 @@ function recomputeLateAndOt_(year, month, startDay, endDay) {
   var lateCol = headers.indexOf('Late');
   var otCol = headers.indexOf('OT');
   var otMinCol = headers.indexOf('OTMinutes');
+
+  // Find exactly which sheet rows belong to this month by scanning ONLY the
+  // Timestamp column first (1 column instead of all of them) -- cheap even
+  // once AttendanceLog has years of history piled up. Every row gets
+  // checked, none skipped or guessed at, so a backdated entry landing
+  // anywhere in the sheet regardless of which date it's actually for (see
+  // recordBackdatedAttendance_) still gets found correctly -- this just
+  // reads less data per row to find it, it doesn't assume the sheet is in
+  // date order.
+  var allTimestamps = sheet.getRange(2, tsCol + 1, lastRow - 1, 1).getValues();
+  var minRow = -1, maxRow = -1;
+  for (var r = 0; r < allTimestamps.length; r++) {
+    var t = new Date(allTimestamps[r][0]);
+    if (t.getFullYear() === year && t.getMonth() + 1 === month) {
+      if (minRow === -1) minRow = r + 2; // +2: allTimestamps[0] is sheet row 2 (row 1 is the header)
+      maxRow = r + 2;
+    }
+  }
+  if (minRow === -1) return { inRowsUpdated: 0, outRowsUpdated: 0 }; // nothing recorded for this month at all
+
+  // Now read full width, but only the row range that could possibly matter
+  // -- everything from here down is IDENTICAL logic to before, just working
+  // on this bounded slice (indexed from 0) instead of the whole sheet
+  // (indexed from 1, with the header at 0). Absolute sheet row for
+  // sliceValues[i] is (minRow + i).
+  var sliceValues = sheet.getRange(minRow, 1, maxRow - minRow + 1, lastCol).getValues();
 
   // Read the month's Schedule sheet ONCE up front instead of calling
   // getScheduledShift_ per row -- that helper re-reads the whole Schedule
@@ -261,38 +290,38 @@ function recomputeLateAndOt_(year, month, startDay, endDay) {
   // matching row, times hundreds of rows).
   var shiftsForMonth = getScheduledShiftsForMonth_(year, month);
 
-  // Same idea for the writes: mutate `values` in memory and write each
+  // Same idea for the writes: mutate `sliceValues` in memory and write each
   // touched column back in one batched call at the end, instead of a
   // separate setValue() network round-trip per row.
   var shiftByEmployeeDay = {};
   var inRowsUpdated = 0;
   var outRowsUpdated = 0;
 
-  for (var i = 1; i < values.length; i++) {
-    var ts = new Date(values[i][tsCol]);
+  for (var i = 0; i < sliceValues.length; i++) {
+    var ts = new Date(sliceValues[i][tsCol]);
     if (ts.getFullYear() !== year || ts.getMonth() + 1 !== month) continue;
     var day = ts.getDate();
     if (day < startDay || day > endDay) continue;
-    if (values[i][typeCol] !== 'IN') continue;
+    if (sliceValues[i][typeCol] !== 'IN') continue;
 
-    var employeeId = String(values[i][idCol]);
+    var employeeId = String(sliceValues[i][idCol]);
     var scheduledShift = (shiftsForMonth[employeeId] && shiftsForMonth[employeeId][day]) || '';
     var late = scheduledShift ? isLate_(scheduledShift, ts) : false;
 
-    values[i][shiftCol] = scheduledShift;
-    values[i][lateCol] = late;
+    sliceValues[i][shiftCol] = scheduledShift;
+    sliceValues[i][lateCol] = late;
     shiftByEmployeeDay[employeeId + '|' + day] = scheduledShift;
     inRowsUpdated++;
   }
 
-  for (var j = 1; j < values.length; j++) {
-    var ts2 = new Date(values[j][tsCol]);
+  for (var j = 0; j < sliceValues.length; j++) {
+    var ts2 = new Date(sliceValues[j][tsCol]);
     if (ts2.getFullYear() !== year || ts2.getMonth() + 1 !== month) continue;
     var day2 = ts2.getDate();
     if (day2 < startDay || day2 > endDay) continue;
-    if (values[j][typeCol] !== 'OUT') continue;
+    if (sliceValues[j][typeCol] !== 'OUT') continue;
 
-    var employeeId2 = String(values[j][idCol]);
+    var employeeId2 = String(sliceValues[j][idCol]);
     var currentEmp = findEmployeeRow_(employeeId2);
     var currentDept = currentEmp ? currentEmp.row.Department : null;
     if (currentDept !== 'Japanese') continue; // Thai/other OT can't be safely recomputed, see doc comment above
@@ -302,17 +331,17 @@ function recomputeLateAndOt_(year, month, startDay, endDay) {
     var capMinutes = Number(currentEmp.row.OTMaxMinutes) || JP_OT_CAP_MINUTES;
 
     var otMinutes = (isOtEligible_(currentEmp.row) && shift) ? computeJapaneseOtMinutes_(shift, ts2, capMinutes) : 0;
-    values[j][otMinCol] = otMinutes;
-    values[j][otCol] = otMinutes > 0;
+    sliceValues[j][otMinCol] = otMinutes;
+    sliceValues[j][otCol] = otMinutes > 0;
     outRowsUpdated++;
   }
 
   if (inRowsUpdated > 0 || outRowsUpdated > 0) {
-    var numRows = values.length - 1;
-    sheet.getRange(2, shiftCol + 1, numRows, 1).setValues(values.slice(1).map(function (r) { return [r[shiftCol]]; }));
-    sheet.getRange(2, lateCol + 1, numRows, 1).setValues(values.slice(1).map(function (r) { return [r[lateCol]]; }));
-    sheet.getRange(2, otCol + 1, numRows, 1).setValues(values.slice(1).map(function (r) { return [r[otCol]]; }));
-    sheet.getRange(2, otMinCol + 1, numRows, 1).setValues(values.slice(1).map(function (r) { return [r[otMinCol]]; }));
+    var numRows = sliceValues.length;
+    sheet.getRange(minRow, shiftCol + 1, numRows, 1).setValues(sliceValues.map(function (r) { return [r[shiftCol]]; }));
+    sheet.getRange(minRow, lateCol + 1, numRows, 1).setValues(sliceValues.map(function (r) { return [r[lateCol]]; }));
+    sheet.getRange(minRow, otCol + 1, numRows, 1).setValues(sliceValues.map(function (r) { return [r[otCol]]; }));
+    sheet.getRange(minRow, otMinCol + 1, numRows, 1).setValues(sliceValues.map(function (r) { return [r[otMinCol]]; }));
   }
 
   return { inRowsUpdated: inRowsUpdated, outRowsUpdated: outRowsUpdated };
