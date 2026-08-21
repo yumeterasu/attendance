@@ -94,11 +94,18 @@ function invalidateEmployeesCache_() {
 }
 
 /**
- * Time-driven trigger target: force-refreshes the Employees cache every
- * minute (well inside the 5-minute TTL), so it never actually expires
- * during the day -- the first kiosk scan after a quiet stretch was slow
- * because it landed right after the cache had gone cold and had to re-read
- * the whole Employees sheet from scratch. See setupCacheWarmerTrigger.
+ * Time-driven trigger target: force-refreshes the Employees cache every 5
+ * minutes (right at the 5-minute TTL boundary), so it never actually
+ * expires during the day -- the first kiosk scan after a quiet stretch was
+ * slow because it landed right after the cache had gone cold and had to
+ * re-read the whole Employees sheet from scratch. See setupCacheWarmerTrigger.
+ *
+ * Was every 1 minute (1,440 runs/day) -- cut to every 5 minutes (288
+ * runs/day, an 80% reduction) once the daily Apps Script execution quota
+ * turned out to be the bottleneck behind a run of Kiosk/My Schedule
+ * timeouts, and this trigger alone was by far the single biggest source of
+ * executions in a normal day. Still comfortably inside the cache's own
+ * 5-minute TTL, so no behavior change on a normal day.
  */
 function warmUpEmployeesCache_() {
   invalidateEmployeesCache_();
@@ -106,9 +113,9 @@ function warmUpEmployeesCache_() {
 }
 
 /**
- * One-off: installs a trigger that runs warmUpEmployeesCache_ every minute,
- * all day. Safe to run more than once -- clears any existing trigger for
- * the same function first. Run once from the editor: select
+ * One-off: installs a trigger that runs warmUpEmployeesCache_ every 5
+ * minutes, all day. Safe to run more than once -- clears any existing
+ * trigger for the same function first. Run once from the editor: select
  * setupCacheWarmerTrigger in the toolbar dropdown, click Run.
  */
 function setupCacheWarmerTrigger() {
@@ -117,9 +124,9 @@ function setupCacheWarmerTrigger() {
   });
   ScriptApp.newTrigger('warmUpEmployeesCache_')
     .timeBased()
-    .everyMinutes(1)
+    .everyMinutes(5)
     .create();
-  Logger.log('Cache warmer trigger created -- refreshes the Employees cache every minute so it never goes cold.');
+  Logger.log('Cache warmer trigger created -- refreshes the Employees cache every 5 minutes so it never goes cold.');
 }
 
 /** Finds an employee row by EmployeeID. Returns {row, rowNumber} (1-based sheet row) or null. */
