@@ -172,6 +172,7 @@ export default function KioskScreen({ navigation }: Props) {
 
   const [schedulePin, setSchedulePin] = useState('');
   const [scheduleError, setScheduleError] = useState(false);
+  const [isLoadingSchedule, setIsLoadingSchedule] = useState(false);
   const [scheduleData, setScheduleData] = useState<ScheduleData | null>(null);
   // Set only for a lookup that fails for a retriable reason (timeout/no
   // connection) -- pin stays put so "Try Again" can resubmit it as-is,
@@ -327,7 +328,9 @@ export default function KioskScreen({ navigation }: Props) {
     }
 
     setScheduleIssue(null);
+    setIsLoadingSchedule(true);
     const res = await kioskMyAttendance(value);
+    setIsLoadingSchedule(false);
 
     if (res.success) {
       setSchedulePin('');
@@ -347,6 +350,7 @@ export default function KioskScreen({ navigation }: Props) {
   };
 
   const onScheduleKeyPress = (key: string) => {
+    if (isLoadingSchedule) return;
     if (key === 'back') return setSchedulePin((p) => p.slice(0, -1));
     if (key === 'clear') return setSchedulePin('');
 
@@ -381,9 +385,17 @@ export default function KioskScreen({ navigation }: Props) {
       <View style={[styles.container, styles.containerSchedule]}>
         <Text style={[styles.title, styles.titleDark]}>Enter Your Code to View Schedule</Text>
         <Dots length={PIN_LENGTH} filled={schedulePin.length} error={scheduleError} schedule />
-        <Keypad onPress={onScheduleKeyPress} disabled={!!scheduleIssue} schedule />
+        <Keypad onPress={onScheduleKeyPress} disabled={isLoadingSchedule || !!scheduleIssue} schedule />
         {scheduleError && <Text style={styles.errorText}>Code not recognized</Text>}
-        {scheduleIssue && (
+
+        {isLoadingSchedule && (
+          <View style={styles.checkingRow}>
+            <ActivityIndicator color="#1d1d1f" />
+            <Text style={styles.checkingText}>Loading...</Text>
+          </View>
+        )}
+
+        {scheduleIssue && !isLoadingSchedule && (
           <View style={styles.retryBox}>
             <Text style={styles.retryMessage}>{scheduleIssue}</Text>
             <Pressable style={styles.retryButton} onPress={() => submitSchedulePin(schedulePin)}>

@@ -760,9 +760,38 @@ function getAllEmployees_() {
 }
 
 /** Returns { [employeeId]: { [dayOfMonth]: { timeIn, timeOut, shift, late, otMinutes, otQuarters } } } for the given month. */
+/** Full-history scan -- fine for Report/Recompute, which run from the menu with minutes of budget and need to reach arbitrary past months. See getRecentMonthLogsByEmployee_ for the Kiosk's bounded-cost equivalent. */
 function getMonthLogsByEmployee_(year, month) {
   var sheet = getSheet_('AttendanceLog');
   var values = sheet.getDataRange().getValues();
+  return aggregateMonthLogs_(values, year, month);
+}
+
+// My Schedule on the Kiosk only ever asks for the CURRENT month (see
+// handleKioskMyAttendance_), so unlike getMonthLogsByEmployee_ this reads
+// only a bounded recent tail instead of the whole AttendanceLog history --
+// keeps My Schedule fast no matter how many months of history pile up,
+// instead of slowly regressing the same way Recompute Late/OT and friends
+// once did. Sized generously past one month's worth of activity for the
+// whole staff (including backdated entries, which land at the bottom
+// regardless of which date they're actually for -- see
+// recordBackdatedAttendance_ -- so they're always within this tail too).
+var MONTHLY_LOG_TAIL_ROWS = 8000;
+
+function getRecentMonthLogsByEmployee_(year, month) {
+  var sheet = getSheet_('AttendanceLog');
+  var lastRow = sheet.getLastRow();
+  var lastCol = sheet.getLastColumn();
+  if (lastRow < 2) return {};
+
+  var headerRow = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+  var startRow = Math.max(2, lastRow - MONTHLY_LOG_TAIL_ROWS + 1);
+  var dataRows = sheet.getRange(startRow, 1, lastRow - startRow + 1, lastCol).getValues();
+  return aggregateMonthLogs_([headerRow].concat(dataRows), year, month);
+}
+
+/** Shared by getMonthLogsByEmployee_ and getRecentMonthLogsByEmployee_ -- values[0] must be the header row. */
+function aggregateMonthLogs_(values, year, month) {
   var headers = values[0];
   var tsCol = headers.indexOf('Timestamp');
   var idCol = headers.indexOf('EmployeeID');

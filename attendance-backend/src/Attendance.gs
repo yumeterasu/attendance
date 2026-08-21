@@ -175,7 +175,7 @@ function handleKioskMyAttendance_(params) {
   var tz = Session.getScriptTimeZone();
 
   var daysInMonth = new Date(year, month, 0).getDate();
-  var dayLogs = (getMonthLogsByEmployee_(year, month))[found.row.EmployeeID] || {};
+  var dayLogs = (getRecentMonthLogsByEmployee_(year, month))[found.row.EmployeeID] || {};
 
   var days = [];
   for (var d = 1; d <= daysInMonth; d++) {
