@@ -283,7 +283,8 @@ function menuAddNewEmployee_() {
     Active: true,
     Branch: branch,
     KioskPIN: newPin,
-    CreatedAt: new Date()
+    CreatedAt: new Date(),
+    OTEligible: true
   });
 
   // Force plain-text format on the PIN cell and re-set the value -- setting

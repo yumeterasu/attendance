@@ -61,6 +61,24 @@ function computeJapaneseOtMinutes_(shiftOrEvent, outTimestamp, capMinutes) {
 }
 
 /**
+ * Whether this employee can earn OT at all -- defaults to TRUE when the
+ * column is blank/missing (matches the system's original behavior, before
+ * this column existed, of everyone being OT-eligible), only FALSE when
+ * explicitly set. Gates both groups: Japanese auto-computed OT and Thai
+ * button-pressed OT alike, so a mistaken OUT OT press can't grant OT to
+ * someone flagged ineligible either.
+ *
+ * Note this is a different lever from Employees.OTMaxMinutes (the per-
+ * employee OT cap for Japanese) -- setting OTMaxMinutes to 0 does NOT
+ * disable OT, it silently falls back to JP_OT_CAP_MINUTES instead (0 is
+ * falsy in `capMinutes || JP_OT_CAP_MINUTES` below), which is exactly the
+ * trap that prompted adding this column instead.
+ */
+function isOtEligible_(emp) {
+  return emp.OTEligible !== false && emp.OTEligible !== 'FALSE';
+}
+
+/**
  * Thai (or any non-Japanese) OT, in 15-minute quarters, no cap. Only counted
  * when the employee explicitly pressed OUT OT -- a plain OUT never earns OT
  * even if they happened to leave late (e.g. just stayed chatting). Rounds UP
@@ -283,7 +301,7 @@ function recomputeLateAndOt_(year, month, startDay, endDay) {
     var shift = shiftByEmployeeDay.hasOwnProperty(key) ? shiftByEmployeeDay[key] : (shiftsForMonth[employeeId2] && shiftsForMonth[employeeId2][day2]) || '';
     var capMinutes = Number(currentEmp.row.OTMaxMinutes) || JP_OT_CAP_MINUTES;
 
-    var otMinutes = shift ? computeJapaneseOtMinutes_(shift, ts2, capMinutes) : 0;
+    var otMinutes = (isOtEligible_(currentEmp.row) && shift) ? computeJapaneseOtMinutes_(shift, ts2, capMinutes) : 0;
     values[j][otMinCol] = otMinutes;
     values[j][otCol] = otMinutes > 0;
     outRowsUpdated++;
@@ -487,12 +505,13 @@ function recordBackdatedAttendance_(employeeId, type, timestamp, ot, precomputed
     }
 
     var todayShift = matchingIn ? matchingIn.shift : '';
+    var todayOtEligible = isOtEligible_(emp);
     if (emp.Department === 'Japanese') {
       var capMinutes = Number(emp.OTMaxMinutes) || JP_OT_CAP_MINUTES;
-      otMinutesForRow = todayShift ? computeJapaneseOtMinutes_(todayShift, timestamp, capMinutes) : 0;
+      otMinutesForRow = (todayOtEligible && todayShift) ? computeJapaneseOtMinutes_(todayShift, timestamp, capMinutes) : 0;
       otForRow = otMinutesForRow > 0;
     } else {
-      otQuartersForRow = ot && todayShift ? computeThaiOtQuarters_(todayShift, timestamp) : 0;
+      otQuartersForRow = (todayOtEligible && ot && todayShift) ? computeThaiOtQuarters_(todayShift, timestamp) : 0;
       otForRow = otQuartersForRow > 0;
     }
   }
@@ -587,12 +606,13 @@ function recordOfflineSyncedAttendance_(employeeId, type, timestamp, ot, clientI
     }
 
     var todayShift = matchingIn ? matchingIn.shift : '';
+    var todayOtEligible = isOtEligible_(emp);
     if (emp.Department === 'Japanese') {
       var capMinutes = Number(emp.OTMaxMinutes) || JP_OT_CAP_MINUTES;
-      otMinutesForRow = todayShift ? computeJapaneseOtMinutes_(todayShift, timestamp, capMinutes) : 0;
+      otMinutesForRow = (todayOtEligible && todayShift) ? computeJapaneseOtMinutes_(todayShift, timestamp, capMinutes) : 0;
       otForRow = otMinutesForRow > 0;
     } else {
-      otQuartersForRow = ot && todayShift ? computeThaiOtQuarters_(todayShift, timestamp) : 0;
+      otQuartersForRow = (todayOtEligible && ot && todayShift) ? computeThaiOtQuarters_(todayShift, timestamp) : 0;
       otForRow = otQuartersForRow > 0;
     }
   }
@@ -664,15 +684,16 @@ function recordAttendance_(employeeId, method, rawScanValue, type, ot) {
     }
 
     var todayShift = todayIn ? todayIn.shift : '';
+    var otEligible = isOtEligible_(emp);
     if (emp.Department === 'Japanese') {
       // OUT and OUT OT are equivalent for Japanese -- always auto-computed.
       var capMinutes = Number(emp.OTMaxMinutes) || JP_OT_CAP_MINUTES;
-      otMinutesForRow = todayShift ? computeJapaneseOtMinutes_(todayShift, now, capMinutes) : 0;
+      otMinutesForRow = (otEligible && todayShift) ? computeJapaneseOtMinutes_(todayShift, now, capMinutes) : 0;
       otForRow = otMinutesForRow > 0;
     } else {
       // Everyone else: only counts if they explicitly pressed OUT OT (a plain
       // OUT never earns OT, e.g. someone who just stayed chatting).
-      otQuartersForRow = ot && todayShift ? computeThaiOtQuarters_(todayShift, now) : 0;
+      otQuartersForRow = (otEligible && ot && todayShift) ? computeThaiOtQuarters_(todayShift, now) : 0;
       otForRow = otQuartersForRow > 0;
     }
   }

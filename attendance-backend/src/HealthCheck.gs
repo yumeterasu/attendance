@@ -112,7 +112,7 @@ function removeDailyHealthCheckTrigger() {
 // function that touches that sheet. Checked (and auto-repaired) by Health
 // Check on every run -- see checkAndFixCriticalSheets_.
 var CANONICAL_HEADERS = {
-  Employees: ['EmployeeID', 'Name', 'Department', 'Active', 'CreatedAt', 'SetupCodeHash', 'SetupCodeSalt', 'SetupCodeUsed', 'IsAdmin', 'Branch', 'KioskPIN', 'OTMaxMinutes', 'Salary', 'LastWorkingDay'],
+  Employees: ['EmployeeID', 'Name', 'Department', 'Active', 'CreatedAt', 'SetupCodeHash', 'SetupCodeSalt', 'SetupCodeUsed', 'IsAdmin', 'Branch', 'KioskPIN', 'OTMaxMinutes', 'Salary', 'LastWorkingDay', 'OTEligible'],
   AttendanceLog: ['Timestamp', 'EmployeeID', 'Name', 'Department', 'Type', 'Method', 'RawScanValue', 'DurationMinutes', 'Shift', 'Late', 'OT', 'OTMinutes', 'OTQuarters', 'ClientId']
 };
 
@@ -248,6 +248,7 @@ function checkEmployeesSheet_(findings) {
   var activeCol = headers.indexOf('Active');
   var pinCol = headers.indexOf('KioskPIN');
   var nameCol = headers.indexOf('Name');
+  var otEligibleCol = headers.indexOf('OTEligible'); // -1 until the admin adds this column -- skip the check until then
 
   for (var i = 1; i < values.length; i++) {
     var row = values[i];
@@ -294,6 +295,18 @@ function checkEmployeesSheet_(findings) {
         a1: sheet.getRange(i + 1, pinCol + 1).getA1Notation(),
         message: name + ': Kiosk PIN is "' + pin + '" (' + pin.length + ' digit' + (pin.length === 1 ? '' : 's') + ') -- should always be 4. Likely lost a leading zero from a manual edit.'
       });
+    }
+
+    if (otEligibleCol !== -1) {
+      var rawOtEligible = row[otEligibleCol];
+      // Blank is valid here (defaults to eligible -- see isOtEligible_), unlike Active where blank effectively means inactive.
+      if (rawOtEligible !== '' && rawOtEligible !== true && rawOtEligible !== false && rawOtEligible !== 'TRUE' && rawOtEligible !== 'FALSE') {
+        findings.push({
+          sheetName: 'Employees',
+          a1: sheet.getRange(i + 1, otEligibleCol + 1).getA1Notation(),
+          message: name + ': OTEligible column has an unexpected value ("' + rawOtEligible + '") -- should be TRUE or FALSE.'
+        });
+      }
     }
   }
 }
