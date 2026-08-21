@@ -4,7 +4,11 @@
  * to cause (typo'd Department, missing Kiosk PIN, shift typed instead of
  * picked from the dropdown, forgotten checkout, a scheduled day with no
  * check-in at all, etc.), then jumps straight to the first one found instead
- * of making you hunt for it. Menu: Attendance Admin > Health Check.
+ * of making you hunt for it. Also verifies -- and auto-repairs -- the tab
+ * NAME and header ROW of the critical sheets (see checkAndFixCriticalSheets_,
+ * checkAndFixScheduleHeaders_), since every lookup in this codebase finds
+ * sheets/columns by exact name and a single fat-fingered edit there breaks
+ * everything downstream. Menu: Attendance Admin > Health Check.
  */
 function menuHealthCheck_() {
   var ui = SpreadsheetApp.getUi();
@@ -39,12 +43,25 @@ function jumpToFirstFinding_(findings) {
 
 function runHealthCheck_() {
   var findings = [];
-  var activeEmployees = getAllEmployees_().filter(function (emp) { return isTrue_(emp.Active); });
 
-  checkEmployeesSheet_(findings);
-  checkCurrentSchedule_(findings, activeEmployees);
-  checkMissingCheckouts_(findings);
-  checkMissingAttendance_(findings, activeEmployees);
+  // Run first: if a critical sheet's tab name or header row got
+  // fat-fingered, every check below needs to find it by exact name to run
+  // at all. Fixing (or at least detecting) that first means the rest of the
+  // scan runs against a working sheet instead of the whole thing crashing.
+  checkAndFixCriticalSheets_(findings);
+  checkAndFixScheduleHeaders_(findings);
+
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var employeesOk = !!ss.getSheetByName('Employees');
+  var logOk = !!ss.getSheetByName('AttendanceLog');
+
+  if (employeesOk) {
+    var activeEmployees = getAllEmployees_().filter(function (emp) { return isTrue_(emp.Active); });
+    checkEmployeesSheet_(findings);
+    checkCurrentSchedule_(findings, activeEmployees);
+    if (logOk) checkMissingAttendance_(findings, activeEmployees);
+  }
+  if (logOk) checkMissingCheckouts_(findings);
 
   return findings;
 }
@@ -84,6 +101,138 @@ function setupDailyHealthCheckTrigger() {
     .atHour(7)
     .create();
   Logger.log('Daily Health Check trigger created -- runs around 7am, emails ' + HEALTH_CHECK_EMAIL + ' only if issues are found.');
+}
+
+// Sheets whose exact tab NAME and header row must never drift -- every
+// getSheet_ lookup and headers.indexOf(...) call in this codebase depends on
+// both. A single accidental rename or header-cell edit silently breaks every
+// function that touches that sheet. Checked (and auto-repaired) by Health
+// Check on every run -- see checkAndFixCriticalSheets_.
+var CANONICAL_HEADERS = {
+  Employees: ['EmployeeID', 'Name', 'Department', 'Active', 'CreatedAt', 'SetupCodeHash', 'SetupCodeSalt', 'SetupCodeUsed', 'IsAdmin', 'Branch', 'KioskPIN', 'OTMaxMinutes', 'Salary', 'LastWorkingDay'],
+  AttendanceLog: ['Timestamp', 'EmployeeID', 'Name', 'Department', 'Type', 'Method', 'RawScanValue', 'DurationMinutes', 'Shift', 'Late', 'OT', 'OTMinutes', 'OTQuarters', 'ClientId']
+};
+
+/**
+ * Verifies (and repairs) both the tab NAME and header row of Employees and
+ * AttendanceLog -- the two append-only source-of-truth sheets everything
+ * else in the system is computed from. Two kinds of fat-finger damage are
+ * covered:
+ *
+ * 1. The tab itself got renamed by accident. Detected by fingerprint: the
+ *    candidate sheet's own first THREE header cells (columns A/B/C) must
+ *    exactly match that sheet's canonical start ("EmployeeID"+"Name"+
+ *    "Department" for Employees, "Timestamp"+"EmployeeID"+"Name" for
+ *    AttendanceLog). "Schedule YYYY-MM" tabs are also excluded by name
+ *    outright before any fingerprint check runs, since their columns A/B
+ *    are the same "EmployeeID"/"Name" as Employees -- a 2-column fingerprint
+ *    collided with them once already (see incident notes in git history);
+ *    the 3rd column and the explicit name exclusion both independently rule
+ *    that out now. If nothing matches, it's reported instead of guessed at
+ *    -- a missed auto-fix is far cheaper than repairing the wrong sheet.
+ * 2. A header CELL within row 1 got overwritten with the wrong text.
+ *    Restored to the canonical name for that position, but only when the
+ *    canonical name isn't already present somewhere else in the row (so a
+ *    genuinely reordered column -- nothing in this codebase does that, but
+ *    just in case -- is never clobbered). Extra columns an admin added
+ *    beyond the canonical list are left completely untouched.
+ *
+ * Also checks that "Report" and "Summary" exist by name (no rename-recovery
+ * attempted there -- both are pure computed views with no stable row-1
+ * fingerprint to match against, and losing the tab just means it stops
+ * refreshing rather than losing any data).
+ */
+function checkAndFixCriticalSheets_(findings) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+
+  Object.keys(CANONICAL_HEADERS).forEach(function (sheetName) {
+    var canonical = CANONICAL_HEADERS[sheetName];
+    var sheet = ss.getSheetByName(sheetName);
+
+    if (!sheet) {
+      var candidate = ss.getSheets().filter(function (s) {
+        if (CANONICAL_HEADERS[s.getName()]) return false; // already a correctly-named critical sheet
+        if (/^Schedule \d{4}-\d{2}$/.test(s.getName())) return false; // shares the EmployeeID/Name start -- never a match, never touch these
+        if (s.getLastColumn() < 3) return false;
+        var first3 = s.getRange(1, 1, 1, 3).getValues()[0];
+        return first3[0] === canonical[0] && first3[1] === canonical[1] && first3[2] === canonical[2];
+      })[0];
+
+      if (candidate) {
+        var oldName = candidate.getName();
+        candidate.setName(sheetName);
+        sheet = candidate;
+        findings.push({
+          sheetName: sheetName,
+          a1: null,
+          message: 'Tab "' + oldName + '" was renamed back to "' + sheetName + '" -- its name looked like it had been changed by accident (matched by its columns).'
+        });
+      } else {
+        findings.push({
+          sheetName: sheetName,
+          a1: null,
+          message: 'No "' + sheetName + '" tab found, and no other tab looks like it structurally. This is serious -- the whole system depends on this sheet. Check if it was deleted or renamed to something unrecognizable.'
+        });
+        return;
+      }
+    }
+
+    var lastCol = Math.max(sheet.getLastColumn(), canonical.length);
+    var headerRange = sheet.getRange(1, 1, 1, lastCol);
+    var row = headerRange.getValues()[0];
+    var fixed = [];
+
+    for (var i = 0; i < canonical.length; i++) {
+      if (row[i] === canonical[i]) continue;
+      if (row.indexOf(canonical[i]) !== -1) continue; // present elsewhere in the row -- don't touch
+      row[i] = canonical[i];
+      fixed.push(canonical[i]);
+    }
+
+    if (fixed.length > 0) {
+      headerRange.setValues([row]);
+      findings.push({
+        sheetName: sheetName,
+        a1: null,
+        message: sheetName + ' header row auto-repaired: ' + fixed.join(', ') + ' restored.'
+      });
+    }
+  });
+
+  ['Report', 'Summary'].forEach(function (sheetName) {
+    if (ss.getSheetByName(sheetName)) return;
+    findings.push({
+      sheetName: sheetName,
+      a1: null,
+      message: 'No "' + sheetName + '" tab found -- was it renamed or deleted? Needed for ' +
+        (sheetName === 'Report' ? 'the daily report view.' : 'monthly totals and OT pay.')
+    });
+  });
+}
+
+/** Same idea as checkAndFixCriticalSheets_, scoped to columns A ("EmployeeID") and B ("Name") of every "Schedule YYYY-MM" tab -- those two never legitimately hold anything else. */
+function checkAndFixScheduleHeaders_(findings) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var scheduleSheets = ss.getSheets().filter(function (s) { return /^Schedule \d{4}-\d{2}$/.test(s.getName()); });
+
+  scheduleSheets.forEach(function (sheet) {
+    if (sheet.getLastColumn() < 2) return;
+    var headerRange = sheet.getRange(1, 1, 1, 2);
+    var row = headerRange.getValues()[0];
+    var fixed = [];
+
+    if (row[0] !== 'EmployeeID') { row[0] = 'EmployeeID'; fixed.push('EmployeeID'); }
+    if (row[1] !== 'Name') { row[1] = 'Name'; fixed.push('Name'); }
+
+    if (fixed.length > 0) {
+      headerRange.setValues([row]);
+      findings.push({
+        sheetName: sheet.getName(),
+        a1: null,
+        message: sheet.getName() + ' header row auto-repaired: ' + fixed.join(', ') + ' restored.'
+      });
+    }
+  });
 }
 
 /** Department spelling, missing Kiosk PIN, and an Active column value that isn't cleanly TRUE/FALSE. */
