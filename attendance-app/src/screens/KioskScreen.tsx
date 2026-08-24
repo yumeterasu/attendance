@@ -28,7 +28,12 @@ const MONTH_NAMES = [
 ];
 const WEEKDAY_HEADERS = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
 
-type ScheduleDay = { day: number; date: string; timeIn: string; timeOut: string; shift: string; late: boolean; ot: boolean };
+// `note` is set only for a day with no actual punch that was scheduled as
+// something other than a real clock-time shift (Leave, Holiday, and any
+// future addition like Sick Leave -- the server decides this generically,
+// nothing here needs updating when a new one is added). Shown instead of
+// the (blank) time-in/time-out for that day.
+type ScheduleDay = { day: number; date: string; timeIn: string; timeOut: string; shift: string; note: string; late: boolean; ot: boolean };
 type CalendarCell = { day: number; entry?: ScheduleDay } | null;
 
 // Lays the month out as a real calendar grid (leading/trailing blanks so day 1
@@ -457,17 +462,21 @@ export default function KioskScreen({ navigation }: Props) {
                   {cell && (
                     <>
                       <Text style={styles.calendarDayNum}>{cell.day}</Text>
-                      {cell.entry && (
-                        <>
-                          <Text style={styles.calendarTime}>{cell.entry.timeIn || '--:--'}</Text>
-                          <Text style={styles.calendarTime}>{cell.entry.timeOut || '--:--'}</Text>
-                          {(cell.entry.late || cell.entry.ot) && (
-                            <View style={styles.calendarDotsRow}>
-                              {cell.entry.late && <View style={[styles.calendarDot, styles.calendarDotLate]} />}
-                              {cell.entry.ot && <View style={[styles.calendarDot, styles.calendarDotOt]} />}
-                            </View>
-                          )}
-                        </>
+                      {cell.entry && cell.entry.note ? (
+                        <Text style={styles.calendarNote} numberOfLines={2}>{cell.entry.note}</Text>
+                      ) : (
+                        cell.entry && (
+                          <>
+                            <Text style={styles.calendarTime}>{cell.entry.timeIn || '--:--'}</Text>
+                            <Text style={styles.calendarTime}>{cell.entry.timeOut || '--:--'}</Text>
+                            {(cell.entry.late || cell.entry.ot) && (
+                              <View style={styles.calendarDotsRow}>
+                                {cell.entry.late && <View style={[styles.calendarDot, styles.calendarDotLate]} />}
+                                {cell.entry.ot && <View style={[styles.calendarDot, styles.calendarDotOt]} />}
+                              </View>
+                            )}
+                          </>
+                        )
                       )}
                     </>
                   )}
@@ -795,6 +804,7 @@ const styles = StyleSheet.create({
   calendarCellWorked: { backgroundColor: '#ffffff', borderColor: '#D6E1F7' }, // days with an actual record stand out against the muted default
   calendarDayNum: { color: '#12151C', fontSize: 15, fontFamily: FONT_EXTRABOLD },
   calendarTime: { color: '#2E63D6', fontSize: 11, fontFamily: FONT_BOLD, marginTop: 2 },
+  calendarNote: { color: '#5C6B8A', fontSize: 10, fontFamily: FONT_BOLD, marginTop: 3, textAlign: 'center', paddingHorizontal: 2 },
   calendarDotsRow: { flexDirection: 'row', gap: 4, marginTop: 3 },
   calendarDot: { width: 7, height: 7, borderRadius: 3.5 },
   calendarDotLate: { backgroundColor: '#c0392b' },

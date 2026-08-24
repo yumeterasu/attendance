@@ -65,7 +65,7 @@ export function kioskMyAttendance(pin: string) {
     name: string;
     year: number;
     month: number;
-    days: { day: number; date: string; timeIn: string; timeOut: string; shift: string; late: boolean; ot: boolean }[];
+    days: { day: number; date: string; timeIn: string; timeOut: string; shift: string; note: string; late: boolean; ot: boolean }[];
   }>('kioskMyAttendance', { pin }, SCHEDULE_TIMEOUT_MS);
 }
 

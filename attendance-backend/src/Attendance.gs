@@ -194,20 +194,45 @@ function handleKioskMyAttendance_(params) {
 
   var daysInMonth = new Date(year, month, 0).getDate();
   var dayLogs = (getRecentMonthLogsByEmployee_(year, month))[found.row.EmployeeID] || {};
+  // Only consulted for days with no actual punch -- lets a day scheduled as
+  // "Leave"/"Holiday"/anything else non-time-based show that label instead
+  // of sitting blank. No hardcoded list of which labels count: whatever's
+  // typed into the Schedule sheet for that day is shown verbatim as long as
+  // it doesn't look like a real shift's clock time, so a brand new option
+  // (e.g. "Sick Leave") works here the moment it's added to the Shift
+  // dropdown -- nothing in this function needs to change for it.
+  var scheduledShiftsForMonth = (getScheduledShiftsForMonth_(year, month))[found.row.EmployeeID] || {};
 
   var days = [];
   for (var d = 1; d <= daysInMonth; d++) {
     var entry = dayLogs[d];
-    if (!entry) continue;
-    days.push({
-      day: d,
-      date: Utilities.formatDate(new Date(year, month - 1, d), tz, 'yyyy-MM-dd'),
-      timeIn: entry.timeIn ? Utilities.formatDate(entry.timeIn, tz, 'HH:mm') : '',
-      timeOut: entry.timeOut ? Utilities.formatDate(entry.timeOut, tz, 'HH:mm') : '',
-      shift: entry.shift || '',
-      late: !!entry.late,
-      ot: !!(entry.otMinutes || entry.otQuarters)
-    });
+    if (entry) {
+      days.push({
+        day: d,
+        date: Utilities.formatDate(new Date(year, month - 1, d), tz, 'yyyy-MM-dd'),
+        timeIn: entry.timeIn ? Utilities.formatDate(entry.timeIn, tz, 'HH:mm') : '',
+        timeOut: entry.timeOut ? Utilities.formatDate(entry.timeOut, tz, 'HH:mm') : '',
+        shift: entry.shift || '',
+        note: '',
+        late: !!entry.late,
+        ot: !!(entry.otMinutes || entry.otQuarters)
+      });
+      continue;
+    }
+
+    var scheduled = scheduledShiftsForMonth[d];
+    if (scheduled && !/\d{1,2}:\d{2}/.test(scheduled)) {
+      days.push({
+        day: d,
+        date: Utilities.formatDate(new Date(year, month - 1, d), tz, 'yyyy-MM-dd'),
+        timeIn: '',
+        timeOut: '',
+        shift: scheduled,
+        note: scheduled,
+        late: false,
+        ot: false
+      });
+    }
   }
 
   return ok_({ name: found.row.Name, year: year, month: month, days: days });
