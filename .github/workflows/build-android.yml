@@ -6,7 +6,12 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # Was 25 -- past successful runs were already landing at 21-24 minutes
+    # even before this session's changes (new font packages, more JS to
+    # bundle), and this run finally tipped over and got killed mid-build at
+    # the 25-minute mark. Raised with real headroom instead of trimming it
+    # close again next time the app grows.
+    timeout-minutes: 45
     defaults:
       run:
         working-directory: attendance-app
