@@ -356,6 +356,7 @@ export default function KioskScreen({ navigation }: Props) {
 
   const onScheduleKeyPress = (key: string) => {
     if (isLoadingSchedule) return;
+    setScheduleIssue(null);
     if (key === 'back') return setSchedulePin((p) => p.slice(0, -1));
     if (key === 'clear') return setSchedulePin('');
 
@@ -400,7 +401,7 @@ export default function KioskScreen({ navigation }: Props) {
         </View>
 
         <Dots length={PIN_LENGTH} filled={schedulePin.length} error={scheduleError} schedule />
-        <Keypad onPress={onScheduleKeyPress} disabled={isLoadingSchedule || !!scheduleIssue} schedule />
+        <Keypad onPress={onScheduleKeyPress} disabled={isLoadingSchedule} schedule />
         {scheduleError && <Text style={styles.errorText}>Code not recognized</Text>}
 
         {isLoadingSchedule && (
@@ -450,20 +451,37 @@ export default function KioskScreen({ navigation }: Props) {
         <ScrollView style={styles.calendarWrap} contentContainerStyle={{ paddingBottom: 12 }}>
           {weeks.map((week, wi) => (
             <View key={wi} style={styles.calendarWeekRow}>
-              {week.map((cell, ci) => (
+              {week.map((cell, ci) => {
+                // Holiday and anything containing "Leave" (Leave, Half Day
+                // Leave, a future Sick Leave, ...) get their own tint so
+                // they read at a glance -- matched on the note text itself,
+                // not a fixed list, so a new Leave-type option picks up the
+                // same red without a code change; anything else generic
+                // (a future non-Leave, non-Holiday label) keeps the neutral
+                // calendarCellWorked treatment.
+                const isHoliday = cell && cell.entry && cell.entry.note === 'Holiday';
+                const isLeave = cell && cell.entry && cell.entry.note && cell.entry.note.indexOf('Leave') !== -1;
+                return (
                 <View
                   key={ci}
                   style={[
                     styles.calendarCell,
                     !cell && styles.calendarCellBlank,
-                    cell && cell.entry && styles.calendarCellWorked
+                    cell && cell.entry && styles.calendarCellWorked,
+                    isHoliday && styles.calendarCellHoliday,
+                    isLeave && styles.calendarCellLeave
                   ]}
                 >
                   {cell && (
                     <>
                       <Text style={styles.calendarDayNum}>{cell.day}</Text>
                       {cell.entry && cell.entry.note ? (
-                        <Text style={styles.calendarNote} numberOfLines={2}>{cell.entry.note}</Text>
+                        <Text
+                          style={[styles.calendarNote, isHoliday && styles.calendarNoteHoliday, isLeave && styles.calendarNoteLeave]}
+                          numberOfLines={2}
+                        >
+                          {cell.entry.note}
+                        </Text>
                       ) : (
                         cell.entry && (
                           <>
@@ -481,7 +499,8 @@ export default function KioskScreen({ navigation }: Props) {
                     </>
                   )}
                 </View>
-              ))}
+                );
+              })}
             </View>
           ))}
         </ScrollView>
@@ -791,7 +810,7 @@ const styles = StyleSheet.create({
   },
   calendarCell: {
     flex: 1,
-    aspectRatio: 0.92, // more compact vertically than before, so a bigger grid still fits without needing to scroll on a typical tablet
+    aspectRatio: 0.75, // taller than before (was 0.92 -- aspectRatio is width/height, so this is the smaller-is-taller direction) -- 0.92 left the Late/OT dots (and the Holiday/Leave note) too cramped to read comfortably; the calendar area already scrolls (see calendarWrap), so a taller grid costs a bit more scrolling, not clipped content
     alignItems: 'center',
     justifyContent: 'flex-start',
     paddingTop: 7,
@@ -802,9 +821,13 @@ const styles = StyleSheet.create({
   },
   calendarCellBlank: { borderColor: 'transparent', backgroundColor: 'transparent' },
   calendarCellWorked: { backgroundColor: '#ffffff', borderColor: '#D6E1F7' }, // days with an actual record stand out against the muted default
+  calendarCellHoliday: { backgroundColor: '#FFF3E0', borderColor: '#F5C88F' },
+  calendarCellLeave: { backgroundColor: '#FDECEA', borderColor: '#F1B3AB' },
   calendarDayNum: { color: '#12151C', fontSize: 15, fontFamily: FONT_EXTRABOLD },
   calendarTime: { color: '#2E63D6', fontSize: 11, fontFamily: FONT_BOLD, marginTop: 2 },
   calendarNote: { color: '#5C6B8A', fontSize: 10, fontFamily: FONT_BOLD, marginTop: 3, textAlign: 'center', paddingHorizontal: 2 },
+  calendarNoteHoliday: { color: '#B8631A' },
+  calendarNoteLeave: { color: '#C0392B' },
   calendarDotsRow: { flexDirection: 'row', gap: 4, marginTop: 3 },
   calendarDot: { width: 7, height: 7, borderRadius: 3.5 },
   calendarDotLate: { backgroundColor: '#c0392b' },
