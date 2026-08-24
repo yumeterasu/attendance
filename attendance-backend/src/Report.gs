@@ -626,7 +626,10 @@ function minutesToHHMM_(totalMinutes) {
  * more than SHIFT_MISMATCH_MINUTES_THRESHOLD minutes off the scheduled
  * shift's start AND some other SHIFTS option (with a real time -- Leave/
  * Holiday/Half Day Leave never match anything) is closer to the actual time
- * than the one currently scheduled.
+ * than the one currently scheduled. Event shifts (e.g. "Event 8:00-17:00")
+ * are skipped entirely, both as a day to check and as a candidate "closer"
+ * match -- they're one-off/irregular by nature, not a stale entry that
+ * should get flagged or "corrected" back into the normal rotation.
  *
  * Snapshot check, not live -- resets every day-cell background (then
  * re-applies the weekend tint) before highlighting, so a mismatch fixed
@@ -634,7 +637,11 @@ function minutesToHHMM_(totalMinutes) {
  */
 function highlightShiftMismatches_(sheet, year, month) {
   var daysInMonth = new Date(year, month, 0).getDate();
-  var timedShifts = SHIFTS.filter(function (s) { return getShiftStartMinutes_(s) !== null; });
+  // Event shifts are excluded both as a scheduled value to check (see the
+  // loop below) and as a candidate "did you mean this instead" match here --
+  // a one-off event isn't part of the normal shift rotation a stale entry
+  // would actually get corrected to.
+  var timedShifts = SHIFTS.filter(function (s) { return getShiftStartMinutes_(s) !== null && !/^Event\b/.test(s); });
 
   var values = sheet.getDataRange().getValues();
   var headers = values[0];
@@ -678,6 +685,7 @@ function highlightShiftMismatches_(sheet, year, month) {
       var dayCol = headers.indexOf(d);
       if (dayCol === -1) continue;
       var scheduledShift = String(values[r][dayCol] || '').trim();
+      if (/^Event\b/.test(scheduledShift)) continue; // one-off/irregular by nature -- not a normal recurring shift to flag as "wrong"
       var scheduledStart = getShiftStartMinutes_(scheduledShift);
       if (scheduledStart === null) continue; // blank, Leave, Holiday, Half Day Leave, or unparseable -- nothing to compare
 
