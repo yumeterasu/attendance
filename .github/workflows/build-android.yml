@@ -57,8 +57,16 @@ jobs:
 
       - name: Tune Gradle memory for the CI runner
         run: |
-          echo "org.gradle.jvmargs=-Xmx5120m -XX:MaxMetaspaceSize=1024m" >> android/gradle.properties
+          echo "org.gradle.jvmargs=-Xmx3072m -XX:MaxMetaspaceSize=1536m" >> android/gradle.properties
           echo "org.gradle.daemon=false" >> android/gradle.properties
+        # gradle.properties above turned out NOT to be enough on its own --
+        # a real run OOM'd with "Metaspace" at only 512 MiB and org.gradle.daemon=false
+        # didn't take either (the daemon was still alive when it died), meaning
+        # `eas-cli build --local`'s own Gradle invocation isn't reading this
+        # file the way a direct ./gradlew call would. GRADLE_OPTS below is a
+        # second, more reliable path to the same JVM args -- gradlew reads it
+        # straight from the process environment regardless of which
+        # gradle.properties (if any) it resolves. Kept both as belt-and-suspenders.
 
       - name: Inject env vars into eas.json's preview profile (belt-and-suspenders alongside step env)
         env:
@@ -80,6 +88,12 @@ jobs:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
           EXPO_PUBLIC_API_URL: ${{ secrets.EXPO_PUBLIC_API_URL }}
           EXPO_PUBLIC_API_KEY: ${{ secrets.EXPO_PUBLIC_API_KEY }}
+          # GitHub's standard runner has 7 GB total RAM -- sized to leave real
+          # headroom for the rest of the toolchain (Node/EAS CLI running
+          # alongside Gradle) rather than maximizing Gradle's own share and
+          # risking trading a clean Metaspace OOM for the OS killing the
+          # whole process instead.
+          GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx3072m -XX:MaxMetaspaceSize=1536m -Dorg.gradle.daemon=false"
         run: npx eas-cli build --platform android --profile preview --local --non-interactive --output ./build.apk
 
       - uses: actions/upload-artifact@v4
