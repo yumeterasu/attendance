@@ -15,6 +15,12 @@ web-build/
 *.apk
 *.aab
 
+# Managed Expo workflow: native projects are generated fresh by `expo
+# prebuild` (both locally for diagnostics and in the GitHub Actions build),
+# never hand-edited or committed.
+attendance-app/android/
+attendance-app/ios/
+
 # clasp local auth cache (if ever created inside the project instead of the home dir)
 .clasprc.json
 

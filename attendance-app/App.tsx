@@ -1,11 +1,26 @@
 import React, { useEffect } from 'react';
+import { View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import * as ScreenOrientation from 'expo-screen-orientation';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
+import {
+  useFonts,
+  PlusJakartaSans_500Medium,
+  PlusJakartaSans_600SemiBold,
+  PlusJakartaSans_700Bold,
+  PlusJakartaSans_800ExtraBold
+} from '@expo-google-fonts/plus-jakarta-sans';
 import { SessionProvider } from './src/context/SessionContext';
 import RootNavigator from './src/navigation/RootNavigator';
 
 export default function App() {
+  const [fontsLoaded] = useFonts({
+    PlusJakartaSans_500Medium,
+    PlusJakartaSans_600SemiBold,
+    PlusJakartaSans_700Bold,
+    PlusJakartaSans_800ExtraBold
+  });
+
   useEffect(() => {
     // Kiosk tablet: the "orientation: portrait" app.config.ts setting alone
     // doesn't reliably stop rotation on some Android tablets (large-screen
@@ -22,6 +37,13 @@ export default function App() {
       }
     })();
   }, []);
+
+  // Fonts are bundled (not downloaded), so this resolves almost instantly --
+  // still gated so the very first frame doesn't flash the system font before
+  // swapping to Plus Jakarta Sans.
+  if (!fontsLoaded) {
+    return <View style={{ flex: 1, backgroundColor: '#F7F9FC' }} />;
+  }
 
   return (
     <SafeAreaProvider>

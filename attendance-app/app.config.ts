@@ -21,6 +21,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     permissions: ['CAMERA'],
     package: 'com.attendance.app'
   },
+  plugins: ['expo-font', './plugins/withPortraitLock'],
   extra: {
     eas: {
       projectId: '5c2b7471-09bb-4b56-b4d7-4db4f1f4a441'

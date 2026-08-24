@@ -94,7 +94,7 @@ function Keypad({
               <Text
                 style={[
                   key === 'clear' || key === 'back' ? styles.keyTextSmall : styles.keyText,
-                  (light || schedule) && styles.keyTextLight
+                  (light || schedule || danger) && styles.keyTextLight
                 ]}
               >
                 {key === 'clear' ? 'Clear' : key === 'back' ? '⌫' : key}
@@ -362,19 +362,24 @@ export default function KioskScreen({ navigation }: Props) {
   if (mode === 'exit') {
     return (
       <View style={[styles.container, styles.containerDanger]}>
-        <Text style={styles.title}>🔒 Admin Exit PIN</Text>
-        <Text style={styles.subtitle}>This leaves Kiosk Mode — not for check-in</Text>
+        <Text style={[styles.title, styles.titleDanger]}>Admin Exit PIN</Text>
+        <Text style={styles.subtitleDanger}>This leaves Kiosk Mode — not for check-in</Text>
+
+        <View style={[styles.badge, styles.badgeDanger]}>
+          <Text style={styles.badgeGlyph}>🔒</Text>
+        </View>
+
         <Dots length={PIN_LENGTH} filled={exitPin.length} error={exitError} danger />
         <Keypad onPress={onExitKeyPress} danger />
         {exitError && <Text style={styles.errorText}>Incorrect PIN</Text>}
         <Pressable
-          style={styles.cornerButton}
+          style={[styles.cornerButton, styles.cornerButtonLight]}
           onPress={() => {
             setMode('checkin');
             setExitPin('');
           }}
         >
-          <Text style={styles.cornerButtonText}>Cancel</Text>
+          <Text style={styles.cornerButtonTextLight}>Cancel</Text>
         </Pressable>
       </View>
     );
@@ -384,13 +389,18 @@ export default function KioskScreen({ navigation }: Props) {
     return (
       <View style={[styles.container, styles.containerSchedule]}>
         <Text style={[styles.title, styles.titleDark]}>Enter Your Code to View Schedule</Text>
+
+        <View style={[styles.badge, styles.badgeSchedule]}>
+          <Text style={styles.badgeGlyph}>🗓️</Text>
+        </View>
+
         <Dots length={PIN_LENGTH} filled={schedulePin.length} error={scheduleError} schedule />
         <Keypad onPress={onScheduleKeyPress} disabled={isLoadingSchedule || !!scheduleIssue} schedule />
         {scheduleError && <Text style={styles.errorText}>Code not recognized</Text>}
 
         {isLoadingSchedule && (
           <View style={styles.checkingRow}>
-            <ActivityIndicator color="#1d1d1f" />
+            <ActivityIndicator color="#3E7BFA" />
             <Text style={styles.checkingText}>Loading...</Text>
           </View>
         )}
@@ -525,12 +535,16 @@ export default function KioskScreen({ navigation }: Props) {
         <>
           <Text style={[styles.title, styles.titleDark]}>Enter Your Code</Text>
 
+          <View style={styles.badge}>
+            <Text style={styles.badgeGlyph}>👤</Text>
+          </View>
+
           <Dots length={PIN_LENGTH} filled={pin.length} light />
           <Keypad onPress={onPinKeyPress} disabled={isLookingUp} light />
 
           {isLookingUp && (
             <View style={styles.checkingRow}>
-              <ActivityIndicator color="#1d1d1f" />
+              <ActivityIndicator color="#3E7BFA" />
               <Text style={styles.checkingText}>Checking...</Text>
             </View>
           )}
@@ -605,45 +619,64 @@ export default function KioskScreen({ navigation }: Props) {
   );
 }
 
+const FONT_MEDIUM = 'PlusJakartaSans_500Medium';
+const FONT_SEMIBOLD = 'PlusJakartaSans_600SemiBold';
+const FONT_BOLD = 'PlusJakartaSans_700Bold';
+const FONT_EXTRABOLD = 'PlusJakartaSans_800ExtraBold';
+
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#000', alignItems: 'center', justifyContent: 'center', padding: 24 },
-  containerDanger: { backgroundColor: '#2a0e0e' },
-  containerLight: { backgroundColor: '#fff' },
-  containerSchedule: { backgroundColor: '#dbe8f0' },
-  title: { color: '#fff', fontSize: 22, fontWeight: '700', marginBottom: 8, textAlign: 'center' },
-  titleDark: { color: '#1d1d1f' },
-  subtitleDark: { color: '#777', fontSize: 15, marginBottom: 8 },
+  containerDanger: { backgroundColor: '#FCF3F2' },
+  containerLight: { backgroundColor: '#F7F9FC' },
+  containerSchedule: { backgroundColor: '#EEF3FC' },
+  title: { color: '#12151C', fontSize: 22, fontFamily: FONT_BOLD, marginBottom: 8, textAlign: 'center' },
+  titleDark: { color: '#12151C' },
+  titleDanger: { color: '#3A1210' },
+  subtitleDark: { color: '#6B7280', fontSize: 15, fontFamily: FONT_MEDIUM, marginBottom: 8 },
+  subtitleDanger: { color: '#A9645D', fontSize: 13, fontFamily: FONT_MEDIUM, marginBottom: 8, textAlign: 'center' },
+  badge: {
+    width: 64,
+    height: 64,
+    borderRadius: 24,
+    backgroundColor: '#E8EFFD',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 6
+  },
+  badgeSchedule: { backgroundColor: '#DCE7FB' },
+  badgeDanger: { backgroundColor: '#F7DAD6' },
+  badgeGlyph: { fontSize: 26 },
   netStatusDot: { position: 'absolute', top: 16, right: 16 },
   netDot: { width: 12, height: 12, borderRadius: 6 },
   netDotOnline: { backgroundColor: '#7cb987' },
   netDotOffline: { backgroundColor: '#c0392b' },
   retryBox: { marginTop: 20, alignItems: 'center' },
-  retryMessage: { color: '#c0392b', fontSize: 13, textAlign: 'center', marginBottom: 10, maxWidth: 280 },
-  retryButton: { backgroundColor: '#1d1d1f', borderRadius: 14, paddingVertical: 12, paddingHorizontal: 32 },
-  retryButtonText: { color: '#fff', fontSize: 15, fontWeight: '700' },
+  retryMessage: { color: '#C0392B', fontSize: 13, fontFamily: FONT_MEDIUM, textAlign: 'center', marginBottom: 10, maxWidth: 280 },
+  retryButton: { backgroundColor: '#12151C', borderRadius: 16, paddingVertical: 12, paddingHorizontal: 32 },
+  retryButtonText: { color: '#fff', fontSize: 15, fontFamily: FONT_BOLD },
   confirmButton: {
     marginTop: 32,
-    backgroundColor: '#2e7d32',
-    borderRadius: 14,
+    backgroundColor: '#2E63D6',
+    borderRadius: 18,
     paddingVertical: 18,
     paddingHorizontal: 64,
     alignItems: 'center'
   },
-  confirmButtonDisabled: { backgroundColor: '#ccc' },
+  confirmButtonDisabled: { backgroundColor: '#B8C6EA' },
   checkingRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 24 },
-  checkingText: { color: '#666', fontSize: 14, fontWeight: '600' },
+  checkingText: { color: '#6B7280', fontSize: 14, fontFamily: FONT_SEMIBOLD },
   cancelLink: {
     marginTop: 20,
-    backgroundColor: '#eee',
+    backgroundColor: '#EEF2F8',
     borderRadius: 16,
     paddingVertical: 10,
     paddingHorizontal: 20
   },
-  cancelLinkText: { color: '#555', fontSize: 13, fontWeight: '700' },
+  cancelLinkText: { color: '#4B5566', fontSize: 13, fontFamily: FONT_BOLD },
   subtitle: { color: 'rgba(255,255,255,0.6)', fontSize: 15, marginBottom: 24 },
   typeRow: { flexDirection: 'row', gap: 12, marginTop: 20, marginBottom: 8 },
   typeButton: {
-    borderRadius: 14,
+    borderRadius: 18,
     paddingVertical: 18,
     paddingHorizontal: 22,
     borderWidth: 2
@@ -654,11 +687,11 @@ const styles = StyleSheet.create({
   typeButtonInSelected: { backgroundColor: '#2e7d32', borderColor: '#1b5e20' },
   typeButtonOutSelected: { backgroundColor: '#c0392b', borderColor: '#b71c1c' },
   typeButtonOtSelected: { backgroundColor: '#e65100', borderColor: '#bf360c' },
-  typeButtonInText: { color: '#1b5e20', fontSize: 17, fontWeight: '700' },
-  typeButtonOutText: { color: '#b71c1c', fontSize: 17, fontWeight: '700' },
-  typeButtonOtText: { color: '#e65100', fontSize: 17, fontWeight: '700' },
+  typeButtonInText: { color: '#1b5e20', fontSize: 17, fontFamily: FONT_BOLD },
+  typeButtonOutText: { color: '#b71c1c', fontSize: 17, fontFamily: FONT_BOLD },
+  typeButtonOtText: { color: '#e65100', fontSize: 17, fontFamily: FONT_BOLD },
   typeButtonTextSelected: { color: '#fff' },
-  dots: { flexDirection: 'row', gap: 20, marginTop: 24, marginBottom: 40 },
+  dots: { flexDirection: 'row', gap: 20, marginTop: 20, marginBottom: 36 },
   dot: {
     width: 22,
     height: 22,
@@ -667,14 +700,14 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(255,255,255,0.4)'
   },
   dotFilled: { backgroundColor: '#fff', borderColor: '#fff' },
-  dotDanger: { borderColor: 'rgba(255,140,140,0.5)' },
-  dotFilledDanger: { backgroundColor: '#ff6b6b', borderColor: '#ff6b6b' },
-  dotLight: { borderColor: '#ccc' },
-  dotFilledLight: { backgroundColor: '#333', borderColor: '#333' },
-  dotSchedule: { borderColor: '#8fb0c1' }, // darker outline so empty dots are visible on the blue Schedule background
-  dotFilledSchedule: { backgroundColor: '#1d3540', borderColor: '#1d3540' },
+  dotDanger: { borderColor: '#EBC4BF' },
+  dotFilledDanger: { backgroundColor: '#C0392B', borderColor: '#C0392B' },
+  dotLight: { borderColor: '#CBD5E8' },
+  dotFilledLight: { backgroundColor: '#3E7BFA', borderColor: '#3E7BFA' },
+  dotSchedule: { borderColor: '#BCD0F5' }, // light outline so empty dots are visible on the soft blue Schedule background
+  dotFilledSchedule: { backgroundColor: '#3E7BFA', borderColor: '#3E7BFA' },
   dotError: { borderColor: '#c0392b', backgroundColor: '#c0392b' },
-  errorText: { color: '#e57373', fontSize: 14, fontWeight: '600', marginTop: 20 },
+  errorText: { color: '#C0392B', fontSize: 14, fontFamily: FONT_SEMIBOLD, marginTop: 20 },
   keypad: { gap: 16 },
   keypadRow: { flexDirection: 'row', gap: 16 },
   key: {
@@ -685,12 +718,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center'
   },
-  keyDanger: { backgroundColor: 'rgba(255,107,107,0.15)' },
-  keyLight: { backgroundColor: '#f0f0f0' },
-  keySchedule: { backgroundColor: '#ffffff', borderWidth: 1.5, borderColor: '#9bb9c9' },
-  keyText: { color: '#fff', fontSize: 30, fontWeight: '600' },
-  keyTextSmall: { color: 'rgba(255,255,255,0.7)', fontSize: 16, fontWeight: '600' },
-  keyTextLight: { color: '#1d1d1f' },
+  keyDanger: { backgroundColor: '#ffffff', borderWidth: 1.5, borderColor: '#EBC4BF' },
+  keyLight: { backgroundColor: '#EEF2F8' },
+  keySchedule: { backgroundColor: '#ffffff', borderWidth: 1.5, borderColor: '#CBD9F5' },
+  keyText: { color: '#fff', fontSize: 30, fontFamily: FONT_SEMIBOLD },
+  keyTextSmall: { color: 'rgba(255,255,255,0.7)', fontSize: 16, fontFamily: FONT_SEMIBOLD },
+  keyTextLight: { color: '#12151C' },
   scheduleButton: {
     position: 'absolute',
     bottom: 24,
@@ -709,29 +742,29 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     borderRadius: 16
   },
-  cornerButtonText: { color: 'rgba(255,255,255,0.7)', fontSize: 12, fontWeight: '600' },
-  cornerButtonLight: { backgroundColor: '#eee' },
-  cornerButtonTextLight: { color: '#555', fontSize: 12, fontWeight: '600' },
+  cornerButtonText: { color: 'rgba(255,255,255,0.7)', fontSize: 12, fontFamily: FONT_SEMIBOLD },
+  cornerButtonLight: { backgroundColor: '#ffffff' },
+  cornerButtonTextLight: { color: '#4B5566', fontSize: 12, fontFamily: FONT_BOLD },
   feedbackCard: {
     position: 'absolute',
     top: '20%',
     left: 32,
     right: 32,
-    borderRadius: 20,
+    borderRadius: 24,
     paddingVertical: 32,
     alignItems: 'center'
   },
   feedbackIn: { backgroundColor: '#2e7d32' },
   feedbackOut: { backgroundColor: '#455a64' },
   feedbackError: { backgroundColor: '#c0392b' },
-  feedbackType: { color: '#fff', fontSize: 28, fontWeight: '800', letterSpacing: 2 },
-  feedbackName: { color: '#fff', fontSize: 22, fontWeight: '600', marginTop: 8, textAlign: 'center' },
-  feedbackTime: { color: 'rgba(255,255,255,0.8)', fontSize: 14, marginTop: 4 },
+  feedbackType: { color: '#fff', fontSize: 28, fontFamily: FONT_EXTRABOLD, letterSpacing: 2 },
+  feedbackName: { color: '#fff', fontSize: 22, fontFamily: FONT_BOLD, marginTop: 8, textAlign: 'center' },
+  feedbackTime: { color: 'rgba(255,255,255,0.8)', fontSize: 14, fontFamily: FONT_MEDIUM, marginTop: 4 },
   feedbackLate: {
     color: '#fff',
     backgroundColor: 'rgba(0,0,0,0.25)',
     fontSize: 12,
-    fontWeight: '700',
+    fontFamily: FONT_BOLD,
     marginTop: 10,
     paddingVertical: 4,
     paddingHorizontal: 12,
@@ -742,9 +775,9 @@ const styles = StyleSheet.create({
   calendarHeaderCell: {
     flex: 1,
     textAlign: 'center',
-    color: '#345365',
+    color: '#5C6B8A',
     fontSize: 13,
-    fontWeight: '700',
+    fontFamily: FONT_BOLD,
     paddingBottom: 6
   },
   calendarCell: {
@@ -753,14 +786,15 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'flex-start',
     paddingTop: 7,
+    borderRadius: 8,
     borderWidth: 1,
-    borderColor: '#9bb9c9',
-    backgroundColor: '#ffffff'
+    borderColor: '#E4EBF9',
+    backgroundColor: '#F4F7FD' // real calendar days default to a muted tint; calendarCellWorked (below) brightens the ones with an actual record
   },
   calendarCellBlank: { borderColor: 'transparent', backgroundColor: 'transparent' },
-  calendarCellWorked: { backgroundColor: '#eef6fc' }, // days with an actual record get a subtle tint so they stand out from off days
-  calendarDayNum: { color: '#0c1820', fontSize: 15, fontWeight: '800' },
-  calendarTime: { color: '#27454f', fontSize: 11, fontWeight: '700', marginTop: 2 },
+  calendarCellWorked: { backgroundColor: '#ffffff', borderColor: '#D6E1F7' }, // days with an actual record stand out against the muted default
+  calendarDayNum: { color: '#12151C', fontSize: 15, fontFamily: FONT_EXTRABOLD },
+  calendarTime: { color: '#2E63D6', fontSize: 11, fontFamily: FONT_BOLD, marginTop: 2 },
   calendarDotsRow: { flexDirection: 'row', gap: 4, marginTop: 3 },
   calendarDot: { width: 7, height: 7, borderRadius: 3.5 },
   calendarDotLate: { backgroundColor: '#c0392b' },
@@ -769,14 +803,14 @@ const styles = StyleSheet.create({
   },
   calendarLegend: { flexDirection: 'row', gap: 20, marginTop: 12 },
   legendItem: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  legendText: { color: '#27454f', fontSize: 12, fontWeight: '600' },
+  legendText: { color: '#5C6B8A', fontSize: 12, fontFamily: FONT_SEMIBOLD },
   doneButton: {
     marginTop: 24,
-    backgroundColor: '#455a64',
-    borderRadius: 8,
+    backgroundColor: '#12151C',
+    borderRadius: 16,
     paddingVertical: 14,
     paddingHorizontal: 48,
     alignItems: 'center'
   },
-  buttonText: { color: '#fff', fontSize: 16, fontWeight: '600' }
+  buttonText: { color: '#fff', fontSize: 16, fontFamily: FONT_SEMIBOLD }
 });
