@@ -379,7 +379,7 @@ function refreshLiveSummarySheet_() {
  * was asked for, not alphabetical.
  */
 var LEAVE_COUNT_TYPES = ['Annual Leave', 'Sick Leave', 'Paid Special Leave', 'Unpaid Leave'];
-var HALF_DAY_LEAVE_COUNTS_AS_ = { 'Half Day Annual Leave': 'Annual Leave', 'Half Day Sick Leave': 'Sick Leave' };
+var HALF_DAY_LEAVE_COUNTS_AS_ = { 'Half Day Annual Leave': 'Annual Leave', 'Half Day Sick Leave': 'Sick Leave', 'Half Day Unpaid Leave': 'Unpaid Leave' };
 
 /** One employee's leave-type counts from a getScheduledShiftsForMonth_ result -- { [LEAVE_COUNT_TYPES[i]]: count }, see HALF_DAY_LEAVE_COUNTS_AS_ above. */
 function countLeavesForEmployee_(scheduledShiftsForMonth, employeeId) {
