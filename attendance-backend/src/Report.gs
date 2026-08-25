@@ -424,6 +424,19 @@ function countLeavesForYear_(year) {
 }
 
 /**
+ * autoResizeColumns fits each column to its content, but the fit can come
+ * out a few pixels too tight for bold header text (e.g. "Paid Special
+ * Leave") -- letters get clipped at the edge instead of wrapping. Widening
+ * every column a bit afterward is the standard workaround.
+ */
+function autoResizeColumnsWithPadding_(sheet, numCols) {
+  sheet.autoResizeColumns(1, numCols);
+  for (var c = 1; c <= numCols; c++) {
+    sheet.setColumnWidth(c, sheet.getColumnWidth(c) + 16);
+  }
+}
+
+/**
  * Writes one condensed totals row per employee (days worked, late count, OT
  * totals, leave-type counts) into `sheet` starting at `startRow`. Same sort
  * order as the Report sheet (Japanese first, then Thai staff with any OT
@@ -489,7 +502,7 @@ function writeMonthlySummaryData_(sheet, startRow, year, month) {
     sheet.getRangeList(a1Notations).setBackground('#d9ead3');
   }
 
-  sheet.autoResizeColumns(1, COLS);
+  autoResizeColumnsWithPadding_(sheet, COLS);
 }
 
 /**
@@ -553,7 +566,7 @@ function writeYearlySummaryData_(sheet, startRow, year) {
     sheet.getRangeList(yearlyA1Notations).setBackground('#d9ead3');
   }
 
-  sheet.autoResizeColumns(1, COLS);
+  autoResizeColumnsWithPadding_(sheet, COLS);
 }
 
 /** Same grouping as reportSortGroup_, but for aggregateYearSummary_'s pre-summed totals instead of a day-keyed dayLogs object. */
