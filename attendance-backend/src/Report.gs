@@ -553,6 +553,7 @@ function buildScheduleSheet_(year, month) {
     applyWeekendColors_(existing, 1, existing.getLastRow(), year, month, daysInMonth);
     if (existing.getLastRow() > 1) {
       applyBranchDeptColors_(existing, existing.getDataRange().getValues(), headers);
+      applyLeaveHolidayConditionalFormat_(existing, 2, existing.getLastRow() - 1, daysInMonth);
     }
     return sheetName;
   }
@@ -580,6 +581,7 @@ function buildScheduleSheet_(year, month) {
   applyWeekendColors_(sheet, 1, rows.length, year, month, daysInMonth);
   if (rows.length > 1) {
     applyBranchDeptColors_(sheet, rows, header);
+    applyLeaveHolidayConditionalFormat_(sheet, 2, rows.length - 1, daysInMonth);
   }
 
   sheet.autoResizeColumns(1, 2);
@@ -596,6 +598,38 @@ function applyWeekendColors_(sheet, startRow, numRows, year, month, daysInMonth)
       sheet.getRange(startRow, 2 + d, numRows, 1).setBackground(color);
     }
   }
+}
+
+/**
+ * Live conditional-format rule for the day-columns, not a one-time paint
+ * like applyWeekendColors_ -- so a cell picks up the light-orange treatment
+ * the moment someone picks a Leave/Holiday shift from the dropdown, without
+ * needing to re-run Create/Refresh Schedule Sheet afterward. Matches the
+ * same "Leave" substring / "Holiday" exact-match rule the Kiosk app's My
+ * Schedule calendar uses, so a new option (e.g. a future "Bereavement
+ * Leave") is covered automatically the moment it's added to SHIFTS --
+ * nothing here needs to change for it.
+ */
+function applyLeaveHolidayConditionalFormat_(sheet, startRow, numRows, daysInMonth) {
+  if (numRows <= 0) return;
+  var range = sheet.getRange(startRow, 3, numRows, daysInMonth);
+  var anchor = range.getCell(1, 1).getA1Notation(); // top-left cell -- the formula below is relative to this, same as typing it directly into that cell
+
+  // Drop any earlier rule scoped to this exact range first, so re-running
+  // Create/Refresh Schedule Sheet doesn't pile up duplicate rules.
+  var rangeA1 = range.getA1Notation();
+  var rules = sheet.getConditionalFormatRules().filter(function (rule) {
+    return !rule.getRanges().some(function (r) { return r.getA1Notation() === rangeA1; });
+  });
+
+  rules.push(
+    SpreadsheetApp.newConditionalFormatRule()
+      .whenFormulaSatisfied('=OR(REGEXMATCH(' + anchor + ', "Leave"), ' + anchor + '="Holiday")')
+      .setBackground('#FFF3E0')
+      .setRanges([range])
+      .build()
+  );
+  sheet.setConditionalFormatRules(rules);
 }
 
 // Cells this far or more off the scheduled shift's start time, where some
