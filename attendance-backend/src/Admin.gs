@@ -226,15 +226,17 @@ function deleteKioskPinsSheet() {
 }
 
 /**
- * One-off: renames every Schedule cell that's exactly "Leave" (the old
- * label, before the Annual Leave / Sick Leave split) to "Annual Leave" --
- * across every "Schedule YYYY-MM" sheet in the spreadsheet. Exact-string
- * match only, so "Half Day Leave" cells are never touched. Run manually
+ * One-off: renames every Schedule cell holding one of the old pre-split
+ * shift labels to its new name -- "Leave" -> "Annual Leave" and "Half Day
+ * Leave" -> "Half Day Annual Leave" -- across every "Schedule YYYY-MM"
+ * sheet in the spreadsheet. Exact-string match only, so e.g. "Half Day
+ * Sick Leave" cells are never touched by the "Leave" rule. Run manually
  * from the editor: select migrateLeaveToAnnualLeave in the toolbar
  * dropdown, click Run, then check View > Execution log for a per-sheet
  * count of how many cells changed.
  */
 function migrateLeaveToAnnualLeave() {
+  var RENAMES = { 'Leave': 'Annual Leave', 'Half Day Leave': 'Half Day Annual Leave' };
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var sheets = ss.getSheets().filter(function (s) { return /^Schedule \d{4}-\d{2}$/.test(s.getName()); });
   var totalChanged = 0;
@@ -248,8 +250,9 @@ function migrateLeaveToAnnualLeave() {
     var changed = 0;
     for (var r = 0; r < values.length; r++) {
       for (var c = 0; c < values[r].length; c++) {
-        if (values[r][c] === 'Leave') {
-          values[r][c] = 'Annual Leave';
+        var renamed = RENAMES[values[r][c]];
+        if (renamed) {
+          values[r][c] = renamed;
           changed++;
         }
       }

@@ -19,8 +19,9 @@ function writeMonthlyReportData_(sheet, startRow, year, month) {
   // blank -- indistinguishable from a genuinely forgotten clock-in. Read the
   // Schedule sheet once so those days can show "Leave"/"Holiday" instead
   // (see FULL_DAY_OFF_SHIFTS); every other blank day (no AttendanceLog row
-  // and not scheduled as a full day off -- including "Half Day Leave",
-  // which still expects a real clock-in for the other half) is left blank
+  // and not scheduled as a full day off -- including "Half Day Annual
+  // Leave"/"Half Day Sick Leave", which still expect a real clock-in for
+  // the other half) is left blank
   // as before, on purpose, so a real missed clock-in still stands out.
   var scheduledShiftsForMonth = getScheduledShiftsForMonth_(year, month);
 
@@ -638,7 +639,7 @@ function applyLeaveHolidayConditionalFormat_(sheet, startRow, numRows, daysInMon
 var SHIFT_MISMATCH_MINUTES_THRESHOLD = 15;
 var SHIFT_MISMATCH_COLOR = '#f9a825';
 
-/** First "H:MM" found in a shift/event string, as minutes since midnight. Null for blank/Leave/Holiday/Half Day Leave/anything unparseable. Same "first match = start" rule as isLate_. */
+/** First "H:MM" found in a shift/event string, as minutes since midnight. Null for blank/Leave/Holiday/Half Day Annual Leave/anything unparseable. Same "first match = start" rule as isLate_. */
 function getShiftStartMinutes_(shiftOrEvent) {
   var match = String(shiftOrEvent || '').match(/(\d{1,2}):(\d{2})/);
   if (!match) return null;
@@ -659,7 +660,7 @@ function minutesToHHMM_(totalMinutes) {
  * just a stale schedule entry. A cell is flagged when the actual check-in is
  * more than SHIFT_MISMATCH_MINUTES_THRESHOLD minutes off the scheduled
  * shift's start AND some other SHIFTS option (with a real time -- Leave/
- * Holiday/Half Day Leave never match anything) is closer to the actual time
+ * Holiday/Half Day Annual Leave never match anything) is closer to the actual time
  * than the one currently scheduled. Event shifts (e.g. "Event 8:00-17:00")
  * are skipped entirely, both as a day to check and as a candidate "closer"
  * match -- they're one-off/irregular by nature, not a stale entry that
@@ -721,7 +722,7 @@ function highlightShiftMismatches_(sheet, year, month) {
       var scheduledShift = String(values[r][dayCol] || '').trim();
       if (/^Event\b/.test(scheduledShift)) continue; // one-off/irregular by nature -- not a normal recurring shift to flag as "wrong"
       var scheduledStart = getShiftStartMinutes_(scheduledShift);
-      if (scheduledStart === null) continue; // blank, Leave, Holiday, Half Day Leave, or unparseable -- nothing to compare
+      if (scheduledStart === null) continue; // blank, Leave, Holiday, Half Day Annual Leave, or unparseable -- nothing to compare
 
       var key = employeeId + '|' + d;
       if (!(key in actualInMinutesByKey)) continue; // no check-in that day -- a different concern (see checkMissingAttendance_)

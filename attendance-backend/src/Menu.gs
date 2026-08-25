@@ -46,7 +46,7 @@ function menuWhoIsAbsentToday_() {
       var shift = (scheduledShiftsForMonth[emp.EmployeeID] && scheduledShiftsForMonth[emp.EmployeeID][today]) || '';
       return { employee: emp, shift: shift };
     })
-    .filter(function (s) { return s.shift && FULL_DAY_OFF_SHIFTS.indexOf(s.shift) === -1; }); // Leave/Holiday mean intentionally off, not "not scheduled yet" -- exclude from this list ("Half Day Leave" stays in -- still expected in for half the day)
+    .filter(function (s) { return s.shift && FULL_DAY_OFF_SHIFTS.indexOf(s.shift) === -1; }); // Leave/Holiday mean intentionally off, not "not scheduled yet" -- exclude from this list ("Half Day Annual/Sick Leave" stays in -- still expected in for half the day)
 
   if (scheduled.length === 0) {
     ui.alert('No one is scheduled today (or the Schedule sheet for this month is not filled in yet).');
@@ -753,7 +753,7 @@ function menuBulkMarkAttendance_() {
       var shift = (scheduledShiftsForMonth[emp.EmployeeID] && scheduledShiftsForMonth[emp.EmployeeID][day]) || '';
       return { employee: emp, shift: shift };
     })
-    .filter(function (s) { return s.shift && FULL_DAY_OFF_SHIFTS.indexOf(s.shift) === -1; }); // Leave/Holiday mean intentionally off, not "not scheduled yet" -- exclude from this list ("Half Day Leave" stays in -- still expected in for half the day)
+    .filter(function (s) { return s.shift && FULL_DAY_OFF_SHIFTS.indexOf(s.shift) === -1; }); // Leave/Holiday mean intentionally off, not "not scheduled yet" -- exclude from this list ("Half Day Annual/Sick Leave" stays in -- still expected in for half the day)
 
   if (scheduled.length === 0) {
     ui.alert('No active, scheduled employees found for that date. Make sure the Schedule sheet for that month is filled in.');
