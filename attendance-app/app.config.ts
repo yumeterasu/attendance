@@ -4,7 +4,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   ...config,
   name: 'Attendance',
   slug: 'attendance-app',
-  version: '1.5.1', // bump this with each meaningful feature build so Install page / device settings show something readable, not just a git hash
+  version: '1.6.0', // bump this with each meaningful feature build so Install page / device settings show something readable, not just a git hash
   orientation: 'portrait',
   userInterfaceStyle: 'light',
   splash: {
@@ -21,7 +21,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     permissions: ['CAMERA'],
     package: 'com.attendance.app'
   },
-  plugins: ['expo-font', './plugins/withPortraitLock'],
+  plugins: ['expo-font', 'expo-audio', './plugins/withPortraitLock'],
   extra: {
     eas: {
       projectId: '5c2b7471-09bb-4b56-b4d7-4db4f1f4a441'
