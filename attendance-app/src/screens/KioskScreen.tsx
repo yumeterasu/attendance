@@ -17,6 +17,7 @@ const PIN_LENGTH = 4;
 const FEEDBACK_DURATION_MS = 2500;
 const ERROR_FLASH_DURATION_MS = 1200;
 const CONFIRM_TIMEOUT_MS = 20000; // auto-cancel back to the PIN screen if nobody confirms -- shared kiosk, don't leave someone else's name up
+const AUTO_OUT_HOUR = 16; // nobody realistically checks IN this late -- pre-select OUT after this hour so the common case is a single tap on Confirm
 const KEYPAD_ROWS = [
   ['1', '2', '3'],
   ['4', '5', '6'],
@@ -209,6 +210,14 @@ export default function KioskScreen({ navigation }: Props) {
     if (lookupName === null) return;
     const timer = setTimeout(resetCheckin, CONFIRM_TIMEOUT_MS);
     return () => clearTimeout(timer);
+  }, [lookupName]);
+
+  // Pre-select OUT once it's late enough that nobody is realistically
+  // checking IN -- still fully overridable (IN / OUT OT stay tappable),
+  // this just saves the common case an extra tap.
+  useEffect(() => {
+    if (lookupName === null) return;
+    if (new Date().getHours() >= AUTO_OUT_HOUR) setSelection('OUT');
   }, [lookupName]);
 
   // Falls back to the on-device PIN->Name copy (see employeeDirectory) when
