@@ -3,13 +3,13 @@
  */
 
 var DUPLICATE_GUARD_MS = 60 * 1000; // reject re-scans within 60s of the last log for the same employee
-var SHIFTS = ['7:00-16:00', '7:30-16:30', '8:00-17:00', '8:30-17:30', 'Event 8:00-17:00', 'Annual Leave', 'Sick Leave', 'Half Day Leave', 'Holiday'];
+var SHIFTS = ['7:00-16:00', '7:30-16:30', '8:00-17:00', '8:30-17:30', 'Event 8:00-17:00', 'Annual Leave', 'Sick Leave', 'Half Day Leave', 'Half Day Sick Leave', 'Holiday'];
 // Shift values that mean "nobody's expected in at all that day" -- as
-// opposed to a blank cell (not scheduled yet) or "Half Day Leave" (still
-// expected in for half the day). Used wherever a scheduled-but-not-working
-// day should be excluded from an absence/attendance check: "Annual Leave"
-// and "Sick Leave" are one person's own day off, "Holiday" is the whole
-// company closed.
+// opposed to a blank cell (not scheduled yet) or "Half Day Leave"/"Half Day
+// Sick Leave" (still expected in for half the day). Used wherever a
+// scheduled-but-not-working day should be excluded from an
+// absence/attendance check: "Annual Leave" and "Sick Leave" are one
+// person's own day off, "Holiday" is the whole company closed.
 var FULL_DAY_OFF_SHIFTS = ['Annual Leave', 'Sick Leave', 'Holiday'];
 var BRANCHES = ['PP', 'TL']; // Phrom Phong, Thonglor -- Schedule sheet row order: this branch order first, then Japanese before Thai within each branch
 var OT_GRACE_MINUTES = 15; // first 15 min after shift end never counts as OT, for either group

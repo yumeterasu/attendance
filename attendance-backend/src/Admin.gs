@@ -226,6 +226,44 @@ function deleteKioskPinsSheet() {
 }
 
 /**
+ * One-off: renames every Schedule cell that's exactly "Leave" (the old
+ * label, before the Annual Leave / Sick Leave split) to "Annual Leave" --
+ * across every "Schedule YYYY-MM" sheet in the spreadsheet. Exact-string
+ * match only, so "Half Day Leave" cells are never touched. Run manually
+ * from the editor: select migrateLeaveToAnnualLeave in the toolbar
+ * dropdown, click Run, then check View > Execution log for a per-sheet
+ * count of how many cells changed.
+ */
+function migrateLeaveToAnnualLeave() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheets = ss.getSheets().filter(function (s) { return /^Schedule \d{4}-\d{2}$/.test(s.getName()); });
+  var totalChanged = 0;
+  sheets.forEach(function (sheet) {
+    var lastRow = sheet.getLastRow();
+    var lastCol = sheet.getLastColumn();
+    if (lastRow < 2 || lastCol < 3) return; // no data rows, or no day columns (cols 1-2 are EmployeeID/Name)
+
+    var range = sheet.getRange(2, 3, lastRow - 1, lastCol - 2);
+    var values = range.getValues();
+    var changed = 0;
+    for (var r = 0; r < values.length; r++) {
+      for (var c = 0; c < values[r].length; c++) {
+        if (values[r][c] === 'Leave') {
+          values[r][c] = 'Annual Leave';
+          changed++;
+        }
+      }
+    }
+    if (changed > 0) {
+      range.setValues(values);
+      totalChanged += changed;
+      Logger.log(sheet.getName() + ': changed ' + changed + ' cell(s)');
+    }
+  });
+  Logger.log('Done. Total cells changed: ' + totalChanged);
+}
+
+/**
  * One-off: issue a fresh setup code for a locked-out employee (e.g. lost/reset
  * device with no admin session to use the in-app "Lost Device" flow). Run
  * manually from the editor: select issueSetupCodeForLockedOutEmployee in the
