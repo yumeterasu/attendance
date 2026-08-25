@@ -296,7 +296,7 @@ function setupLiveSummarySheet() {
   yearCell.setDataValidation(yearRule);
   if (!yearCell.getValue()) yearCell.setValue(thisYear);
 
-  var months = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+  var months = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 'All']; // "All" sums the whole Year (B1) instead of one month -- see writeYearlySummaryData_
   var monthRule = SpreadsheetApp.newDataValidation().requireValueInList(months, true).build();
   var monthCell = sheet.getRange('B2');
   monthCell.setDataValidation(monthRule);
@@ -317,8 +317,10 @@ function refreshLiveSummarySheet_() {
   ensureColumns_('Employees', ['Salary']); // adds the header if missing so Thai OT Pay can work without a manual setup step
 
   var year = Number(sheet.getRange('B1').getValue());
-  var month = Number(sheet.getRange('B2').getValue());
-  if (!year || !month || month < 1 || month > 12) return;
+  var monthRaw = sheet.getRange('B2').getValue();
+  var isAllMonths = String(monthRaw).trim().toLowerCase() === 'all';
+  var month = isAllMonths ? null : Number(monthRaw);
+  if (!year || (!isAllMonths && (!month || month < 1 || month > 12))) return;
 
   var maxRows = sheet.getMaxRows();
   if (maxRows >= LIVE_SUMMARY_DATA_START_ROW) {
@@ -329,7 +331,11 @@ function refreshLiveSummarySheet_() {
     clearRange.setFontWeight(null);
   }
 
-  writeMonthlySummaryData_(sheet, LIVE_SUMMARY_DATA_START_ROW, year, month);
+  if (isAllMonths) {
+    writeYearlySummaryData_(sheet, LIVE_SUMMARY_DATA_START_ROW, year);
+  } else {
+    writeMonthlySummaryData_(sheet, LIVE_SUMMARY_DATA_START_ROW, year, month);
+  }
 }
 
 /**
@@ -396,6 +402,125 @@ function writeMonthlySummaryData_(sheet, startRow, year, month) {
   }
 
   sheet.autoResizeColumns(1, COLS);
+}
+
+/**
+ * Whole-year version of writeMonthlySummaryData_, for the Summary sheet's
+ * "All" Month option -- same 7 columns and highlight rules, but every
+ * number is summed across all 12 months of `year` instead of just one.
+ * Reads AttendanceLog once (via aggregateYearSummary_) rather than calling
+ * the monthly path 12 times, which would mean 12 full-sheet reads.
+ */
+function writeYearlySummaryData_(sheet, startRow, year) {
+  var logSheet = getSheet_('AttendanceLog');
+  var totalsByEmployee = aggregateYearSummary_(logSheet.getDataRange().getValues(), year);
+
+  // Same rule as the monthly view, just "has data this YEAR" instead of this month.
+  var employees = getAllEmployees_().filter(function (emp) {
+    return isTrue_(emp.Active) || !!totalsByEmployee[emp.EmployeeID];
+  });
+
+  employees = employees.slice().sort(function (a, b) {
+    var groupA = reportSortGroupFromTotal_(a, totalsByEmployee[a.EmployeeID]);
+    var groupB = reportSortGroupFromTotal_(b, totalsByEmployee[b.EmployeeID]);
+    if (groupA !== groupB) return groupA - groupB;
+    return String(a.EmployeeID).localeCompare(String(b.EmployeeID));
+  });
+
+  var COLS = 7; // Employee, Department, Days Worked, Late Count, OT (min), OT (Quarter), OT Pay (Baht)
+  var LATE_COUNT_COL = 4;
+  var OT_PAY_COL = 7;
+  var rows = [['Employee', 'Department', 'Days Worked', 'Late Count', 'OT (min)', 'OT (Quarter)', 'OT Pay (Baht)']];
+  var lateHighlightRows = [];
+  var otPayHighlightRows = [];
+
+  employees.forEach(function (emp) {
+    var totals = totalsByEmployee[emp.EmployeeID] || { daysWorked: 0, lateCount: 0, otMinutesTotal: 0, otQuartersTotal: 0 };
+    var otPay = computeOtPay_(emp, totals.otMinutesTotal, totals.otQuartersTotal);
+    rows.push([emp.Name + ' (' + emp.EmployeeID + ')', emp.Department, totals.daysWorked, totals.lateCount, totals.otMinutesTotal, totals.otQuartersTotal, otPay]);
+    if (totals.lateCount > 0) lateHighlightRows.push(startRow + rows.length - 1);
+    if (otPay > 0) otPayHighlightRows.push(startRow + rows.length - 1);
+  });
+
+  sheet.getRange(startRow, 1, rows.length, COLS).setValues(rows);
+  sheet.getRange(startRow, 1, 1, COLS).setFontWeight('bold').setBackground('#ffe6dd');
+
+  if (lateHighlightRows.length > 0) {
+    var lateA1Notations = lateHighlightRows.map(function (r) { return sheet.getRange(r, LATE_COUNT_COL).getA1Notation(); });
+    var lateRangeList = sheet.getRangeList(lateA1Notations);
+    lateRangeList.setBackground('#c0392b');
+    lateRangeList.setFontColor('#ffffff');
+  }
+
+  if (otPayHighlightRows.length > 0) {
+    var yearlyA1Notations = otPayHighlightRows.map(function (r) { return sheet.getRange(r, OT_PAY_COL).getA1Notation(); });
+    sheet.getRangeList(yearlyA1Notations).setBackground('#d9ead3');
+  }
+
+  sheet.autoResizeColumns(1, COLS);
+}
+
+/** Same grouping as reportSortGroup_, but for aggregateYearSummary_'s pre-summed totals instead of a day-keyed dayLogs object. */
+function reportSortGroupFromTotal_(emp, totals) {
+  if (emp.Department === 'Japanese') return 0;
+  return (totals && totals.otQuartersTotal) ? 1 : 2;
+}
+
+/**
+ * Whole-year version of aggregateMonthLogs_ -- returns pre-summed totals
+ * per employee ({ daysWorked, lateCount, otMinutesTotal, otQuartersTotal })
+ * instead of a day-keyed structure, since that's all writeYearlySummaryData_
+ * needs and it lets one pass over AttendanceLog cover the whole year. Same
+ * IN/OUT reconciliation rules as aggregateMonthLogs_ (earliest IN of the day
+ * wins for the late flag, latest OUT wins for OT), just keyed by exact date
+ * instead of day-of-month so different months don't collide on day number.
+ */
+function aggregateYearSummary_(values, year) {
+  var headers = values[0];
+  var tsCol = headers.indexOf('Timestamp');
+  var idCol = headers.indexOf('EmployeeID');
+  var typeCol = headers.indexOf('Type');
+  var lateCol = headers.indexOf('Late');
+  var otMinutesCol = headers.indexOf('OTMinutes');
+  var otQuartersCol = headers.indexOf('OTQuarters');
+
+  var byDate = {};
+  for (var i = 1; i < values.length; i++) {
+    var ts = new Date(values[i][tsCol]);
+    if (ts.getFullYear() !== year) continue;
+
+    var employeeId = String(values[i][idCol]);
+    var type = values[i][typeCol];
+    var key = employeeId + '|' + ts.getMonth() + '|' + ts.getDate();
+
+    if (!byDate[key]) byDate[key] = { employeeId: employeeId, timeIn: null, timeOut: null, late: false, otMinutes: 0, otQuarters: 0 };
+    var entry = byDate[key];
+
+    if (type === 'IN') {
+      if (!entry.timeIn || ts < entry.timeIn) {
+        entry.timeIn = ts;
+        entry.late = lateCol !== -1 ? isTrue_(values[i][lateCol]) : false;
+      }
+    } else if (type === 'OUT') {
+      if (!entry.timeOut || ts > entry.timeOut) {
+        entry.timeOut = ts;
+        entry.otMinutes = otMinutesCol !== -1 ? Number(values[i][otMinutesCol]) || 0 : 0;
+        entry.otQuarters = otQuartersCol !== -1 ? Number(values[i][otQuartersCol]) || 0 : 0;
+      }
+    }
+  }
+
+  var result = {};
+  for (var key in byDate) {
+    var entry = byDate[key];
+    if (!result[entry.employeeId]) result[entry.employeeId] = { daysWorked: 0, lateCount: 0, otMinutesTotal: 0, otQuartersTotal: 0 };
+    var totals = result[entry.employeeId];
+    if (entry.timeIn) totals.daysWorked++;
+    if (entry.late) totals.lateCount++;
+    totals.otMinutesTotal += entry.otMinutes;
+    totals.otQuartersTotal += entry.otQuarters;
+  }
+  return result;
 }
 
 /**
