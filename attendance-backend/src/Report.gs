@@ -140,6 +140,7 @@ function writeMonthlyReportData_(sheet, startRow, year, month) {
     });
   }
   sheet.autoResizeColumns(1, COLS);
+  return rows.length; // lets writeYearlyReportData_ know where the next month's block should start
 }
 
 /** Report ordering group: 0 = Japanese, 1 = non-Japanese with any OT quarters this month, 2 = everyone else. */
@@ -184,7 +185,7 @@ function setupLiveReportSheet() {
   yearCell.setDataValidation(yearRule);
   if (!yearCell.getValue()) yearCell.setValue(thisYear);
 
-  var months = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+  var months = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 'All']; // "All" lists the whole fiscal year (Apr Year - Mar Year+1) as 12 concatenated month blocks -- see writeYearlyReportData_
   var monthRule = SpreadsheetApp.newDataValidation().requireValueInList(months, true).build();
   var monthCell = sheet.getRange('B2');
   monthCell.setDataValidation(monthRule);
@@ -224,12 +225,15 @@ function refreshLiveReportSheet_() {
   if (!sheet) return;
 
   var year = Number(sheet.getRange('B1').getValue());
-  var month = Number(sheet.getRange('B2').getValue());
-  if (!year || !month || month < 1 || month > 12) return;
+  var monthRaw = sheet.getRange('B2').getValue();
+  var isAllMonths = String(monthRaw).trim().toLowerCase() === 'all';
+  var month = isAllMonths ? null : Number(monthRaw);
+  if (!year || (!isAllMonths && (!month || month < 1 || month > 12))) return;
 
   var maxRows = sheet.getMaxRows();
   if (maxRows >= LIVE_REPORT_DATA_START_ROW) {
     var clearRange = sheet.getRange(LIVE_REPORT_DATA_START_ROW, 1, maxRows - LIVE_REPORT_DATA_START_ROW + 1, sheet.getMaxColumns());
+    clearRange.breakApart(); // undoes the "All" view's month-divider merges, if any -- clearContent/setBackground below don't touch merges
     clearRange.clearContent();
     clearRange.setBackground(null);
     clearRange.setFontColor(null);
@@ -237,7 +241,35 @@ function refreshLiveReportSheet_() {
     clearRange.setBorder(false, false, false, false, false, false);
   }
 
-  writeMonthlyReportData_(sheet, LIVE_REPORT_DATA_START_ROW, year, month);
+  if (isAllMonths) {
+    writeYearlyReportData_(sheet, LIVE_REPORT_DATA_START_ROW, year);
+  } else {
+    writeMonthlyReportData_(sheet, LIVE_REPORT_DATA_START_ROW, year, month);
+  }
+}
+
+/**
+ * "All" Month option for the live Report sheet -- writeMonthlyReportData_'s
+ * full daily breakdown, run once per month of the fiscal year (April `year`
+ * through March `year + 1`, matching aggregateYearSummary_/the Summary
+ * sheet's "All") and concatenated top to bottom, each month preceded by a
+ * dark divider row so 12 months' worth of employee blocks stays readable.
+ */
+function writeYearlyReportData_(sheet, startRow, year) {
+  var tz = Session.getScriptTimeZone();
+  var COLS = 8; // same column count as writeMonthlyReportData_'s table
+  var row = startRow;
+
+  for (var i = 0; i < 12; i++) {
+    var monthIndex0 = (FISCAL_YEAR_START_MONTH + i) % 12; // 0-11
+    var calendarYear = year + Math.floor((FISCAL_YEAR_START_MONTH + i) / 12);
+
+    sheet.getRange(row, 1).setValue(Utilities.formatDate(new Date(calendarYear, monthIndex0, 1), tz, 'MMMM yyyy'));
+    sheet.getRange(row, 1, 1, COLS).merge().setBackground('#434343').setFontColor('#ffffff').setFontWeight('bold').setHorizontalAlignment('center');
+    row++;
+
+    row += writeMonthlyReportData_(sheet, row, calendarYear, monthIndex0 + 1);
+  }
 }
 
 /**
@@ -467,14 +499,19 @@ function reportSortGroupFromTotal_(emp, totals) {
 }
 
 /**
- * Whole-year version of aggregateMonthLogs_ -- returns pre-summed totals
+ * Fiscal-year version of aggregateMonthLogs_ -- returns pre-summed totals
  * per employee ({ daysWorked, lateCount, otMinutesTotal, otQuartersTotal })
  * instead of a day-keyed structure, since that's all writeYearlySummaryData_
- * needs and it lets one pass over AttendanceLog cover the whole year. Same
- * IN/OUT reconciliation rules as aggregateMonthLogs_ (earliest IN of the day
- * wins for the late flag, latest OUT wins for OT), just keyed by exact date
- * instead of day-of-month so different months don't collide on day number.
+ * needs and it lets one pass over AttendanceLog cover the whole fiscal
+ * year. "Year" here means the fiscal year starting in it: `year` = 2026
+ * covers April 1, 2026 through March 31, 2027 (not the calendar year), to
+ * match the school's actual year boundary. Same IN/OUT reconciliation
+ * rules as aggregateMonthLogs_ (earliest IN of the day wins for the late
+ * flag, latest OUT wins for OT), just keyed by exact date instead of
+ * day-of-month so different months don't collide on day number.
  */
+var FISCAL_YEAR_START_MONTH = 3; // April -- 0-indexed like Date.getMonth()
+
 function aggregateYearSummary_(values, year) {
   var headers = values[0];
   var tsCol = headers.indexOf('Timestamp');
@@ -484,10 +521,13 @@ function aggregateYearSummary_(values, year) {
   var otMinutesCol = headers.indexOf('OTMinutes');
   var otQuartersCol = headers.indexOf('OTQuarters');
 
+  var fiscalStart = new Date(year, FISCAL_YEAR_START_MONTH, 1);
+  var fiscalEndExclusive = new Date(year + 1, FISCAL_YEAR_START_MONTH, 1); // next fiscal year's start -- everything before this is in range
+
   var byDate = {};
   for (var i = 1; i < values.length; i++) {
     var ts = new Date(values[i][tsCol]);
-    if (ts.getFullYear() !== year) continue;
+    if (ts < fiscalStart || ts >= fiscalEndExclusive) continue;
 
     var employeeId = String(values[i][idCol]);
     var type = values[i][typeCol];
