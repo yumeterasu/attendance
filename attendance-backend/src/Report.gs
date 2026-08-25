@@ -371,13 +371,67 @@ function refreshLiveSummarySheet_() {
 }
 
 /**
+ * Leave-type columns for the Summary sheet: how many days of each type an
+ * employee took. Read from the Schedule sheet's shift cells, not
+ * AttendanceLog -- someone on leave never taps the kiosk, so there's no log
+ * row to count there, only the scheduled shift text. A "Half Day X Leave"
+ * cell counts as 0.5 toward its full-day counterpart. Column order is what
+ * was asked for, not alphabetical.
+ */
+var LEAVE_COUNT_TYPES = ['Annual Leave', 'Sick Leave', 'Paid Special Leave', 'Unpaid Leave'];
+var HALF_DAY_LEAVE_COUNTS_AS_ = { 'Half Day Annual Leave': 'Annual Leave', 'Half Day Sick Leave': 'Sick Leave' };
+
+/** One employee's leave-type counts from a getScheduledShiftsForMonth_ result -- { [LEAVE_COUNT_TYPES[i]]: count }, see HALF_DAY_LEAVE_COUNTS_AS_ above. */
+function countLeavesForEmployee_(scheduledShiftsForMonth, employeeId) {
+  var counts = {};
+  LEAVE_COUNT_TYPES.forEach(function (t) { counts[t] = 0; });
+  var byDay = scheduledShiftsForMonth[employeeId];
+  if (!byDay) return counts;
+  for (var day in byDay) {
+    var shift = byDay[day];
+    if (counts.hasOwnProperty(shift)) {
+      counts[shift] += 1;
+    } else if (HALF_DAY_LEAVE_COUNTS_AS_[shift]) {
+      counts[HALF_DAY_LEAVE_COUNTS_AS_[shift]] += 0.5;
+    }
+  }
+  return counts;
+}
+
+/**
+ * Whole-fiscal-year version of countLeavesForEmployee_, for the Summary
+ * sheet's "All" -- sums across all 12 of the fiscal year's "Schedule
+ * YYYY-MM" sheets. Unlike aggregateYearSummary_ (one AttendanceLog to read
+ * in a single pass) there's no way around reading each month's Schedule
+ * sheet separately -- they're 12 different sheets.
+ */
+function countLeavesForYear_(year) {
+  var totalsByEmployee = {}; // { [employeeId]: { [LEAVE_COUNT_TYPES[i]]: count } }
+  for (var i = 0; i < 12; i++) {
+    var monthIndex0 = (FISCAL_YEAR_START_MONTH + i) % 12;
+    var calendarYear = year + Math.floor((FISCAL_YEAR_START_MONTH + i) / 12);
+    var scheduledShiftsForMonth = getScheduledShiftsForMonth_(calendarYear, monthIndex0 + 1);
+    for (var employeeId in scheduledShiftsForMonth) {
+      var monthCounts = countLeavesForEmployee_(scheduledShiftsForMonth, employeeId);
+      if (!totalsByEmployee[employeeId]) {
+        totalsByEmployee[employeeId] = {};
+        LEAVE_COUNT_TYPES.forEach(function (t) { totalsByEmployee[employeeId][t] = 0; });
+      }
+      LEAVE_COUNT_TYPES.forEach(function (t) { totalsByEmployee[employeeId][t] += monthCounts[t]; });
+    }
+  }
+  return totalsByEmployee;
+}
+
+/**
  * Writes one condensed totals row per employee (days worked, late count, OT
- * totals) into `sheet` starting at `startRow`. Same sort order as the Report
- * sheet (Japanese first, then Thai staff with any OT this month, then the
- * rest, Employee ID order within each group).
+ * totals, leave-type counts) into `sheet` starting at `startRow`. Same sort
+ * order as the Report sheet (Japanese first, then Thai staff with any OT
+ * this month, then the rest, Employee ID order within each group).
  */
 function writeMonthlySummaryData_(sheet, startRow, year, month) {
   var logsByEmployee = getMonthLogsByEmployee_(year, month);
+  var scheduledShiftsForMonth = getScheduledShiftsForMonth_(year, month);
 
   // Same rule as the Report sheet: Active, or has data this month.
   var employees = getAllEmployees_().filter(function (emp) {
@@ -391,10 +445,10 @@ function writeMonthlySummaryData_(sheet, startRow, year, month) {
     return String(a.EmployeeID).localeCompare(String(b.EmployeeID));
   });
 
-  var COLS = 7; // Employee, Department, Days Worked, Late Count, OT (min), OT (Quarter), OT Pay (Baht)
+  var COLS = 7 + LEAVE_COUNT_TYPES.length; // Employee, Department, Days Worked, Late Count, OT (min), OT (Quarter), OT Pay (Baht), then one column per LEAVE_COUNT_TYPES entry
   var LATE_COUNT_COL = 4;
   var OT_PAY_COL = 7;
-  var rows = [['Employee', 'Department', 'Days Worked', 'Late Count', 'OT (min)', 'OT (Quarter)', 'OT Pay (Baht)']];
+  var rows = [['Employee', 'Department', 'Days Worked', 'Late Count', 'OT (min)', 'OT (Quarter)', 'OT Pay (Baht)'].concat(LEAVE_COUNT_TYPES)];
   var lateHighlightRows = []; // sheet row numbers (1-indexed) where Late Count > 0, for the red highlight below
   var otPayHighlightRows = []; // sheet row numbers (1-indexed) where OT Pay > 0, for the light-green highlight below
 
@@ -413,7 +467,9 @@ function writeMonthlySummaryData_(sheet, startRow, year, month) {
     }
 
     var otPay = computeOtPay_(emp, otMinutesTotal, otQuartersTotal);
-    rows.push([emp.Name + ' (' + emp.EmployeeID + ')', emp.Department, daysWorked, lateCount, otMinutesTotal, otQuartersTotal, otPay]);
+    var leaveCounts = countLeavesForEmployee_(scheduledShiftsForMonth, emp.EmployeeID);
+    var leaveCountValues = LEAVE_COUNT_TYPES.map(function (t) { return leaveCounts[t]; });
+    rows.push([emp.Name + ' (' + emp.EmployeeID + ')', emp.Department, daysWorked, lateCount, otMinutesTotal, otQuartersTotal, otPay].concat(leaveCountValues));
     if (lateCount > 0) lateHighlightRows.push(startRow + rows.length - 1);
     if (otPay > 0) otPayHighlightRows.push(startRow + rows.length - 1);
   });
@@ -438,14 +494,17 @@ function writeMonthlySummaryData_(sheet, startRow, year, month) {
 
 /**
  * Whole-year version of writeMonthlySummaryData_, for the Summary sheet's
- * "All" Month option -- same 7 columns and highlight rules, but every
- * number is summed across all 12 months of `year` instead of just one.
- * Reads AttendanceLog once (via aggregateYearSummary_) rather than calling
- * the monthly path 12 times, which would mean 12 full-sheet reads.
+ * "All" Month option -- same columns and highlight rules, but every number
+ * is summed across all 12 months of the fiscal year starting in `year`
+ * instead of just one. Reads AttendanceLog once (via aggregateYearSummary_)
+ * rather than calling the monthly path 12 times, which would mean 12
+ * full-sheet reads; leave counts still need 12 Schedule-sheet reads (see
+ * countLeavesForYear_) since each month lives in its own sheet.
  */
 function writeYearlySummaryData_(sheet, startRow, year) {
   var logSheet = getSheet_('AttendanceLog');
   var totalsByEmployee = aggregateYearSummary_(logSheet.getDataRange().getValues(), year);
+  var leaveCountsByEmployee = countLeavesForYear_(year);
 
   // Same rule as the monthly view, just "has data this YEAR" instead of this month.
   var employees = getAllEmployees_().filter(function (emp) {
@@ -459,17 +518,22 @@ function writeYearlySummaryData_(sheet, startRow, year) {
     return String(a.EmployeeID).localeCompare(String(b.EmployeeID));
   });
 
-  var COLS = 7; // Employee, Department, Days Worked, Late Count, OT (min), OT (Quarter), OT Pay (Baht)
+  var COLS = 7 + LEAVE_COUNT_TYPES.length; // Employee, Department, Days Worked, Late Count, OT (min), OT (Quarter), OT Pay (Baht), then one column per LEAVE_COUNT_TYPES entry
   var LATE_COUNT_COL = 4;
   var OT_PAY_COL = 7;
-  var rows = [['Employee', 'Department', 'Days Worked', 'Late Count', 'OT (min)', 'OT (Quarter)', 'OT Pay (Baht)']];
+  var rows = [['Employee', 'Department', 'Days Worked', 'Late Count', 'OT (min)', 'OT (Quarter)', 'OT Pay (Baht)'].concat(LEAVE_COUNT_TYPES)];
   var lateHighlightRows = [];
   var otPayHighlightRows = [];
+
+  var zeroLeaveCounts = {};
+  LEAVE_COUNT_TYPES.forEach(function (t) { zeroLeaveCounts[t] = 0; });
 
   employees.forEach(function (emp) {
     var totals = totalsByEmployee[emp.EmployeeID] || { daysWorked: 0, lateCount: 0, otMinutesTotal: 0, otQuartersTotal: 0 };
     var otPay = computeOtPay_(emp, totals.otMinutesTotal, totals.otQuartersTotal);
-    rows.push([emp.Name + ' (' + emp.EmployeeID + ')', emp.Department, totals.daysWorked, totals.lateCount, totals.otMinutesTotal, totals.otQuartersTotal, otPay]);
+    var leaveCounts = leaveCountsByEmployee[emp.EmployeeID] || zeroLeaveCounts;
+    var leaveCountValues = LEAVE_COUNT_TYPES.map(function (t) { return leaveCounts[t]; });
+    rows.push([emp.Name + ' (' + emp.EmployeeID + ')', emp.Department, totals.daysWorked, totals.lateCount, totals.otMinutesTotal, totals.otQuartersTotal, otPay].concat(leaveCountValues));
     if (totals.lateCount > 0) lateHighlightRows.push(startRow + rows.length - 1);
     if (otPay > 0) otPayHighlightRows.push(startRow + rows.length - 1);
   });
