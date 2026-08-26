@@ -1129,3 +1129,112 @@ function aggregateMonthLogs_(values, year, month) {
   }
   return result;
 }
+
+/**
+ * Same per-employee totals as the Summary sheet
+ * (writeMonthlySummaryData_ / writeYearlySummaryData_), but returned as
+ * plain data instead of written into sheet cells -- backs the web
+ * Dashboard's dashboardSummary action (see handleDashboardSummary_).
+ * `month` is either a number 1-12 for one calendar month, or the string
+ * 'All' for the whole fiscal year starting in `year` (see
+ * FISCAL_YEAR_START_MONTH) -- same two modes the Summary sheet's Month
+ * dropdown offers.
+ */
+function getDashboardSummaryData_(year, month) {
+  var isAllMonths = String(month).trim().toLowerCase() === 'all';
+
+  var totalsByEmployee, leaveCountsByEmployee, sortGroupFor;
+  if (isAllMonths) {
+    var logSheet = getSheet_('AttendanceLog');
+    totalsByEmployee = aggregateYearSummary_(logSheet.getDataRange().getValues(), year);
+    leaveCountsByEmployee = countLeavesForYear_(year);
+    sortGroupFor = function (emp) { return reportSortGroupFromTotal_(emp, totalsByEmployee[emp.EmployeeID]); };
+  } else {
+    var logsByEmployee = getMonthLogsByEmployee_(year, month);
+    var scheduledShiftsForMonth = getScheduledShiftsForMonth_(year, month);
+    totalsByEmployee = {};
+    Object.keys(logsByEmployee).forEach(function (employeeId) {
+      var dayLogs = logsByEmployee[employeeId];
+      var daysWorked = 0, lateCount = 0, otMinutesTotal = 0, otQuartersTotal = 0;
+      for (var day in dayLogs) {
+        var entry = dayLogs[day];
+        if (entry.timeIn) daysWorked++;
+        if (entry.late) lateCount++;
+        otMinutesTotal += entry.otMinutes || 0;
+        otQuartersTotal += entry.otQuarters || 0;
+      }
+      totalsByEmployee[employeeId] = { daysWorked: daysWorked, lateCount: lateCount, otMinutesTotal: otMinutesTotal, otQuartersTotal: otQuartersTotal };
+    });
+    leaveCountsByEmployee = {};
+    getAllEmployees_().forEach(function (emp) {
+      leaveCountsByEmployee[emp.EmployeeID] = countLeavesForEmployee_(scheduledShiftsForMonth, emp.EmployeeID);
+    });
+    sortGroupFor = function (emp) { return reportSortGroup_(emp, logsByEmployee[emp.EmployeeID]); };
+  }
+
+  // Same rule as the Summary sheet: Active, or has data this period.
+  var employees = getAllEmployees_().filter(function (emp) {
+    return isTrue_(emp.Active) || !!totalsByEmployee[emp.EmployeeID];
+  });
+
+  employees = employees.slice().sort(function (a, b) {
+    var groupA = sortGroupFor(a), groupB = sortGroupFor(b);
+    if (groupA !== groupB) return groupA - groupB;
+    return String(a.EmployeeID).localeCompare(String(b.EmployeeID));
+  });
+
+  var zeroLeaveCounts = {};
+  LEAVE_COUNT_TYPES.forEach(function (t) { zeroLeaveCounts[t] = 0; });
+  var zeroTotals = { daysWorked: 0, lateCount: 0, otMinutesTotal: 0, otQuartersTotal: 0 };
+
+  return employees.map(function (emp) {
+    var totals = totalsByEmployee[emp.EmployeeID] || zeroTotals;
+    var leaveCounts = leaveCountsByEmployee[emp.EmployeeID] || zeroLeaveCounts;
+    var otPay = computeOtPay_(emp, totals.otMinutesTotal, totals.otQuartersTotal);
+    return {
+      employeeId: emp.EmployeeID,
+      name: emp.Name,
+      department: emp.Department,
+      daysWorked: totals.daysWorked,
+      lateCount: totals.lateCount,
+      otMinutes: totals.otMinutesTotal,
+      otQuarters: totals.otQuartersTotal,
+      otPay: otPay === '' ? null : otPay, // null = not eligible (e.g. Thai staff with no Salary on file), not zero
+      leave: {
+        annual: leaveCounts['Annual Leave'],
+        sick: leaveCounts['Sick Leave'],
+        paidSpecial: leaveCounts['Paid Special Leave'],
+        unpaid: leaveCounts['Unpaid Leave']
+      }
+    };
+  });
+}
+
+/**
+ * Web Dashboard's data endpoint (doGet -> dashboardSummary). Gated the same
+ * way the in-app Admin screen is -- a real admin sessionToken from the
+ * pairing flow (handlePair_), not a new auth scheme -- so a browser
+ * "logs in" with the exact same username + one-time setup code an admin
+ * device pairing uses, and an admin can issue one for the Dashboard the
+ * same way they'd issue one for a lost phone (Admin screen's "Lost
+ * Device / New Setup Code", or issueSetupCodeForLockedOutEmployee).
+ */
+function handleDashboardSummary_(params) {
+  if (!checkApiKey_(params.apiKey)) return fail_('unauthorized', 'Invalid API key');
+  var admin = requireAdmin_(params.sessionToken);
+  if (!admin.ok) return admin.response;
+
+  if (!params.year || !params.month) return fail_('bad_request', 'year and month are required');
+
+  var year = Number(params.year);
+  var isAllMonths = String(params.month).trim().toLowerCase() === 'all';
+  if (!year) return fail_('bad_request', 'year must be a number');
+  if (!isAllMonths) {
+    var monthCheck = Number(params.month);
+    if (!monthCheck || monthCheck < 1 || monthCheck > 12) return fail_('bad_request', 'month must be 1-12 or "All"');
+  }
+
+  var month = isAllMonths ? 'All' : Number(params.month);
+  var employees = getDashboardSummaryData_(year, month);
+  return ok_({ year: year, month: month, employees: employees });
+}
