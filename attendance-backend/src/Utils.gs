@@ -106,8 +106,23 @@ function invalidateEmployeesCache_() {
  * timeouts, and this trigger alone was by far the single biggest source of
  * executions in a normal day. Still comfortably inside the cache's own
  * 5-minute TTL, so no behavior change on a normal day.
+ *
+ * Now also skips the actual work outside CACHE_WARMER_ACTIVE_START_HOUR -
+ * CACHE_WARMER_ACTIVE_END_HOUR (the trigger itself still fires every 5
+ * minutes around the clock -- Apps Script's trigger builder has no
+ * built-in "only between these hours" option -- but does nothing for most
+ * of those firings) -- outside real working hours nobody's tapping the
+ * kiosk, so keeping the cache warm then is pure wasted execution. Window is
+ * the office's actual working hours (06:00-18:00). This was the single
+ * biggest lever available before adding a new consumer (the planned
+ * Dashboard) on top of the existing Kiosk load.
  */
+var CACHE_WARMER_ACTIVE_START_HOUR = 6;
+var CACHE_WARMER_ACTIVE_END_HOUR = 18; // exclusive
+
 function warmUpEmployeesCache_() {
+  var hour = new Date().getHours();
+  if (hour < CACHE_WARMER_ACTIVE_START_HOUR || hour >= CACHE_WARMER_ACTIVE_END_HOUR) return;
   invalidateEmployeesCache_();
   getCachedEmployees_();
 }
