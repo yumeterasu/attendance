@@ -1,11 +1,16 @@
 import React, { useEffect, useState } from 'react';
 import { View, Text, TextInput, Pressable, StyleSheet, ActivityIndicator, ScrollView } from 'react-native';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
+import Constants from 'expo-constants';
 import { RootStackParamList } from '../navigation/types';
 import { adminResetCode } from '../api/client';
 import { useSession } from '../context/SessionContext';
 import { AttemptEntry, clearAttemptLog, getAttemptLog } from '../utils/attemptLog';
 import { getQueueLength } from '../utils/offlineQueue';
+
+// Read straight from app.config.ts's `version` at build time -- one place to
+// bump (already done for every release), nothing to keep in sync by hand.
+const APP_VERSION = Constants.expoConfig?.version ?? 'unknown';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Admin'>;
 
@@ -150,6 +155,8 @@ export default function AdminScreen({ navigation }: Props) {
           )}
         </View>
       )}
+
+      <Text style={styles.versionText}>Attendance v{APP_VERSION}</Text>
     </ScrollView>
   );
 }
@@ -204,5 +211,6 @@ const styles = StyleSheet.create({
   logResult: { fontSize: 13, fontWeight: '700', marginTop: 2 },
   logAction: { fontSize: 11, color: '#aaa', marginTop: 1 },
   clearLogButton: { marginTop: 8, alignItems: 'center', paddingVertical: 8 },
-  clearLogButtonText: { fontSize: 12, color: '#c0392b', fontWeight: '600' }
+  clearLogButtonText: { fontSize: 12, color: '#c0392b', fontWeight: '600' },
+  versionText: { fontSize: 12, color: '#bbb', textAlign: 'center', marginTop: 40 }
 });
