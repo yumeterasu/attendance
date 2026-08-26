@@ -623,14 +623,24 @@ function menuRecomputeLateOtAllMonths_() {
 }
 
 /**
- * Backfills a missed IN or OUT (e.g. someone forgot to tap the kiosk) with
- * the same Shift/Late/Duration/OT computation a live check-in would use.
+ * Backfills a missed IN and/or OUT (e.g. someone forgot to tap the kiosk, or
+ * worked off-site all day and never touched it) with the same
+ * Shift/Late/Duration/OT computation a live check-in would use. Both can be
+ * entered together in one pass -- one employee, one date, then IN and OUT
+ * are each asked for separately with "leave blank to skip", so a
+ * worked-off-site day only needs one trip through this menu item instead of
+ * two. IN is always recorded before OUT when both are given, because OUT's
+ * duration/OT calculation (recordBackdatedAttendance_ ->
+ * findLogEntryForDate_) looks up the matching IN row -- recording OUT first
+ * would silently come out with no duration and no OT.
+ *
  * Uses a chain of native ui.prompt()/ui.alert() calls rather than an
- * HtmlService dialog -- an earlier version used a dialog with a dropdown and
- * a date picker, but google.script.run inside that dialog only worked for
- * the file's owner, not for other Editors (Apps Script couldn't complete the
- * authorization flow for them there). Plain prompts run through Sheets' own
- * UI directly, no separate authorization step, so every Editor can use this.
+ * HtmlService dialog with IN/OUT/OT as actual form fields -- an earlier
+ * version used a dialog with a dropdown and a date picker, but
+ * google.script.run inside that dialog only worked for the file's owner,
+ * not for other Editors (Apps Script couldn't complete the authorization
+ * flow for them there). Plain prompts run through Sheets' own UI directly,
+ * no separate authorization step, so every Editor can use this.
  */
 function menuAddBackdatedAttendance_() {
   var ui = SpreadsheetApp.getUi();
@@ -654,60 +664,93 @@ function menuAddBackdatedAttendance_() {
   );
   if (confirmEmployee !== ui.Button.YES) return;
 
-  var typeResp = ui.prompt(title, employee.Name + ' -- Type IN, OUT, or OTOT (OUT with overtime):', ui.ButtonSet.OK_CANCEL);
-  if (typeResp.getSelectedButton() !== ui.Button.OK) return;
-  var typeInput = typeResp.getResponseText().trim().toUpperCase();
-  var type, ot;
-  if (typeInput === 'IN') { type = 'IN'; ot = false; }
-  else if (typeInput === 'OUT') { type = 'OUT'; ot = false; }
-  else if (typeInput === 'OTOT' || typeInput === 'OUT OT' || typeInput === 'OUT_OT') { type = 'OUT'; ot = true; }
-  else { ui.alert('Type must be IN, OUT, or OTOT.'); return; }
-
-  var dateResp = ui.prompt(title, 'Date (DD/MM/YYYY), e.g. 24/07/2026:', ui.ButtonSet.OK_CANCEL);
+  var dateResp = ui.prompt(title, 'Date (DD/MM/YYYY), e.g. 24/07/2026 -- used for both IN and OUT below:', ui.ButtonSet.OK_CANCEL);
   if (dateResp.getSelectedButton() !== ui.Button.OK) return;
   var dateParts = dateResp.getResponseText().trim().split('/');
   if (dateParts.length !== 3) { ui.alert('Enter the date as DD/MM/YYYY.'); return; }
   var day = Number(dateParts[0]), month = Number(dateParts[1]), year = Number(dateParts[2]);
 
-  var timeResp = ui.prompt(title, 'Time (24-hour), e.g. 08:30:', ui.ButtonSet.OK_CANCEL);
-  if (timeResp.getSelectedButton() !== ui.Button.OK) return;
-  var timeParts = timeResp.getResponseText().trim().split(':');
-  if (timeParts.length !== 2) { ui.alert('Enter the time as HH:MM.'); return; }
+  // Order matters: IN asked (and, below, recorded) before OUT -- see this
+  // function's doc comment for why.
+  var entries = []; // { type: 'IN' | 'OUT', timestamp: Date }
+  var types = ['IN', 'OUT'];
+  for (var i = 0; i < types.length; i++) {
+    var type = types[i];
+    var timeResp = ui.prompt(
+      title,
+      employee.Name + ' -- ' + type + ' time (24-hour HH:MM), e.g. 08:30. Leave blank to skip:',
+      ui.ButtonSet.OK_CANCEL
+    );
+    if (timeResp.getSelectedButton() !== ui.Button.OK) return;
+    var timeText = timeResp.getResponseText().trim();
+    if (!timeText) continue;
 
-  var timestamp = new Date(year, month - 1, day, Number(timeParts[0]), Number(timeParts[1]), 0);
-  if (isNaN(timestamp.getTime())) {
-    ui.alert('That date/time did not parse -- double check the values.');
+    var timeParts = timeText.split(':');
+    if (timeParts.length !== 2) { ui.alert('Enter the time as HH:MM.'); return; }
+    var timestamp = new Date(year, month - 1, day, Number(timeParts[0]), Number(timeParts[1]), 0);
+    if (isNaN(timestamp.getTime())) {
+      ui.alert('That date/time did not parse -- double check the values.');
+      return;
+    }
+    entries.push({ type: type, timestamp: timestamp });
+  }
+
+  if (entries.length === 0) {
+    ui.alert('Enter a time for at least one of IN or OUT.');
     return;
   }
 
+  var inEntry = entries.find(function (e) { return e.type === 'IN'; });
+  var outEntry = entries.find(function (e) { return e.type === 'OUT'; });
+  if (inEntry && outEntry && outEntry.timestamp.getTime() <= inEntry.timestamp.getTime()) {
+    ui.alert('OUT time must be after IN time.');
+    return;
+  }
+
+  var ot = false;
+  if (outEntry) {
+    var otResp = ui.alert(title, 'Was the OUT overtime (OT)?', ui.ButtonSet.YES_NO);
+    ot = otResp === ui.Button.YES;
+  }
+
   var warnings = [];
-  if (timestamp.getTime() > Date.now()) {
-    warnings.push('That date/time is in the future.');
-  }
-  var existing = findLogEntryForDate_(employee.EmployeeID, type, timestamp);
-  if (existing) {
-    warnings.push(
-      employee.Name + ' already has a ' + type + ' recorded that day (at ' +
-      Utilities.formatDate(existing.timestamp, Session.getScriptTimeZone(), 'HH:mm') + ').'
-    );
-  }
+  entries.forEach(function (e) {
+    if (e.timestamp.getTime() > Date.now()) {
+      warnings.push(e.type + ' is in the future.');
+    }
+    var existing = findLogEntryForDate_(employee.EmployeeID, e.type, e.timestamp);
+    if (existing) {
+      warnings.push(
+        employee.Name + ' already has a ' + e.type + ' recorded that day (at ' +
+        Utilities.formatDate(existing.timestamp, Session.getScriptTimeZone(), 'HH:mm') + ').'
+      );
+    }
+  });
   if (warnings.length > 0) {
     var confirmResp = ui.alert(title, warnings.join('\n') + '\n\nAdd anyway?', ui.ButtonSet.YES_NO);
     if (confirmResp !== ui.Button.YES) return;
   }
 
-  var result = recordBackdatedAttendance_(employee.EmployeeID, type, timestamp, ot);
   var tz = Session.getScriptTimeZone();
-  var summary = result.name + ': ' + type + (ot ? ' OT' : '') + ' @ ' + Utilities.formatDate(timestamp, tz, 'dd-MM-yyyy HH:mm');
-  if (type === 'IN') {
-    summary += '\nShift: ' + (result.shift || '(none found in Schedule for that date)') + '\nLate: ' + result.late;
-  } else {
-    summary += '\nDuration: ' + (result.durationMinutes !== '' ? result.durationMinutes + ' min' : '(no matching IN found that date)');
-    summary += result.department === 'Japanese'
-      ? '\nOT: ' + (result.otMinutes || 0) + ' min'
-      : '\nOT: ' + (result.otQuarters || 0) + ' quarter(s)';
-  }
-  ui.alert('Done', summary, ui.ButtonSet.OK);
+  var summaryLines = [];
+  // entries is already IN-before-OUT (the types loop above pushes in that
+  // fixed order) -- OUT's duration/OT lookup needs the IN row to exist
+  // already, so this order is load-bearing, not cosmetic.
+  entries.forEach(function (e) {
+    var result = recordBackdatedAttendance_(employee.EmployeeID, e.type, e.timestamp, ot);
+    var line = e.type + (e.type === 'OUT' && ot ? ' OT' : '') + ' @ ' + Utilities.formatDate(e.timestamp, tz, 'dd-MM-yyyy HH:mm');
+    if (e.type === 'IN') {
+      line += '\n  Shift: ' + (result.shift || '(none found in Schedule for that date)') + ', Late: ' + result.late;
+    } else {
+      line += '\n  Duration: ' + (result.durationMinutes !== '' ? result.durationMinutes + ' min' : '(no matching IN found that date)');
+      line += result.department === 'Japanese'
+        ? ', OT: ' + (result.otMinutes || 0) + ' min'
+        : ', OT: ' + (result.otQuarters || 0) + ' quarter(s)';
+    }
+    summaryLines.push(line);
+  });
+
+  ui.alert('Done', employee.Name + '\n' + summaryLines.join('\n'), ui.ButtonSet.OK);
 }
 
 /**
