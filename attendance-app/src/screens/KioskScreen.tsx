@@ -838,16 +838,13 @@ const styles = StyleSheet.create({
   },
   calendarCellBlank: { borderColor: 'transparent', backgroundColor: 'transparent' },
   calendarCellWorked: { backgroundColor: '#ffffff', borderColor: '#D6E1F7' }, // days with an actual record stand out against the muted default
-  // Holiday and Leave (Annual/Sick/Half Day...) share the same light-orange
-  // treatment -- both mean "not a normal working day", just for different
-  // reasons, so they read as one visual family on the calendar.
   calendarCellHoliday: { backgroundColor: '#FFF3E0', borderColor: '#F5C88F' },
-  calendarCellLeave: { backgroundColor: '#FFF3E0', borderColor: '#F5C88F' },
+  calendarCellLeave: { backgroundColor: '#FDECEA', borderColor: '#F1B3AB' },
   calendarDayNum: { color: '#12151C', fontSize: 15, fontFamily: FONT_EXTRABOLD },
   calendarTime: { color: '#2E63D6', fontSize: 11, fontFamily: FONT_BOLD, marginTop: 2 },
   calendarNote: { color: '#5C6B8A', fontSize: 10, fontFamily: FONT_BOLD, marginTop: 3, textAlign: 'center', paddingHorizontal: 2 },
   calendarNoteHoliday: { color: '#B8631A' },
-  calendarNoteLeave: { color: '#B8631A' },
+  calendarNoteLeave: { color: '#C0392B' },
   calendarDotsRow: { flexDirection: 'row', gap: 4, marginTop: 3 },
   calendarDot: { width: 7, height: 7, borderRadius: 3.5 },
   calendarDotLate: { backgroundColor: '#c0392b' },
