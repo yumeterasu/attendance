@@ -221,6 +221,35 @@
   .controls .field { margin-bottom: 0; flex: 0 0 140px; }
   .controls .field select { cursor: pointer; }
 
+  .refresh-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--accent-dark);
+    background: #EEF3FC;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 11px 16px;
+    cursor: pointer;
+    height: 45px;
+  }
+  .refresh-btn:hover { background: #E4EBFC; }
+  .refresh-btn:disabled { opacity: 0.6; cursor: default; }
+  .refresh-btn #refreshIcon {
+    display: inline-block;
+    font-size: 15px;
+  }
+  .refresh-btn.spinning #refreshIcon {
+    animation: spin 0.7s linear infinite;
+  }
+  @keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+  }
+
   .controls .spacer { flex: 1; }
 
   .controls .fiscal-hint {
@@ -373,6 +402,9 @@
           <option value="All">All (fiscal year)</option>
         </select>
       </div>
+      <button class="refresh-btn" id="refreshBtn" type="button" title="Reload from Google Sheet">
+        <span id="refreshIcon">↻</span> Refresh
+      </button>
       <div class="spacer"></div>
       <p class="fiscal-hint" id="fiscalHint"></p>
     </div>
@@ -556,10 +588,17 @@
     return div.innerHTML;
   }
 
+  function setRefreshing(isRefreshing) {
+    var btn = document.getElementById('refreshBtn');
+    btn.disabled = isRefreshing;
+    btn.classList.toggle('spinning', isRefreshing);
+  }
+
   function loadSummary() {
     var session = loadSession();
     if (!session) return;
 
+    setRefreshing(true);
     document.getElementById('loadingState').style.display = 'block';
     document.getElementById('errorState').style.display = 'none';
     document.getElementById('emptyState').style.display = 'none';
@@ -570,6 +609,7 @@
       year: yearSelect.value,
       month: monthSelect.value
     }).then(function (result) {
+      setRefreshing(false);
       document.getElementById('loadingState').style.display = 'none';
 
       if (!result.success) {
@@ -595,6 +635,7 @@
 
   yearSelect.addEventListener('change', function () { updateFiscalHint(); loadSummary(); });
   monthSelect.addEventListener('change', function () { updateFiscalHint(); loadSummary(); });
+  document.getElementById('refreshBtn').addEventListener('click', loadSummary);
 
   function showDashboard() {
     var session = loadSession();
