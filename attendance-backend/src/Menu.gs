@@ -144,20 +144,46 @@ function menuFixLateInAsOut_() {
   var fixedCount = 0;
   var skipped = [];
 
+  // Pre-index every IN row by employee+date in one pass, instead of
+  // rescanning the whole AttendanceLog (already loaded in `values`) for
+  // each flagged entry below -- with mis-taps potentially numbering in the
+  // dozens, a fresh O(values.length) scan per entry adds up fast.
+  var inRowsByEmployeeDate = {};
+  for (var r = 1; r < values.length; r++) {
+    if (values[r][typeCol] !== 'IN') continue;
+    var inTs = new Date(values[r][tsCol]);
+    var dateKey = String(values[r][idCol]) + '|' + inTs.getFullYear() + '-' + inTs.getMonth() + '-' + inTs.getDate();
+    if (!inRowsByEmployeeDate[dateKey]) inRowsByEmployeeDate[dateKey] = [];
+    inRowsByEmployeeDate[dateKey].push({ rowIndex: r, timestamp: inTs });
+  }
+
+  // Batch-fetch each month's Schedule sheet once instead of re-reading it
+  // per flagged entry -- getScheduledShift_ does a full sheet read on every
+  // call, and mis-taps can span many months (this scans the whole
+  // AttendanceLog, not just the current month -- see doc comment above), so
+  // calling it per-entry could mean the same Schedule sheet gets read
+  // dozens of times over.
+  var scheduledShiftsByMonth = {};
+  var scheduledShiftFor_ = function (employeeId, timestamp) {
+    var monthKey = timestamp.getFullYear() + '-' + (timestamp.getMonth() + 1);
+    if (!scheduledShiftsByMonth[monthKey]) {
+      scheduledShiftsByMonth[monthKey] = getScheduledShiftsForMonth_(timestamp.getFullYear(), timestamp.getMonth() + 1);
+    }
+    var byDay = scheduledShiftsByMonth[monthKey][employeeId];
+    return byDay ? (byDay[timestamp.getDate()] || '') : '';
+  };
+
   flagged.forEach(function (f) {
     // Pair with that day's genuine earlier IN to compute duration -- if this
     // mis-tap is the only IN that day, there's no real clock-in to pair with,
     // so skip rather than guess at a duration.
+    var dateKey = f.employeeId + '|' + f.timestamp.getFullYear() + '-' + f.timestamp.getMonth() + '-' + f.timestamp.getDate();
+    var candidates = inRowsByEmployeeDate[dateKey] || [];
     var realIn = null;
-    for (var j = 1; j < values.length; j++) {
-      if (j === f.rowIndex) continue;
-      if (String(values[j][idCol]) !== f.employeeId) continue;
-      if (values[j][typeCol] !== 'IN') continue;
-      var ts2 = new Date(values[j][tsCol]);
-      if (ts2.getFullYear() === f.timestamp.getFullYear() && ts2.getMonth() === f.timestamp.getMonth() && ts2.getDate() === f.timestamp.getDate()) {
-        if (!realIn || ts2 < realIn) realIn = ts2;
-      }
-    }
+    candidates.forEach(function (c) {
+      if (c.rowIndex === f.rowIndex) return;
+      if (!realIn || c.timestamp < realIn) realIn = c.timestamp;
+    });
 
     if (!realIn) {
       skipped.push(f.name + ' (' + Utilities.formatDate(f.timestamp, tz, 'dd/MM HH:mm') + ' -- no earlier IN that day to pair with)');
@@ -165,7 +191,7 @@ function menuFixLateInAsOut_() {
     }
 
     var durationMinutes = Math.round((f.timestamp.getTime() - realIn.getTime()) / 60000);
-    var scheduledShift = getScheduledShift_(f.employeeId, f.timestamp);
+    var scheduledShift = scheduledShiftFor_(f.employeeId, f.timestamp);
     var otMinutesForRow = '';
     var otQuartersForRow = '';
     var otForRow = false;

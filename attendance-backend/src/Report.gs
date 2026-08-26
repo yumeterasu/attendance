@@ -10,10 +10,14 @@
  * starting at `startRow`, column 1. Shared by the one-off "Report YYYY-MM"
  * generator and the permanent live "Report" sheet (see refreshLiveReportSheet_).
  */
-function writeMonthlyReportData_(sheet, startRow, year, month) {
+function writeMonthlyReportData_(sheet, startRow, year, month, precomputedLogsByEmployee) {
   var tz = Session.getScriptTimeZone();
   var daysInMonth = new Date(year, month, 0).getDate();
-  var logsByEmployee = getMonthLogsByEmployee_(year, month);
+  // Omit precomputedLogsByEmployee (undefined) to keep the old single-call
+  // behavior -- writeYearlyReportData_ passes it in instead, since reading
+  // AttendanceLog fresh here once per fiscal month (12x) would mean the
+  // whole sheet gets re-read 12 times over for one "All" refresh.
+  var logsByEmployee = precomputedLogsByEmployee !== undefined ? precomputedLogsByEmployee : getMonthLogsByEmployee_(year, month);
   // Someone on Leave (or a company Holiday) never taps IN, so there's no
   // AttendanceLog row for that day and the Shift column would otherwise sit
   // blank -- indistinguishable from a genuinely forgotten clock-in. Read the
@@ -254,11 +258,19 @@ function refreshLiveReportSheet_() {
  * through March `year + 1`, matching aggregateYearSummary_/the Summary
  * sheet's "All") and concatenated top to bottom, each month preceded by a
  * dark divider row so 12 months' worth of employee blocks stays readable.
+ *
+ * Reads AttendanceLog once (like aggregateYearSummary_ does for Summary)
+ * and slices out each fiscal month's data with aggregateMonthLogs_, instead
+ * of letting writeMonthlyReportData_ call getMonthLogsByEmployee_ fresh 12
+ * times -- that would mean the whole AttendanceLog sheet gets read 12 times
+ * over for one "All" refresh.
  */
 function writeYearlyReportData_(sheet, startRow, year) {
   var tz = Session.getScriptTimeZone();
   var COLS = 8; // same column count as writeMonthlyReportData_'s table
   var row = startRow;
+
+  var attendanceLogValues = getSheet_('AttendanceLog').getDataRange().getValues();
 
   for (var i = 0; i < 12; i++) {
     var monthIndex0 = (FISCAL_YEAR_START_MONTH + i) % 12; // 0-11
@@ -268,7 +280,8 @@ function writeYearlyReportData_(sheet, startRow, year) {
     sheet.getRange(row, 1, 1, COLS).merge().setBackground('#434343').setFontColor('#ffffff').setFontWeight('bold').setHorizontalAlignment('center');
     row++;
 
-    row += writeMonthlyReportData_(sheet, row, calendarYear, monthIndex0 + 1);
+    var logsByEmployee = aggregateMonthLogs_(attendanceLogValues, calendarYear, monthIndex0 + 1);
+    row += writeMonthlyReportData_(sheet, row, calendarYear, monthIndex0 + 1, logsByEmployee);
   }
 }
 
