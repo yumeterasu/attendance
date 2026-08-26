@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, StyleSheet, Pressable, ScrollView, ActivityIndicator } from 'react-native';
 import * as Haptics from 'expo-haptics';
+import Constants from 'expo-constants';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../navigation/types';
 import { kioskCheckin, kioskLookupPin, kioskMyAttendance, verifyKioskExitPin } from '../api/client';
@@ -12,6 +13,10 @@ import { enqueueCheckin } from '../utils/offlineQueue';
 import { configureCheckinAudio, playCheckinSound, playCheckoutSound } from '../utils/sound';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Kiosk'>;
+
+// Read straight from app.config.ts's `version` at build time -- lets anyone
+// check which build is on a given tablet without pulling the APK apart.
+const APP_VERSION = Constants.expoConfig?.version ?? 'unknown';
 
 const PIN_LENGTH = 4;
 const FEEDBACK_DURATION_MS = 2500;
@@ -660,6 +665,7 @@ export default function KioskScreen({ navigation }: Props) {
           <Text style={styles.cornerButtonTextLight}>Admin</Text>
         </Pressable>
       )}
+      {lookupName === null && <Text style={styles.versionText}>v{APP_VERSION}</Text>}
     </View>
   );
 }
@@ -790,6 +796,16 @@ const styles = StyleSheet.create({
   cornerButtonText: { color: 'rgba(255,255,255,0.7)', fontSize: 12, fontFamily: FONT_SEMIBOLD },
   cornerButtonLight: { backgroundColor: '#ffffff' },
   cornerButtonTextLight: { color: '#4B5566', fontSize: 12, fontFamily: FONT_BOLD },
+  versionText: {
+    position: 'absolute',
+    bottom: 4,
+    left: 0,
+    right: 0,
+    textAlign: 'center',
+    color: '#B7C0D6',
+    fontSize: 10,
+    fontFamily: FONT_SEMIBOLD
+  },
   feedbackCard: {
     position: 'absolute',
     top: '20%',
