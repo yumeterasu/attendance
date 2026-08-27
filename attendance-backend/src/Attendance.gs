@@ -41,6 +41,32 @@ function getShiftEndTime_(shiftOrEvent) {
   return { hour: Number(parts[0]), minute: Number(parts[1]) };
 }
 
+/** Extracts the shift/event's start time (the FIRST "H:MM" found), e.g. "8:00-17:00" -> {hour:8,minute:0}. Null if not found. Same "first match" rule as isLate_, just shaped like getShiftEndTime_'s result instead of minutes-since-midnight. */
+function getShiftStartTime_(shiftOrEvent) {
+  var match = shiftOrEvent.match(/(\d{1,2}):(\d{2})/);
+  if (!match) return null;
+  return { hour: Number(match[1]), minute: Number(match[2]) };
+}
+
+/**
+ * For "Event" shifts specifically (e.g. "Event 8:00-17:00"): the recorded
+ * IN/OUT time is always the shift's own start/end time, never the actual
+ * tap time -- an admin explicitly asked for event-day attendance to always
+ * read as the clean official hours, with no Late flag and no OT, no matter
+ * when someone genuinely arrived or left. Returns `actualTimestamp`
+ * unchanged for every other shift (or an Event shift with no parseable
+ * time), so this is a no-op everywhere else. Same /^Event\b/ prefix rule
+ * already used elsewhere to treat Event shifts specially (see
+ * highlightShiftMismatches_) -- callers pass whatever's in the Shift
+ * column, already known to be that day's scheduled shift text.
+ */
+function eventShiftOverrideTimestamp_(scheduledShift, actualTimestamp, type) {
+  if (!scheduledShift || !/^Event\b/.test(scheduledShift)) return actualTimestamp;
+  var time = type === 'IN' ? getShiftStartTime_(scheduledShift) : getShiftEndTime_(scheduledShift);
+  if (!time) return actualTimestamp;
+  return new Date(actualTimestamp.getFullYear(), actualTimestamp.getMonth(), actualTimestamp.getDate(), time.hour, time.minute, 0);
+}
+
 /** Minutes actually worked past shift end, or null if the shift/event string has no end time. */
 function minutesPastShiftEnd_(shiftOrEvent, outTimestamp) {
   var end = getShiftEndTime_(shiftOrEvent);
@@ -548,33 +574,36 @@ function recordBackdatedAttendance_(employeeId, type, timestamp, ot, precomputed
   var otForRow = '';
   var otMinutesForRow = '';
   var otQuartersForRow = '';
+  var recordedTimestamp = timestamp; // overridden below for "Event" shifts -- see eventShiftOverrideTimestamp_. Not reassigning the `timestamp` param itself so callers' own logging of what was typed stays accurate.
 
   if (type === 'IN') {
     var scheduledShift = precomputedShift !== undefined ? precomputedShift : getScheduledShift_(employeeId, timestamp);
     if (scheduledShift) {
       shiftForRow = scheduledShift;
-      late = isLate_(scheduledShift, timestamp);
+      recordedTimestamp = eventShiftOverrideTimestamp_(scheduledShift, timestamp, 'IN');
+      late = isLate_(scheduledShift, recordedTimestamp);
     }
   } else {
     var matchingIn = findLogEntryForDate_(employeeId, 'IN', timestamp);
+    var todayShift = matchingIn ? matchingIn.shift : '';
+    recordedTimestamp = eventShiftOverrideTimestamp_(todayShift, timestamp, 'OUT');
     if (matchingIn) {
-      durationMinutes = Math.round((timestamp.getTime() - matchingIn.timestamp.getTime()) / 60000);
+      durationMinutes = Math.round((recordedTimestamp.getTime() - matchingIn.timestamp.getTime()) / 60000);
     }
 
-    var todayShift = matchingIn ? matchingIn.shift : '';
     var todayOtEligible = isOtEligible_(emp);
     if (emp.Department === 'Japanese') {
       var capMinutes = Number(emp.OTMaxMinutes) || JP_OT_CAP_MINUTES;
-      otMinutesForRow = (todayOtEligible && todayShift) ? computeJapaneseOtMinutes_(todayShift, timestamp, capMinutes) : 0;
+      otMinutesForRow = (todayOtEligible && todayShift) ? computeJapaneseOtMinutes_(todayShift, recordedTimestamp, capMinutes) : 0;
       otForRow = otMinutesForRow > 0;
     } else {
-      otQuartersForRow = (todayOtEligible && ot && todayShift) ? computeThaiOtQuarters_(todayShift, timestamp) : 0;
+      otQuartersForRow = (todayOtEligible && ot && todayShift) ? computeThaiOtQuarters_(todayShift, recordedTimestamp) : 0;
       otForRow = otQuartersForRow > 0;
     }
   }
 
   appendRow_('AttendanceLog', {
-    Timestamp: timestamp,
+    Timestamp: recordedTimestamp,
     EmployeeID: emp.EmployeeID,
     Name: emp.Name,
     Department: emp.Department,
@@ -649,33 +678,36 @@ function recordOfflineSyncedAttendance_(employeeId, type, timestamp, ot, clientI
   var otForRow = '';
   var otMinutesForRow = '';
   var otQuartersForRow = '';
+  var recordedTimestamp = timestamp; // overridden below for "Event" shifts -- see eventShiftOverrideTimestamp_
 
   if (type === 'IN') {
     var scheduledShift = getScheduledShift_(employeeId, timestamp);
     if (scheduledShift) {
       shiftForRow = scheduledShift;
-      late = isLate_(scheduledShift, timestamp);
+      recordedTimestamp = eventShiftOverrideTimestamp_(scheduledShift, timestamp, 'IN');
+      late = isLate_(scheduledShift, recordedTimestamp);
     }
   } else {
     var matchingIn = findLogEntryForDate_(employeeId, 'IN', timestamp);
+    var todayShift = matchingIn ? matchingIn.shift : '';
+    recordedTimestamp = eventShiftOverrideTimestamp_(todayShift, timestamp, 'OUT');
     if (matchingIn) {
-      durationMinutes = Math.round((timestamp.getTime() - matchingIn.timestamp.getTime()) / 60000);
+      durationMinutes = Math.round((recordedTimestamp.getTime() - matchingIn.timestamp.getTime()) / 60000);
     }
 
-    var todayShift = matchingIn ? matchingIn.shift : '';
     var todayOtEligible = isOtEligible_(emp);
     if (emp.Department === 'Japanese') {
       var capMinutes = Number(emp.OTMaxMinutes) || JP_OT_CAP_MINUTES;
-      otMinutesForRow = (todayOtEligible && todayShift) ? computeJapaneseOtMinutes_(todayShift, timestamp, capMinutes) : 0;
+      otMinutesForRow = (todayOtEligible && todayShift) ? computeJapaneseOtMinutes_(todayShift, recordedTimestamp, capMinutes) : 0;
       otForRow = otMinutesForRow > 0;
     } else {
-      otQuartersForRow = (todayOtEligible && ot && todayShift) ? computeThaiOtQuarters_(todayShift, timestamp) : 0;
+      otQuartersForRow = (todayOtEligible && ot && todayShift) ? computeThaiOtQuarters_(todayShift, recordedTimestamp) : 0;
       otForRow = otQuartersForRow > 0;
     }
   }
 
   appendRow_('AttendanceLog', {
-    Timestamp: timestamp,
+    Timestamp: recordedTimestamp,
     EmployeeID: emp.EmployeeID,
     Name: emp.Name,
     Department: emp.Department,
@@ -726,31 +758,34 @@ function recordAttendance_(employeeId, method, rawScanValue, type, ot) {
   var otForRow = '';
   var otMinutesForRow = '';
   var otQuartersForRow = '';
+  var recordedTimestamp = now; // overridden below for "Event" shifts -- see eventShiftOverrideTimestamp_
 
   if (type === 'IN') {
     // Shift comes from the admin-filled monthly schedule, not from the employee.
     var scheduledShift = getScheduledShift_(employeeId, now);
     if (scheduledShift) {
       shiftForRow = scheduledShift;
-      late = isLate_(scheduledShift, now);
+      recordedTimestamp = eventShiftOverrideTimestamp_(scheduledShift, now, 'IN');
+      late = isLate_(scheduledShift, recordedTimestamp);
     }
   } else {
     var todayIn = findTodayInLog_(employeeId, now, log);
+    var todayShift = todayIn ? todayIn.shift : '';
+    recordedTimestamp = eventShiftOverrideTimestamp_(todayShift, now, 'OUT');
     if (todayIn) {
-      durationMinutes = Math.round((now.getTime() - todayIn.timestamp.getTime()) / 60000);
+      durationMinutes = Math.round((recordedTimestamp.getTime() - todayIn.timestamp.getTime()) / 60000);
     }
 
-    var todayShift = todayIn ? todayIn.shift : '';
     var otEligible = isOtEligible_(emp);
     if (emp.Department === 'Japanese') {
       // OUT and OUT OT are equivalent for Japanese -- always auto-computed.
       var capMinutes = Number(emp.OTMaxMinutes) || JP_OT_CAP_MINUTES;
-      otMinutesForRow = (otEligible && todayShift) ? computeJapaneseOtMinutes_(todayShift, now, capMinutes) : 0;
+      otMinutesForRow = (otEligible && todayShift) ? computeJapaneseOtMinutes_(todayShift, recordedTimestamp, capMinutes) : 0;
       otForRow = otMinutesForRow > 0;
     } else {
       // Everyone else: only counts if they explicitly pressed OUT OT (a plain
       // OUT never earns OT, e.g. someone who just stayed chatting).
-      otQuartersForRow = (otEligible && ot && todayShift) ? computeThaiOtQuarters_(todayShift, now) : 0;
+      otQuartersForRow = (otEligible && ot && todayShift) ? computeThaiOtQuarters_(todayShift, recordedTimestamp) : 0;
       otForRow = otQuartersForRow > 0;
     }
   }
@@ -759,7 +794,7 @@ function recordAttendance_(employeeId, method, rawScanValue, type, ot) {
   // AttendanceLog schema at this point, so no need to check for them on every
   // single check-in/out (that's one more Sheets read on the hottest path).
   appendRow_('AttendanceLog', {
-    Timestamp: now,
+    Timestamp: recordedTimestamp,
     EmployeeID: emp.EmployeeID,
     Name: emp.Name,
     Department: emp.Department,
