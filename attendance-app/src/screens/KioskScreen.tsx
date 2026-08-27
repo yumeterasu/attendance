@@ -22,6 +22,8 @@ const PIN_LENGTH = 4;
 const FEEDBACK_DURATION_MS = 2500;
 const ERROR_FLASH_DURATION_MS = 1200;
 const CONFIRM_TIMEOUT_MS = 20000; // auto-cancel back to the PIN screen if nobody confirms -- shared kiosk, don't leave someone else's name up
+const AUTO_IN_START_HOUR = 5; // morning arrival window -- pre-select IN from this hour...
+const AUTO_IN_END_HOUR = 9; // ...up to (not including) this hour
 const AUTO_OUT_HOUR = 16; // nobody realistically checks IN this late -- pre-select OUT after this hour so the common case is a single tap on Confirm
 const KEYPAD_ROWS = [
   ['1', '2', '3'],
@@ -217,12 +219,17 @@ export default function KioskScreen({ navigation }: Props) {
     return () => clearTimeout(timer);
   }, [lookupName]);
 
-  // Pre-select OUT once it's late enough that nobody is realistically
-  // checking IN -- still fully overridable (IN / OUT OT stay tappable),
-  // this just saves the common case an extra tap.
+  // Pre-select IN during the morning arrival window and OUT once it's late
+  // enough that nobody is realistically checking IN -- still fully
+  // overridable (all three buttons stay tappable), this just saves the
+  // common case an extra tap. Anything outside both windows is left
+  // unselected, same as before this existed -- no reasonable default to
+  // guess at mid-shift.
   useEffect(() => {
     if (lookupName === null) return;
-    if (new Date().getHours() >= AUTO_OUT_HOUR) setSelection('OUT');
+    const hour = new Date().getHours();
+    if (hour >= AUTO_IN_START_HOUR && hour < AUTO_IN_END_HOUR) setSelection('IN');
+    else if (hour >= AUTO_OUT_HOUR) setSelection('OUT');
   }, [lookupName]);
 
   // Falls back to the on-device PIN->Name copy (see employeeDirectory) when
