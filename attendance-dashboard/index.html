@@ -203,6 +203,33 @@
   }
   .error-msg.show { display: block; }
 
+  .login-tabs {
+    display: flex;
+    gap: 4px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 4px;
+    margin-bottom: 20px;
+  }
+  .login-tab {
+    flex: 1;
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--text-muted);
+    background: transparent;
+    border: none;
+    border-radius: 8px;
+    padding: 9px 8px;
+    cursor: pointer;
+  }
+  .login-tab.active {
+    background: var(--card);
+    color: var(--text);
+    box-shadow: 0 1px 2px rgba(20,20,20,0.06);
+  }
+
   /* ---------- Dashboard ---------- */
 
   #dashboardView { display: none; }
@@ -361,9 +388,15 @@
   <div id="loginView">
     <div class="login-card">
       <div class="brand-badge">🔒</div>
-      <h2>Admin Sign In</h2>
-      <p class="hint">Use the same username and one-time setup code an admin issues for a new device (Admin screen → "Lost Device / New Setup Code").</p>
+      <h2 id="loginTitle">Admin Sign In</h2>
+
+      <div class="login-tabs">
+        <button type="button" class="login-tab active" id="tabAdmin">Admin</button>
+        <button type="button" class="login-tab" id="tabViewer">Viewer Access</button>
+      </div>
+
       <form id="loginForm">
+        <p class="hint">Use the same username and one-time setup code an admin issues for a new device (Admin screen → "Lost Device / New Setup Code").</p>
         <div class="field">
           <label for="username">Username</label>
           <input id="username" autocomplete="username" placeholder="EMP001" autocapitalize="characters" />
@@ -374,6 +407,16 @@
         </div>
         <button class="primary" type="submit" id="loginBtn">Sign In</button>
       </form>
+
+      <form id="viewerForm" style="display:none;">
+        <p class="hint">Enter the viewing password shared with you to see attendance summaries. Read-only — no admin account needed.</p>
+        <div class="field">
+          <label for="viewerPassword">Password</label>
+          <input id="viewerPassword" type="password" autocomplete="current-password" placeholder="••••••" />
+        </div>
+        <button class="primary" type="submit" id="viewerBtn">View Dashboard</button>
+      </form>
+
       <div class="error-msg" id="loginError"></div>
     </div>
   </div>
@@ -513,6 +556,56 @@
     location.reload();
   });
 
+  // ---------- Login tabs (Admin vs. Viewer Access) ----------
+
+  var tabAdmin = document.getElementById('tabAdmin');
+  var tabViewer = document.getElementById('tabViewer');
+  var loginTitle = document.getElementById('loginTitle');
+  var viewerForm = document.getElementById('viewerForm');
+
+  function setLoginTab(tab) {
+    var isAdmin = tab === 'admin';
+    tabAdmin.classList.toggle('active', isAdmin);
+    tabViewer.classList.toggle('active', !isAdmin);
+    loginForm.style.display = isAdmin ? 'block' : 'none';
+    viewerForm.style.display = isAdmin ? 'none' : 'block';
+    loginTitle.textContent = isAdmin ? 'Admin Sign In' : 'Viewer Access';
+    loginError.classList.remove('show');
+  }
+  tabAdmin.addEventListener('click', function () { setLoginTab('admin'); });
+  tabViewer.addEventListener('click', function () { setLoginTab('viewer'); });
+
+  var viewerBtn = document.getElementById('viewerBtn');
+
+  viewerForm.addEventListener('submit', function (e) {
+    e.preventDefault();
+    var password = document.getElementById('viewerPassword').value;
+    if (!password) return;
+
+    viewerBtn.disabled = true;
+    viewerBtn.textContent = 'Checking…';
+    loginError.classList.remove('show');
+
+    // No dedicated "check password" endpoint -- this doubles as the first
+    // data fetch. Any success response proves the password was accepted.
+    apiGet('dashboardSummary', {
+      viewerPassword: password,
+      year: yearSelect.value,
+      month: monthSelect.value
+    }).then(function (result) {
+      viewerBtn.disabled = false;
+      viewerBtn.textContent = 'View Dashboard';
+
+      if (!result.success) {
+        loginError.textContent = 'Incorrect password.';
+        loginError.classList.add('show');
+        return;
+      }
+      saveSession({ viewerPassword: password, name: 'Viewer', isViewer: true });
+      showDashboard();
+    });
+  });
+
   // ---------- Dashboard ----------
 
   var yearSelect = document.getElementById('yearSelect');
@@ -605,7 +698,10 @@
     document.getElementById('summaryTable').style.display = 'none';
 
     apiGet('dashboardSummary', {
-      sessionToken: session.sessionToken,
+      // Viewer sessions carry a shared password instead of a personal
+      // sessionToken -- see checkViewerPassword_ in Auth.gs.
+      sessionToken: session.isViewer ? '' : session.sessionToken,
+      viewerPassword: session.isViewer ? session.viewerPassword : '',
       year: yearSelect.value,
       month: monthSelect.value
     }).then(function (result) {

@@ -16,6 +16,19 @@ function checkApiKey_(apiKey) {
   return expected && apiKey === expected;
 }
 
+/**
+ * Shared-password check for the read-only web Dashboard's "Viewer Access"
+ * option -- lets the admin hand out a link + simple password to people who
+ * just need to view the numbers, without creating them an admin employee
+ * account. Set/changed via Script Properties (DASHBOARD_VIEWER_PASSWORD) or
+ * the setDashboardViewerPassword() helper below. Unset/blank property means
+ * this path is never satisfied -- viewer access is off until an admin sets one.
+ */
+function checkViewerPassword_(candidate) {
+  var expected = getProp_('DASHBOARD_VIEWER_PASSWORD');
+  return !!(expected && candidate && candidate === expected);
+}
+
 function issueSessionToken_(employeeId) {
   var secret = getProp_('SESSION_SECRET');
   var expiry = Date.now() + SESSION_TTL_MS;

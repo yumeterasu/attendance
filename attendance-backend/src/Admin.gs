@@ -289,6 +289,19 @@ function issueSetupCodeForLockedOutEmployee() {
 }
 
 /**
+ * Sets (or changes) the shared password for the Dashboard's "Viewer Access"
+ * login. To change it yourself later: edit the value on the line below,
+ * then in the Apps Script editor select this function in the dropdown and
+ * click Run -- no other code change needed. Leave the value blank ('') and
+ * run once to disable Viewer Access entirely.
+ */
+function setDashboardViewerPassword() {
+  var newPassword = '1357';
+  PropertiesService.getScriptProperties().setProperty('DASHBOARD_VIEWER_PASSWORD', String(newPassword));
+  Logger.log('Dashboard viewer password updated.');
+}
+
+/**
  * Sets the script's API key / session secret / QR value. Already run once at
  * project setup -- the real values now live only in Script Properties (Project
  * Settings > Script Properties in the editor), not in source. To rotate a

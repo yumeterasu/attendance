@@ -1221,8 +1221,22 @@ function getDashboardSummaryData_(year, month) {
  */
 function handleDashboardSummary_(params) {
   if (!checkApiKey_(params.apiKey)) return fail_('unauthorized', 'Invalid API key');
-  var admin = requireAdmin_(params.sessionToken);
-  if (!admin.ok) return admin.response;
+
+  // Two ways in: a real admin sessionToken (existing "Admin Sign In" flow --
+  // same pairing system the app uses), or a shared viewer password for
+  // people who just need to look at the numbers without an admin account.
+  // The password lives only in Script Properties (Project Settings > Script
+  // Properties > DASHBOARD_VIEWER_PASSWORD) -- the admin sets/changes it
+  // there directly, no code change or redeploy needed, and it's never
+  // visible in this source. Blank/unset property means the viewer-password
+  // path is simply never satisfied (checkViewerPassword_ requires a
+  // non-empty value on both sides), so leaving it unset is the same as
+  // disabling viewer access entirely -- Admin Sign In still works either way.
+  var isViewer = checkViewerPassword_(params.viewerPassword);
+  if (!isViewer) {
+    var admin = requireAdmin_(params.sessionToken);
+    if (!admin.ok) return admin.response;
+  }
 
   if (!params.year || !params.month) return fail_('bad_request', 'year and month are required');
 
