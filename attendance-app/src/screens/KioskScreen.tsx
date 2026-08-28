@@ -746,15 +746,17 @@ const FONT_BODY_SEMIBOLD = 'Nunito_600SemiBold';
 const FONT_BODY_BOLD = 'Nunito_700Bold';
 const FONT_BODY_EXTRABOLD = 'Nunito_800ExtraBold';
 
-// Sky palette -- IN/OUT/OT keep their own fixed semantic colors (sage/rose/
-// butter) no matter what the brand accent is, same rule as the web preview.
-const BG = '#EFF7FD';
-const CARD = '#FBFEFF';
-const BORDER = '#D6E9F7';
-const ACCENT = '#B7DDF7';
-const ACCENT_DARK = '#4E92C4';
-const ACCENT_BG = '#EAF5FD';
-const ACCENT_TEXT = '#2C5878';
+// Sky Medium palette (a step more saturated than the original "Sky Soft" --
+// that one read as too washed-out). IN/OUT/OT keep their own fixed semantic
+// colors (sage/rose/butter) no matter what the brand accent is, same rule
+// as the web preview.
+const BG = '#E4F1FC';
+const CARD = '#F6FBFF';
+const BORDER = '#BFDDF3';
+const ACCENT = '#85C2EE';
+const ACCENT_DARK = '#2C74AD';
+const ACCENT_BG = '#D9EDFB';
+const ACCENT_TEXT = '#1C4A6E';
 const SAGE = '#6E9C69';
 const SAGE_BG = '#E8F2E4';
 const SAGE_BORDER = '#CDE3C6';
@@ -767,14 +769,17 @@ const ROSE_BORDER = '#F4C6BD';
 const TEXT = '#503A2E';
 const TEXT_MUTED = '#9C8171';
 
-// "Fade (Diagonal)" background from the web preview -- a soft white-to-Sky
-// wash across the screen instead of a flat fill. start/end approximate the
-// CSS `135deg` direction (top-left toward bottom-right); the 0.72 stop
-// matches "0%, 72%" from the preview -- fully the base color by 72%, solid
-// the rest of the way to the corner.
-const GRADIENT_START = { x: 0, y: 0 };
-const GRADIENT_END = { x: 1, y: 1 };
-const GRADIENT_LOCATIONS: [number, number] = [0, 0.72];
+// "Glow" background from the web preview -- a soft white glow near the top
+// fading into the Sky background, not a flat fill. The preview's CSS recipe
+// is a wide/short radial ellipse (120% width x 55% height, centered just
+// above the top edge) -- expo-linear-gradient has no radial mode, but at
+// 120% width the ellipse already extends past both screen edges, so at any
+// given height the color barely varies left-to-right; a plain top-to-bottom
+// linear fade is a very close stand-in. The 0.68 stop matches "0%, 68%"
+// from the preview.
+const GRADIENT_START = { x: 0.5, y: 0 };
+const GRADIENT_END = { x: 0.5, y: 1 };
+const GRADIENT_LOCATIONS: [number, number] = [0, 0.68];
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#000', alignItems: 'center', justifyContent: 'center', padding: 24 },
