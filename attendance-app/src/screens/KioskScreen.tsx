@@ -813,29 +813,33 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontFamily: FONT_SEMIBOLD
   },
+  // Kept deliberately compact -- this floats over the same keypad screen
+  // the next person in line is about to use, so it must never eat into the
+  // number rows below it (was 20% top + 32 vertical padding, tall enough to
+  // cover the first keypad row on the real tablet).
   feedbackCard: {
     position: 'absolute',
-    top: '20%',
-    left: 32,
-    right: 32,
-    borderRadius: 24,
-    paddingVertical: 32,
+    top: '14%',
+    left: 40,
+    right: 40,
+    borderRadius: 20,
+    paddingVertical: 16,
     alignItems: 'center'
   },
   feedbackIn: { backgroundColor: '#2e7d32' },
   feedbackOut: { backgroundColor: '#455a64' },
   feedbackError: { backgroundColor: '#c0392b' },
-  feedbackType: { color: '#fff', fontSize: 28, fontFamily: FONT_EXTRABOLD, letterSpacing: 2 },
-  feedbackName: { color: '#fff', fontSize: 22, fontFamily: FONT_BOLD, marginTop: 8, textAlign: 'center' },
-  feedbackTime: { color: 'rgba(255,255,255,0.8)', fontSize: 14, fontFamily: FONT_MEDIUM, marginTop: 4 },
+  feedbackType: { color: '#fff', fontSize: 22, fontFamily: FONT_EXTRABOLD, letterSpacing: 2 },
+  feedbackName: { color: '#fff', fontSize: 17, fontFamily: FONT_BOLD, marginTop: 4, textAlign: 'center' },
+  feedbackTime: { color: 'rgba(255,255,255,0.8)', fontSize: 13, fontFamily: FONT_MEDIUM, marginTop: 2 },
   feedbackLate: {
     color: '#fff',
     backgroundColor: 'rgba(0,0,0,0.25)',
-    fontSize: 12,
+    fontSize: 11,
     fontFamily: FONT_BOLD,
-    marginTop: 10,
-    paddingVertical: 4,
-    paddingHorizontal: 12,
+    marginTop: 6,
+    paddingVertical: 3,
+    paddingHorizontal: 10,
     borderRadius: 10
   },
   calendarWrap: { width: '100%', maxWidth: 500, maxHeight: '62%' },
