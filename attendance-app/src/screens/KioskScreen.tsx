@@ -434,7 +434,13 @@ export default function KioskScreen({ navigation }: Props) {
 
   if (mode === 'exit') {
     return (
-      <View style={[styles.container, styles.containerDanger]}>
+      <LinearGradient
+        colors={['#ffffff', EXIT_ACCENT_BG]}
+        start={GRADIENT_START}
+        end={GRADIENT_END}
+        locations={GRADIENT_LOCATIONS}
+        style={styles.container}
+      >
         <Text style={[styles.title, styles.titleDanger]}>Admin Exit PIN</Text>
         <Text style={styles.subtitleDanger}>This leaves Kiosk Mode — not for check-in</Text>
 
@@ -446,22 +452,22 @@ export default function KioskScreen({ navigation }: Props) {
         <Keypad onPress={onExitKeyPress} danger />
         {exitError && <Text style={styles.errorText}>Incorrect PIN</Text>}
         <Pressable
-          style={[styles.cornerButton, styles.cornerButtonLight]}
+          style={[styles.cornerButton, styles.cornerButtonExit]}
           onPress={() => {
             setMode('checkin');
             setExitPin('');
           }}
         >
-          <Text style={styles.cornerButtonTextLight}>Cancel</Text>
+          <Text style={styles.cornerButtonTextExit}>Cancel</Text>
         </Pressable>
-      </View>
+      </LinearGradient>
     );
   }
 
   if (mode === 'scheduleEntry') {
     return (
       <LinearGradient
-        colors={['#ffffff', ACCENT_BG]}
+        colors={['#ffffff', SCHEDULE_ACCENT_BG]}
         start={GRADIENT_START}
         end={GRADIENT_END}
         locations={GRADIENT_LOCATIONS}
@@ -479,7 +485,7 @@ export default function KioskScreen({ navigation }: Props) {
 
         {isLoadingSchedule && (
           <View style={styles.checkingRow}>
-            <ActivityIndicator color={ACCENT_DARK} />
+            <ActivityIndicator color={SCHEDULE_ACCENT_DARK} />
             <Text style={styles.checkingText}>Loading...</Text>
           </View>
         )}
@@ -493,14 +499,14 @@ export default function KioskScreen({ navigation }: Props) {
           </View>
         )}
         <Pressable
-          style={[styles.cornerButton, styles.cornerButtonLight]}
+          style={[styles.cornerButton, styles.cornerButtonSchedule]}
           onPress={() => {
             setMode('checkin');
             setSchedulePin('');
             setScheduleIssue(null);
           }}
         >
-          <Text style={styles.cornerButtonTextLight}>Cancel</Text>
+          <Text style={styles.cornerButtonTextSchedule}>Cancel</Text>
         </Pressable>
       </LinearGradient>
     );
@@ -511,7 +517,7 @@ export default function KioskScreen({ navigation }: Props) {
 
     return (
       <LinearGradient
-        colors={['#ffffff', ACCENT_BG]}
+        colors={['#ffffff', SCHEDULE_ACCENT_BG]}
         start={GRADIENT_START}
         end={GRADIENT_END}
         locations={GRADIENT_LOCATIONS}
@@ -769,6 +775,17 @@ const ROSE_BORDER = '#F4C6BD';
 const TEXT = '#503A2E';
 const TEXT_MUTED = '#9C8171';
 
+// My Schedule and Admin Exit PIN get their own fixed accent, independent of
+// the main Sky accent above -- the point is telling them apart from Enter
+// Code at a glance (two screens that otherwise looked near-identical), not
+// following whatever the main flow's accent happens to be.
+const SCHEDULE_ACCENT_BG = '#F3ECFB'; // Violet Soft
+const SCHEDULE_ACCENT_DARK = '#8C6FBE';
+const SCHEDULE_BORDER = '#E1D3F3';
+const EXIT_ACCENT_BG = '#FAD9C8'; // Warm Medium
+const EXIT_ACCENT_DARK = '#A83A1C';
+const EXIT_BORDER = '#EEB79B';
+
 // "Glow" background from the web preview -- a soft white glow near the top
 // fading into the Sky background, not a flat fill. The preview's CSS recipe
 // is a wide/short radial ellipse (120% width x 55% height, centered just
@@ -783,9 +800,6 @@ const GRADIENT_LOCATIONS: [number, number] = [0, 0.68];
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#000', alignItems: 'center', justifyContent: 'center', padding: 24 },
-  containerDanger: { backgroundColor: '#FCF3F2' },
-  containerLight: { backgroundColor: BG },
-  containerSchedule: { backgroundColor: ACCENT_BG },
   title: { color: TEXT, fontSize: 22, fontFamily: FONT_DISPLAY_BOLD, marginBottom: 8, textAlign: 'center' },
   titleDark: { color: TEXT },
   titleDanger: { color: '#3A1210' },
@@ -802,8 +816,8 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     marginBottom: 6
   },
-  badgeSchedule: { backgroundColor: ACCENT_BG, borderColor: BORDER },
-  badgeDanger: { backgroundColor: '#F7DAD6', borderColor: '#F7DAD6' },
+  badgeSchedule: { backgroundColor: SCHEDULE_ACCENT_BG, borderColor: SCHEDULE_BORDER },
+  badgeDanger: { backgroundColor: EXIT_ACCENT_BG, borderColor: EXIT_BORDER },
   badgeGlyph: { fontSize: 26 },
   netStatusDot: { position: 'absolute', top: 16, right: 16 },
   netDot: { width: 12, height: 12, borderRadius: 6 },
@@ -868,8 +882,8 @@ const styles = StyleSheet.create({
   dotFilledDanger: { backgroundColor: '#C0392B', borderColor: '#C0392B' },
   dotLight: { borderColor: BORDER },
   dotFilledLight: { backgroundColor: ACCENT_DARK, borderColor: ACCENT_DARK },
-  dotSchedule: { borderColor: BORDER }, // light outline so empty dots are visible on the soft blue Schedule background
-  dotFilledSchedule: { backgroundColor: ACCENT_DARK, borderColor: ACCENT_DARK },
+  dotSchedule: { borderColor: SCHEDULE_BORDER }, // light outline so empty dots are visible on the violet Schedule background
+  dotFilledSchedule: { backgroundColor: SCHEDULE_ACCENT_DARK, borderColor: SCHEDULE_ACCENT_DARK },
   dotError: { borderColor: '#c0392b', backgroundColor: '#c0392b' },
   errorText: { color: '#C0392B', fontSize: 14, fontFamily: FONT_BODY_SEMIBOLD, marginTop: 20 },
   keypad: { gap: 16 },
@@ -882,9 +896,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center'
   },
-  keyDanger: { backgroundColor: '#ffffff', borderWidth: 1.5, borderColor: '#EBC4BF' },
+  keyDanger: { backgroundColor: '#ffffff', borderWidth: 1.5, borderColor: EXIT_BORDER },
   keyLight: { backgroundColor: '#ffffff', borderWidth: 1, borderColor: BORDER },
-  keySchedule: { backgroundColor: '#ffffff', borderWidth: 1.5, borderColor: BORDER },
+  keySchedule: { backgroundColor: '#ffffff', borderWidth: 1.5, borderColor: SCHEDULE_BORDER },
   keyText: { color: '#fff', fontSize: 30, fontFamily: FONT_DISPLAY_BOLD },
   keyTextSmall: { color: 'rgba(255,255,255,0.7)', fontSize: 16, fontFamily: FONT_BODY_BOLD },
   keyTextLight: { color: TEXT },
@@ -909,6 +923,14 @@ const styles = StyleSheet.create({
   cornerButtonText: { color: 'rgba(255,255,255,0.7)', fontSize: 12, fontFamily: FONT_DISPLAY_SEMIBOLD },
   cornerButtonLight: { backgroundColor: ACCENT_BG },
   cornerButtonTextLight: { color: ACCENT_DARK, fontSize: 12, fontFamily: FONT_DISPLAY_BOLD },
+  // Schedule/Exit corner buttons ("Cancel") follow those screens' own
+  // accent instead of the main Sky one -- swapped in for cornerButtonLight
+  // on just those two screens, same structural cornerButton/scheduleButton
+  // base underneath.
+  cornerButtonSchedule: { backgroundColor: SCHEDULE_ACCENT_BG },
+  cornerButtonTextSchedule: { color: SCHEDULE_ACCENT_DARK, fontSize: 12, fontFamily: FONT_DISPLAY_BOLD },
+  cornerButtonExit: { backgroundColor: EXIT_ACCENT_BG },
+  cornerButtonTextExit: { color: EXIT_ACCENT_DARK, fontSize: 12, fontFamily: FONT_DISPLAY_BOLD },
   versionText: {
     position: 'absolute',
     bottom: 4,
@@ -974,7 +996,7 @@ const styles = StyleSheet.create({
   calendarCellHoliday: { backgroundColor: '#FFF3E0', borderColor: '#F5C88F' },
   calendarCellLeave: { backgroundColor: '#FDECEA', borderColor: '#F1B3AB' },
   calendarDayNum: { color: TEXT, fontSize: 15, fontFamily: FONT_BODY_EXTRABOLD },
-  calendarTime: { color: ACCENT_DARK, fontSize: 11, fontFamily: FONT_BODY_BOLD, marginTop: 2 },
+  calendarTime: { color: SCHEDULE_ACCENT_DARK, fontSize: 11, fontFamily: FONT_BODY_BOLD, marginTop: 2 },
   calendarNote: { color: TEXT_MUTED, fontSize: 10, fontFamily: FONT_BODY_BOLD, marginTop: 3, textAlign: 'center', paddingHorizontal: 2 },
   calendarNoteHoliday: { color: '#B8631A' },
   calendarNoteLeave: { color: '#C0392B' },

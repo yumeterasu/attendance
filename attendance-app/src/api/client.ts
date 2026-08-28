@@ -4,7 +4,7 @@ const API_URL = process.env.EXPO_PUBLIC_API_URL ?? '';
 const API_KEY = process.env.EXPO_PUBLIC_API_KEY ?? '';
 const REQUEST_TIMEOUT_MS = 15000; // a hung request with no internet route used to wait forever with no feedback
 const KIOSK_TIMEOUT_MS = 3000; // lookup/checkin have a local fallback, so fail fast and let it take over instead of making the employee wait
-const SCHEDULE_TIMEOUT_MS = 4000; // My Schedule has no local fallback (it needs a live report), so it gets a little more room than the kiosk lookup/checkin calls
+const SCHEDULE_TIMEOUT_MS = 8000; // My Schedule has no local fallback (it needs a live report) -- was 4000ms, too tight: reads up to 8000 rows of AttendanceLog plus a possible Apps Script cold start regularly pushed past it, showing as "sometimes works, sometimes doesn't"
 
 export type ApiResult<T> =
   | ({ success: true } & T)
