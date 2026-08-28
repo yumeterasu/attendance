@@ -472,7 +472,7 @@ export default function KioskScreen({ navigation }: Props) {
 
         {isLoadingSchedule && (
           <View style={styles.checkingRow}>
-            <ActivityIndicator color="#3E7BFA" />
+            <ActivityIndicator color={ACCENT_DARK} />
             <Text style={styles.checkingText}>Loading...</Text>
           </View>
         )}
@@ -638,7 +638,7 @@ export default function KioskScreen({ navigation }: Props) {
 
           {isLookingUp && (
             <View style={styles.checkingRow}>
-              <ActivityIndicator color="#3E7BFA" />
+              <ActivityIndicator color={ACCENT_DARK} />
               <Text style={styles.checkingText}>Checking...</Text>
             </View>
           )}
@@ -688,7 +688,7 @@ export default function KioskScreen({ navigation }: Props) {
             onPress={onConfirm}
             disabled={!selection || isProcessing}
           >
-            {isProcessing ? <ActivityIndicator color="#fff" /> : <Text style={styles.buttonText}>Confirm</Text>}
+            {isProcessing ? <ActivityIndicator color={ACCENT_TEXT} /> : <Text style={styles.confirmButtonText}>Confirm</Text>}
           </Pressable>
 
           <Pressable style={styles.cancelLink} onPress={resetCheckin} disabled={isProcessing}>
@@ -714,77 +714,113 @@ export default function KioskScreen({ navigation }: Props) {
   );
 }
 
-const FONT_MEDIUM = 'PlusJakartaSans_500Medium';
-const FONT_SEMIBOLD = 'PlusJakartaSans_600SemiBold';
-const FONT_BOLD = 'PlusJakartaSans_700Bold';
-const FONT_EXTRABOLD = 'PlusJakartaSans_800ExtraBold';
+// "Blossom" theme: Baloo 2 (rounded, friendly) for headings/buttons/labels,
+// Nunito for body copy and dense data (calendar numbers, times) -- see the
+// Blossom Kiosk design-preview Artifact this was matched against. Sky
+// pastel palette below, chosen over Peach/Mint/Lavender/Blush/etc.
+const FONT_DISPLAY_MEDIUM = 'Baloo2_500Medium';
+const FONT_DISPLAY_SEMIBOLD = 'Baloo2_600SemiBold';
+const FONT_DISPLAY_BOLD = 'Baloo2_700Bold';
+const FONT_DISPLAY_EXTRABOLD = 'Baloo2_800ExtraBold';
+const FONT_BODY_MEDIUM = 'Nunito_500Medium';
+const FONT_BODY_SEMIBOLD = 'Nunito_600SemiBold';
+const FONT_BODY_BOLD = 'Nunito_700Bold';
+const FONT_BODY_EXTRABOLD = 'Nunito_800ExtraBold';
+
+// Sky palette -- IN/OUT/OT keep their own fixed semantic colors (sage/rose/
+// butter) no matter what the brand accent is, same rule as the web preview.
+const BG = '#EFF7FD';
+const CARD = '#FBFEFF';
+const BORDER = '#D6E9F7';
+const ACCENT = '#B7DDF7';
+const ACCENT_DARK = '#4E92C4';
+const ACCENT_BG = '#EAF5FD';
+const ACCENT_TEXT = '#2C5878';
+const SAGE = '#6E9C69';
+const SAGE_BG = '#E8F2E4';
+const SAGE_BORDER = '#CDE3C6';
+const BUTTER = '#C98A22';
+const BUTTER_BG = '#FFF3D6';
+const BUTTER_BORDER = '#F3DFA6';
+const ROSE_BG = '#FCE4E1';
+const ROSE_TEXT = '#C2604F';
+const ROSE_BORDER = '#F4C6BD';
+const TEXT = '#503A2E';
+const TEXT_MUTED = '#9C8171';
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#000', alignItems: 'center', justifyContent: 'center', padding: 24 },
   containerDanger: { backgroundColor: '#FCF3F2' },
-  containerLight: { backgroundColor: '#F7F9FC' },
-  containerSchedule: { backgroundColor: '#EEF3FC' },
-  title: { color: '#12151C', fontSize: 22, fontFamily: FONT_BOLD, marginBottom: 8, textAlign: 'center' },
-  titleDark: { color: '#12151C' },
+  containerLight: { backgroundColor: BG },
+  containerSchedule: { backgroundColor: ACCENT_BG },
+  title: { color: TEXT, fontSize: 22, fontFamily: FONT_DISPLAY_BOLD, marginBottom: 8, textAlign: 'center' },
+  titleDark: { color: TEXT },
   titleDanger: { color: '#3A1210' },
-  subtitleDark: { color: '#6B7280', fontSize: 15, fontFamily: FONT_MEDIUM, marginBottom: 8 },
-  subtitleDanger: { color: '#A9645D', fontSize: 13, fontFamily: FONT_MEDIUM, marginBottom: 8, textAlign: 'center' },
+  subtitleDark: { color: TEXT_MUTED, fontSize: 15, fontFamily: FONT_BODY_MEDIUM, marginBottom: 8 },
+  subtitleDanger: { color: '#A9645D', fontSize: 13, fontFamily: FONT_BODY_MEDIUM, marginBottom: 8, textAlign: 'center' },
   badge: {
     width: 64,
     height: 64,
     borderRadius: 24,
-    backgroundColor: '#E8EFFD',
+    backgroundColor: SAGE_BG,
+    borderWidth: 1,
+    borderColor: SAGE_BORDER,
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: 6
   },
-  badgeSchedule: { backgroundColor: '#DCE7FB' },
-  badgeDanger: { backgroundColor: '#F7DAD6' },
+  badgeSchedule: { backgroundColor: ACCENT_BG, borderColor: BORDER },
+  badgeDanger: { backgroundColor: '#F7DAD6', borderColor: '#F7DAD6' },
   badgeGlyph: { fontSize: 26 },
   netStatusDot: { position: 'absolute', top: 16, right: 16 },
   netDot: { width: 12, height: 12, borderRadius: 6 },
   netDotOnline: { backgroundColor: '#7cb987' },
   netDotOffline: { backgroundColor: '#c0392b' },
   retryBox: { marginTop: 20, alignItems: 'center' },
-  retryMessage: { color: '#C0392B', fontSize: 13, fontFamily: FONT_MEDIUM, textAlign: 'center', marginBottom: 10, maxWidth: 280 },
-  retryButton: { backgroundColor: '#12151C', borderRadius: 16, paddingVertical: 12, paddingHorizontal: 32 },
-  retryButtonText: { color: '#fff', fontSize: 15, fontFamily: FONT_BOLD },
+  retryMessage: { color: '#C0392B', fontSize: 13, fontFamily: FONT_BODY_MEDIUM, textAlign: 'center', marginBottom: 10, maxWidth: 280 },
+  retryButton: { backgroundColor: TEXT, borderRadius: 999, paddingVertical: 12, paddingHorizontal: 32 },
+  retryButtonText: { color: '#fff', fontSize: 15, fontFamily: FONT_DISPLAY_BOLD },
   confirmButton: {
     marginTop: 32,
-    backgroundColor: '#2E63D6',
-    borderRadius: 18,
+    backgroundColor: ACCENT,
+    borderRadius: 999,
     paddingVertical: 18,
     paddingHorizontal: 64,
     alignItems: 'center'
   },
-  confirmButtonDisabled: { backgroundColor: '#B8C6EA' },
+  confirmButtonDisabled: { backgroundColor: '#DCE9F5' },
   checkingRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 24 },
-  checkingText: { color: '#6B7280', fontSize: 14, fontFamily: FONT_SEMIBOLD },
+  checkingText: { color: TEXT_MUTED, fontSize: 14, fontFamily: FONT_BODY_SEMIBOLD },
   cancelLink: {
     marginTop: 20,
-    backgroundColor: '#EEF2F8',
-    borderRadius: 16,
+    backgroundColor: CARD,
+    borderWidth: 1,
+    borderColor: BORDER,
+    borderRadius: 999,
     paddingVertical: 10,
     paddingHorizontal: 20
   },
-  cancelLinkText: { color: '#4B5566', fontSize: 13, fontFamily: FONT_BOLD },
+  cancelLinkText: { color: TEXT_MUTED, fontSize: 13, fontFamily: FONT_BODY_BOLD },
   subtitle: { color: 'rgba(255,255,255,0.6)', fontSize: 15, marginBottom: 24 },
   typeRow: { flexDirection: 'row', gap: 12, marginTop: 20, marginBottom: 8 },
   typeButton: {
-    borderRadius: 18,
+    borderRadius: 20,
     paddingVertical: 18,
     paddingHorizontal: 22,
     borderWidth: 2
   },
-  typeButtonIn: { backgroundColor: '#c8e6c9', borderColor: '#7cb987' },
-  typeButtonOut: { backgroundColor: '#ffcdd2', borderColor: '#e6949c' },
-  typeButtonOt: { backgroundColor: '#ffe0b2', borderColor: '#e6b571' },
-  typeButtonInSelected: { backgroundColor: '#2e7d32', borderColor: '#1b5e20' },
-  typeButtonOutSelected: { backgroundColor: '#c0392b', borderColor: '#b71c1c' },
-  typeButtonOtSelected: { backgroundColor: '#e65100', borderColor: '#bf360c' },
-  typeButtonInText: { color: '#1b5e20', fontSize: 17, fontFamily: FONT_BOLD },
-  typeButtonOutText: { color: '#b71c1c', fontSize: 17, fontFamily: FONT_BOLD },
-  typeButtonOtText: { color: '#e65100', fontSize: 17, fontFamily: FONT_BOLD },
+  typeButtonIn: { backgroundColor: SAGE_BG, borderColor: SAGE_BORDER },
+  typeButtonOut: { backgroundColor: ROSE_BG, borderColor: ROSE_BORDER },
+  typeButtonOt: { backgroundColor: BUTTER_BG, borderColor: BUTTER_BORDER },
+  typeButtonInSelected: { backgroundColor: SAGE, borderColor: SAGE },
+  // OUT stays this fixed rose/red regardless of accent palette -- same rule
+  // as the web preview, so it always reads as recognizably "OUT" no matter
+  // what theme is picked later.
+  typeButtonOutSelected: { backgroundColor: ROSE_TEXT, borderColor: ROSE_TEXT },
+  typeButtonOtSelected: { backgroundColor: BUTTER, borderColor: BUTTER },
+  typeButtonInText: { color: SAGE, fontSize: 17, fontFamily: FONT_DISPLAY_EXTRABOLD },
+  typeButtonOutText: { color: ROSE_TEXT, fontSize: 17, fontFamily: FONT_DISPLAY_EXTRABOLD },
+  typeButtonOtText: { color: BUTTER, fontSize: 17, fontFamily: FONT_DISPLAY_EXTRABOLD },
   typeButtonTextSelected: { color: '#fff' },
   dots: { flexDirection: 'row', gap: 20, marginTop: 20, marginBottom: 36 },
   dot: {
@@ -797,12 +833,12 @@ const styles = StyleSheet.create({
   dotFilled: { backgroundColor: '#fff', borderColor: '#fff' },
   dotDanger: { borderColor: '#EBC4BF' },
   dotFilledDanger: { backgroundColor: '#C0392B', borderColor: '#C0392B' },
-  dotLight: { borderColor: '#CBD5E8' },
-  dotFilledLight: { backgroundColor: '#3E7BFA', borderColor: '#3E7BFA' },
-  dotSchedule: { borderColor: '#BCD0F5' }, // light outline so empty dots are visible on the soft blue Schedule background
-  dotFilledSchedule: { backgroundColor: '#3E7BFA', borderColor: '#3E7BFA' },
+  dotLight: { borderColor: BORDER },
+  dotFilledLight: { backgroundColor: ACCENT_DARK, borderColor: ACCENT_DARK },
+  dotSchedule: { borderColor: BORDER }, // light outline so empty dots are visible on the soft blue Schedule background
+  dotFilledSchedule: { backgroundColor: ACCENT_DARK, borderColor: ACCENT_DARK },
   dotError: { borderColor: '#c0392b', backgroundColor: '#c0392b' },
-  errorText: { color: '#C0392B', fontSize: 14, fontFamily: FONT_SEMIBOLD, marginTop: 20 },
+  errorText: { color: '#C0392B', fontSize: 14, fontFamily: FONT_BODY_SEMIBOLD, marginTop: 20 },
   keypad: { gap: 16 },
   keypadRow: { flexDirection: 'row', gap: 16 },
   key: {
@@ -814,11 +850,11 @@ const styles = StyleSheet.create({
     justifyContent: 'center'
   },
   keyDanger: { backgroundColor: '#ffffff', borderWidth: 1.5, borderColor: '#EBC4BF' },
-  keyLight: { backgroundColor: '#EEF2F8' },
-  keySchedule: { backgroundColor: '#ffffff', borderWidth: 1.5, borderColor: '#CBD9F5' },
-  keyText: { color: '#fff', fontSize: 30, fontFamily: FONT_SEMIBOLD },
-  keyTextSmall: { color: 'rgba(255,255,255,0.7)', fontSize: 16, fontFamily: FONT_SEMIBOLD },
-  keyTextLight: { color: '#12151C' },
+  keyLight: { backgroundColor: '#ffffff', borderWidth: 1, borderColor: BORDER },
+  keySchedule: { backgroundColor: '#ffffff', borderWidth: 1.5, borderColor: BORDER },
+  keyText: { color: '#fff', fontSize: 30, fontFamily: FONT_DISPLAY_BOLD },
+  keyTextSmall: { color: 'rgba(255,255,255,0.7)', fontSize: 16, fontFamily: FONT_BODY_BOLD },
+  keyTextLight: { color: TEXT },
   scheduleButton: {
     position: 'absolute',
     bottom: 24,
@@ -826,7 +862,7 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255,255,255,0.15)',
     paddingVertical: 8,
     paddingHorizontal: 16,
-    borderRadius: 16
+    borderRadius: 999
   },
   cornerButton: {
     position: 'absolute',
@@ -835,20 +871,20 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255,255,255,0.15)',
     paddingVertical: 8,
     paddingHorizontal: 16,
-    borderRadius: 16
+    borderRadius: 999
   },
-  cornerButtonText: { color: 'rgba(255,255,255,0.7)', fontSize: 12, fontFamily: FONT_SEMIBOLD },
-  cornerButtonLight: { backgroundColor: '#ffffff' },
-  cornerButtonTextLight: { color: '#4B5566', fontSize: 12, fontFamily: FONT_BOLD },
+  cornerButtonText: { color: 'rgba(255,255,255,0.7)', fontSize: 12, fontFamily: FONT_DISPLAY_SEMIBOLD },
+  cornerButtonLight: { backgroundColor: ACCENT_BG },
+  cornerButtonTextLight: { color: ACCENT_DARK, fontSize: 12, fontFamily: FONT_DISPLAY_BOLD },
   versionText: {
     position: 'absolute',
     bottom: 4,
     left: 0,
     right: 0,
     textAlign: 'center',
-    color: '#B7C0D6',
+    color: TEXT_MUTED,
     fontSize: 10,
-    fontFamily: FONT_SEMIBOLD
+    fontFamily: FONT_BODY_SEMIBOLD
   },
   // Kept deliberately compact -- this floats over the same keypad screen
   // the next person in line is about to use, so it must never eat into the
@@ -863,17 +899,17 @@ const styles = StyleSheet.create({
     paddingVertical: 16,
     alignItems: 'center'
   },
-  feedbackIn: { backgroundColor: '#2e7d32' },
-  feedbackOut: { backgroundColor: '#455a64' },
+  feedbackIn: { backgroundColor: SAGE },
+  feedbackOut: { backgroundColor: ROSE_TEXT },
   feedbackError: { backgroundColor: '#c0392b' },
-  feedbackType: { color: '#fff', fontSize: 22, fontFamily: FONT_EXTRABOLD, letterSpacing: 2 },
-  feedbackName: { color: '#fff', fontSize: 17, fontFamily: FONT_BOLD, marginTop: 4, textAlign: 'center' },
-  feedbackTime: { color: 'rgba(255,255,255,0.8)', fontSize: 13, fontFamily: FONT_MEDIUM, marginTop: 2 },
+  feedbackType: { color: '#fff', fontSize: 22, fontFamily: FONT_DISPLAY_EXTRABOLD, letterSpacing: 2 },
+  feedbackName: { color: '#fff', fontSize: 17, fontFamily: FONT_DISPLAY_BOLD, marginTop: 4, textAlign: 'center' },
+  feedbackTime: { color: 'rgba(255,255,255,0.8)', fontSize: 13, fontFamily: FONT_BODY_MEDIUM, marginTop: 2 },
   feedbackLate: {
     color: '#fff',
     backgroundColor: 'rgba(0,0,0,0.25)',
     fontSize: 11,
-    fontFamily: FONT_BOLD,
+    fontFamily: FONT_DISPLAY_BOLD,
     marginTop: 6,
     paddingVertical: 3,
     paddingHorizontal: 10,
@@ -884,9 +920,9 @@ const styles = StyleSheet.create({
   calendarHeaderCell: {
     flex: 1,
     textAlign: 'center',
-    color: '#5C6B8A',
+    color: TEXT_MUTED,
     fontSize: 13,
-    fontFamily: FONT_BOLD,
+    fontFamily: FONT_DISPLAY_BOLD,
     paddingBottom: 6
   },
   calendarCell: {
@@ -897,34 +933,38 @@ const styles = StyleSheet.create({
     paddingTop: 7,
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: '#E4EBF9',
-    backgroundColor: '#F4F7FD' // real calendar days default to a muted tint; calendarCellWorked (below) brightens the ones with an actual record
+    borderColor: BORDER,
+    backgroundColor: ACCENT_BG // real calendar days default to a muted tint; calendarCellWorked (below) brightens the ones with an actual record
   },
   calendarCellBlank: { borderColor: 'transparent', backgroundColor: 'transparent' },
-  calendarCellWorked: { backgroundColor: '#ffffff', borderColor: '#D6E1F7' }, // days with an actual record stand out against the muted default
+  calendarCellWorked: { backgroundColor: CARD, borderColor: BORDER }, // days with an actual record stand out against the muted default
   calendarCellHoliday: { backgroundColor: '#FFF3E0', borderColor: '#F5C88F' },
   calendarCellLeave: { backgroundColor: '#FDECEA', borderColor: '#F1B3AB' },
-  calendarDayNum: { color: '#12151C', fontSize: 15, fontFamily: FONT_EXTRABOLD },
-  calendarTime: { color: '#2E63D6', fontSize: 11, fontFamily: FONT_BOLD, marginTop: 2 },
-  calendarNote: { color: '#5C6B8A', fontSize: 10, fontFamily: FONT_BOLD, marginTop: 3, textAlign: 'center', paddingHorizontal: 2 },
+  calendarDayNum: { color: TEXT, fontSize: 15, fontFamily: FONT_BODY_EXTRABOLD },
+  calendarTime: { color: ACCENT_DARK, fontSize: 11, fontFamily: FONT_BODY_BOLD, marginTop: 2 },
+  calendarNote: { color: TEXT_MUTED, fontSize: 10, fontFamily: FONT_BODY_BOLD, marginTop: 3, textAlign: 'center', paddingHorizontal: 2 },
   calendarNoteHoliday: { color: '#B8631A' },
   calendarNoteLeave: { color: '#C0392B' },
   calendarDotsRow: { flexDirection: 'row', gap: 4, marginTop: 3 },
   calendarDot: { width: 7, height: 7, borderRadius: 3.5 },
   calendarDotLate: { backgroundColor: '#c0392b' },
   calendarDotOt: {
-    backgroundColor: '#2e7d32'
+    backgroundColor: BUTTER // matches the OT=amber semantic used everywhere else now, was a plain green before
   },
   calendarLegend: { flexDirection: 'row', gap: 20, marginTop: 12 },
   legendItem: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  legendText: { color: '#5C6B8A', fontSize: 12, fontFamily: FONT_SEMIBOLD },
+  legendText: { color: TEXT_MUTED, fontSize: 12, fontFamily: FONT_BODY_SEMIBOLD },
   doneButton: {
     marginTop: 24,
-    backgroundColor: '#12151C',
-    borderRadius: 16,
+    backgroundColor: TEXT,
+    borderRadius: 999,
     paddingVertical: 14,
     paddingHorizontal: 48,
     alignItems: 'center'
   },
-  buttonText: { color: '#fff', fontSize: 16, fontFamily: FONT_SEMIBOLD }
+  buttonText: { color: '#fff', fontSize: 16, fontFamily: FONT_DISPLAY_SEMIBOLD },
+  // Separate from buttonText: the Confirm button sits on a light pastel
+  // fill (see confirmButton), so it needs dark text for contrast, never
+  // white-on-pastel -- same rule as every button in the web preview.
+  confirmButtonText: { color: ACCENT_TEXT, fontSize: 16, fontFamily: FONT_DISPLAY_EXTRABOLD }
 });
