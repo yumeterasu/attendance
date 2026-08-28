@@ -782,6 +782,7 @@ const TEXT_MUTED = '#9C8171';
 const SCHEDULE_ACCENT_BG = '#F3ECFB'; // Violet Soft
 const SCHEDULE_ACCENT_DARK = '#8C6FBE';
 const SCHEDULE_BORDER = '#E1D3F3';
+const SCHEDULE_CARD = '#FCFAFF'; // "worked" calendar days -- near-white, standing out from the muted violet default cells
 const EXIT_ACCENT_BG = '#FAD9C8'; // Warm Medium
 const EXIT_ACCENT_DARK = '#A83A1C';
 const EXIT_BORDER = '#EEB79B';
@@ -878,7 +879,7 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(255,255,255,0.4)'
   },
   dotFilled: { backgroundColor: '#fff', borderColor: '#fff' },
-  dotDanger: { borderColor: '#EBC4BF' },
+  dotDanger: { borderColor: EXIT_BORDER },
   dotFilledDanger: { backgroundColor: '#C0392B', borderColor: '#C0392B' },
   dotLight: { borderColor: BORDER },
   dotFilledLight: { backgroundColor: ACCENT_DARK, borderColor: ACCENT_DARK },
@@ -988,11 +989,11 @@ const styles = StyleSheet.create({
     paddingTop: 7,
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: BORDER,
-    backgroundColor: ACCENT_BG // real calendar days default to a muted tint; calendarCellWorked (below) brightens the ones with an actual record
+    borderColor: SCHEDULE_BORDER,
+    backgroundColor: SCHEDULE_ACCENT_BG // real calendar days default to a muted tint; calendarCellWorked (below) brightens the ones with an actual record
   },
   calendarCellBlank: { borderColor: 'transparent', backgroundColor: 'transparent' },
-  calendarCellWorked: { backgroundColor: CARD, borderColor: BORDER }, // days with an actual record stand out against the muted default
+  calendarCellWorked: { backgroundColor: SCHEDULE_CARD, borderColor: SCHEDULE_BORDER }, // days with an actual record stand out against the muted default
   calendarCellHoliday: { backgroundColor: '#FFF3E0', borderColor: '#F5C88F' },
   calendarCellLeave: { backgroundColor: '#FDECEA', borderColor: '#F1B3AB' },
   calendarDayNum: { color: TEXT, fontSize: 15, fontFamily: FONT_BODY_EXTRABOLD },
