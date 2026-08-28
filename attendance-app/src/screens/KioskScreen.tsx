@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, StyleSheet, Pressable, ScrollView, ActivityIndicator } from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
 import Constants from 'expo-constants';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
@@ -459,7 +460,13 @@ export default function KioskScreen({ navigation }: Props) {
 
   if (mode === 'scheduleEntry') {
     return (
-      <View style={[styles.container, styles.containerSchedule]}>
+      <LinearGradient
+        colors={['#ffffff', ACCENT_BG]}
+        start={GRADIENT_START}
+        end={GRADIENT_END}
+        locations={GRADIENT_LOCATIONS}
+        style={styles.container}
+      >
         <Text style={[styles.title, styles.titleDark]}>Enter Your Code to View Schedule</Text>
 
         <View style={[styles.badge, styles.badgeSchedule]}>
@@ -495,7 +502,7 @@ export default function KioskScreen({ navigation }: Props) {
         >
           <Text style={styles.cornerButtonTextLight}>Cancel</Text>
         </Pressable>
-      </View>
+      </LinearGradient>
     );
   }
 
@@ -503,7 +510,13 @@ export default function KioskScreen({ navigation }: Props) {
     const weeks = buildCalendarWeeks(scheduleData.year, scheduleData.month, scheduleData.days);
 
     return (
-      <View style={[styles.container, styles.containerSchedule]}>
+      <LinearGradient
+        colors={['#ffffff', ACCENT_BG]}
+        start={GRADIENT_START}
+        end={GRADIENT_END}
+        locations={GRADIENT_LOCATIONS}
+        style={styles.container}
+      >
         <Text style={[styles.title, styles.titleDark]}>{scheduleData.name}</Text>
         <Text style={styles.subtitleDark}>
           {MONTH_NAMES[scheduleData.month - 1]} {scheduleData.year}
@@ -591,7 +604,7 @@ export default function KioskScreen({ navigation }: Props) {
         >
           <Text style={styles.buttonText}>Done</Text>
         </Pressable>
-      </View>
+      </LinearGradient>
     );
   }
 
@@ -620,7 +633,13 @@ export default function KioskScreen({ navigation }: Props) {
   // frame updating in place. lookupName === null shows the keypad;
   // otherwise it shows the name + IN/OUT/OUT OT + Confirm.
   return (
-    <View style={[styles.container, styles.containerLight]}>
+    <LinearGradient
+      colors={['#ffffff', BG]}
+      start={GRADIENT_START}
+      end={GRADIENT_END}
+      locations={GRADIENT_LOCATIONS}
+      style={styles.container}
+    >
       <View style={styles.netStatusDot}>
         <View style={[styles.netDot, isConnected ? styles.netDotOnline : styles.netDotOffline]} />
       </View>
@@ -710,7 +729,7 @@ export default function KioskScreen({ navigation }: Props) {
         </Pressable>
       )}
       {lookupName === null && <Text style={styles.versionText}>v{APP_VERSION}</Text>}
-    </View>
+    </LinearGradient>
   );
 }
 
@@ -747,6 +766,15 @@ const ROSE_TEXT = '#C2604F';
 const ROSE_BORDER = '#F4C6BD';
 const TEXT = '#503A2E';
 const TEXT_MUTED = '#9C8171';
+
+// "Fade (Diagonal)" background from the web preview -- a soft white-to-Sky
+// wash across the screen instead of a flat fill. start/end approximate the
+// CSS `135deg` direction (top-left toward bottom-right); the 0.72 stop
+// matches "0%, 72%" from the preview -- fully the base color by 72%, solid
+// the rest of the way to the corner.
+const GRADIENT_START = { x: 0, y: 0 };
+const GRADIENT_END = { x: 1, y: 1 };
+const GRADIENT_LOCATIONS: [number, number] = [0, 0.72];
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#000', alignItems: 'center', justifyContent: 'center', padding: 24 },
