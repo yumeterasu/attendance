@@ -25,6 +25,26 @@ const CONFIRM_TIMEOUT_MS = 20000; // auto-cancel back to the PIN screen if nobod
 const AUTO_IN_START_HOUR = 5; // morning arrival window -- pre-select IN from this hour...
 const AUTO_IN_END_HOUR = 9; // ...up to (not including) this hour
 const AUTO_OUT_HOUR = 16; // nobody realistically checks IN this late -- pre-select OUT after this hour so the common case is a single tap on Confirm
+
+// The two busiest windows -- most of the workforce clocks in/out within a
+// couple minutes of each other, so during these, skip the network round-trip
+// entirely and go straight to the same local-queue path already used when
+// actually offline: enqueue immediately (see queueOffline), sync happens in
+// the background moments later via useOfflineSync. Local device time; end
+// is exclusive. The decision is locked in once per visit at PIN-lookup time
+// (see forcedOffline below), not re-checked at Confirm -- otherwise someone
+// who starts right as a window closes could see inconsistent behavior
+// between the lookup and the confirm step.
+const PEAK_OFFLINE_WINDOWS: { startMin: number; endMin: number }[] = [
+  { startMin: 7 * 60 + 57, endMin: 8 * 60 + 0 }, // 7:57–8:00
+  { startMin: 17 * 60 + 0, endMin: 17 * 60 + 3 } // 17:00–17:03
+];
+
+function isPeakOfflineWindowNow(): boolean {
+  const now = new Date();
+  const minutesNow = now.getHours() * 60 + now.getMinutes();
+  return PEAK_OFFLINE_WINDOWS.some((w) => minutesNow >= w.startMin && minutesNow < w.endMin);
+}
 const KEYPAD_ROWS = [
   ['1', '2', '3'],
   ['4', '5', '6'],
@@ -180,6 +200,11 @@ export default function KioskScreen({ navigation }: Props) {
   // Confirm has no equivalent: a connectivity failure there gets queued
   // offline automatically instead of asking the employee to retry (see queueOffline).
   const [lookupIssue, setLookupIssue] = useState<string | null>(null);
+  // Locked in once per visit by lookupPin -- true only when we're inside a
+  // peak window AND the PIN resolved from the on-device cache (see
+  // PEAK_OFFLINE_WINDOWS above). Reused as-is by onConfirm so the whole
+  // visit behaves consistently even if the window closes mid-interaction.
+  const [forcedOffline, setForcedOffline] = useState(false);
 
   const [exitPin, setExitPin] = useState('');
   const [exitError, setExitError] = useState(false);
@@ -204,6 +229,7 @@ export default function KioskScreen({ navigation }: Props) {
     setLookupName(null);
     setSelection(null);
     setLookupIssue(null);
+    setForcedOffline(false);
   };
 
   // Prime the audio session once so the first check-in chime isn't delayed.
@@ -249,6 +275,17 @@ export default function KioskScreen({ navigation }: Props) {
       setPin('');
       return;
     }
+
+    // Peak window: try the fast on-device path first so Confirm doesn't have
+    // to wait on the network at all. The local PIN directory refreshes every
+    // 30s while connected (see useOfflineSync), so this is only a miss for
+    // someone added in roughly the last 30 seconds -- fall through to the
+    // normal online lookup below for that rare case instead of blocking them.
+    if (isPeakOfflineWindowNow() && (await tryLocalLookup(value))) {
+      setForcedOffline(true);
+      return;
+    }
+    setForcedOffline(false);
 
     setLookupIssue(null);
     setIsLookingUp(true);
@@ -297,7 +334,7 @@ export default function KioskScreen({ navigation }: Props) {
     const type = selection === 'IN' ? 'IN' : 'OUT';
     const ot = selection === 'OUT_OT';
 
-    if (!isConnected) {
+    if (!isConnected || forcedOffline) {
       setIsProcessing(true);
       await queueOffline(type, ot);
       setIsProcessing(false);

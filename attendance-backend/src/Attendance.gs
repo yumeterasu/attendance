@@ -201,6 +201,7 @@ function handleKioskSyncOffline_(params) {
   var result = recordOfflineSyncedAttendance_(
     found.row.EmployeeID, params.type, timestamp, params.ot === 'true', params.clientId
   );
+  if (result.duplicate) return fail_('duplicate', 'Already recorded around this time, skipped as a duplicate');
   return ok_(result);
 }
 
@@ -671,6 +672,23 @@ function recordOfflineSyncedAttendance_(employeeId, type, timestamp, ot, clientI
   var found = findEmployeeRow_(employeeId);
   if (!found) throw new Error('Employee not found: ' + employeeId);
   var emp = found.row;
+
+  // Same 60s duplicate guard as the online path (recordAttendance_). The
+  // offline queue itself has no such protection (enqueueCheckin never blocks
+  // a second accidental tap), so without this, two queued taps a few seconds
+  // apart -- e.g. someone unsure the first one registered, since offline
+  // mode shows no instant Late/OT confirmation -- both land as real rows
+  // once synced. Compared against the queued tap's own timestamp, not
+  // "now" (which is meaningless here, sync can happen minutes later); the
+  // `timestamp > lastTimestamp` half guards against the queue syncing
+  // slightly out of real-time order, which recordAttendance_ never has to
+  // worry about since it always runs at the real "now".
+  var log = getRecentAttendanceLog_();
+  var lastLog = findLastLogForEmployee_(employeeId, log);
+  var lastTimestamp = lastLog && lastLog.Timestamp ? new Date(lastLog.Timestamp) : null;
+  if (lastTimestamp && timestamp.getTime() > lastTimestamp.getTime() && timestamp.getTime() - lastTimestamp.getTime() < DUPLICATE_GUARD_MS) {
+    return { duplicate: true, name: emp.Name };
+  }
 
   var shiftForRow = '';
   var late = '';
