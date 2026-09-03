@@ -277,13 +277,24 @@ export default function KioskScreen({ navigation }: Props) {
       return;
     }
 
-    // Peak window: try the fast on-device path first so Confirm doesn't have
-    // to wait on the network at all. The local PIN directory refreshes every
-    // 30s while connected (see useOfflineSync), so this is only a miss for
-    // someone added in roughly the last 30 seconds -- fall through to the
-    // normal online lookup below for that rare case instead of blocking them.
-    if (isPeakOfflineWindowNow() && (await tryLocalLookup(value))) {
-      setForcedOffline(true);
+    // Always try the on-device PIN directory first -- instant, no network
+    // wait either way, and it's what tells a wrong/mistyped code apart
+    // instantly instead of leaving the employee waiting on a round trip just
+    // to find out. The local PIN directory refreshes every 30s while
+    // connected (see useOfflineSync), so a miss here is rare (mistyped code,
+    // or someone whose PIN was generated/changed in roughly the last 30
+    // seconds) -- falls through to the live lookup below for that case,
+    // which is what actually tells a mistyped code apart from a merely-stale
+    // cache. During a peak window (see PEAK_OFFLINE_WINDOWS above) a local
+    // hit also locks the whole visit to skip the network entirely at
+    // Confirm; outside peak, a local hit still shows the name immediately
+    // but Confirm goes on to try the network normally, same as before.
+    // isPeak is read BEFORE the await (not after), so a submission right at
+    // a window's edge is judged by the clock at PIN-submission time, not
+    // whatever moment the AsyncStorage read happens to finish at.
+    const isPeak = isPeakOfflineWindowNow();
+    if (await tryLocalLookup(value)) {
+      setForcedOffline(isPeak);
       return;
     }
     setForcedOffline(false);
@@ -296,7 +307,8 @@ export default function KioskScreen({ navigation }: Props) {
     if (res.success) {
       setLookupName(res.name);
     } else if (res.error === 'timeout' || res.error === 'network_error') {
-      // Connection dropped mid-request -- try the local copy before giving up.
+      // Connection dropped mid-request -- try the local copy again in case
+      // the directory refreshed in the meantime (see useOfflineSync).
       if (await tryLocalLookup(value)) return;
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       setLookupIssue(res.message);

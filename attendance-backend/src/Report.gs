@@ -18,15 +18,13 @@ function writeMonthlyReportData_(sheet, startRow, year, month, precomputedLogsBy
   // AttendanceLog fresh here once per fiscal month (12x) would mean the
   // whole sheet gets re-read 12 times over for one "All" refresh.
   var logsByEmployee = precomputedLogsByEmployee !== undefined ? precomputedLogsByEmployee : getMonthLogsByEmployee_(year, month);
-  // Someone on Leave (or a company Holiday) never taps IN, so there's no
-  // AttendanceLog row for that day and the Shift column would otherwise sit
-  // blank -- indistinguishable from a genuinely forgotten clock-in. Read the
-  // Schedule sheet once so those days can show "Leave"/"Holiday" instead
-  // (see FULL_DAY_OFF_SHIFTS); every other blank day (no AttendanceLog row
-  // and not scheduled as a full day off -- including "Half Day Annual
-  // Leave"/"Half Day Sick Leave", which still expect a real clock-in for
-  // the other half) is left blank
-  // as before, on purpose, so a real missed clock-in still stands out.
+  // Whatever's scheduled that day always shows in the Shift column, even
+  // with zero AttendanceLog rows for it -- Leave/Holiday/Half Day labels,
+  // a normal shift name, all of it. Read the Schedule sheet once so every
+  // day can be filled in this way without a per-cell lookup. Time In/Out
+  // stay blank either way when there's no real IN, so a genuinely forgotten
+  // clock-in still visibly stands out (just via the blank times now,
+  // instead of a blank Shift cell too).
   var scheduledShiftsForMonth = getScheduledShiftsForMonth_(year, month);
 
   // Show an employee if they're currently Active, or they have any
@@ -80,9 +78,35 @@ function writeMonthlyReportData_(sheet, startRow, year, month, precomputedLogsBy
       var timeIn = dayEntry && dayEntry.timeIn ? Utilities.formatDate(dayEntry.timeIn, tz, 'HH:mm') : '';
       var timeOut = dayEntry && dayEntry.timeOut ? Utilities.formatDate(dayEntry.timeOut, tz, 'HH:mm') : '';
       var shift = dayEntry ? dayEntry.shift : '';
-      if (!dayEntry) {
-        var scheduledShift = scheduledShiftsForMonth[emp.EmployeeID] && scheduledShiftsForMonth[emp.EmployeeID][d];
-        if (FULL_DAY_OFF_SHIFTS.indexOf(scheduledShift) !== -1) shift = scheduledShift;
+      var scheduledShift = scheduledShiftsForMonth[emp.EmployeeID] && scheduledShiftsForMonth[emp.EmployeeID][d];
+      if (isEventShift_(scheduledShift) && (!dayEntry || !dayEntry.timeIn)) {
+        // An Event day always reads as the clean official hours whenever
+        // there's no real IN to show -- whether nobody clocked at all, or
+        // only a stray OUT landed that day with no matching IN (an
+        // offline-sync edge case, a backdated OUT, etc. -- dayEntry.shift
+        // would otherwise come back blank here too, since Shift only ever
+        // gets recorded on the IN row -- see aggregateMonthLogs_). Same
+        // "same result either way" rule sumMonthTotals_ already enforces for
+        // the Days Worked/Late/OT totals below. A real IN already reads
+        // correctly straight off AttendanceLog's own Late/OT columns (now
+        // forced right by eventShiftOverrideTimestamp_ and
+        // recomputeLateAndOt_), so this only matters when there's no real IN.
+        shift = scheduledShift;
+        var startTime = getShiftStartTime_(scheduledShift);
+        var endTime = getShiftEndTime_(scheduledShift);
+        if (startTime) timeIn = minutesToHHMM_(startTime.hour * 60 + startTime.minute);
+        if (endTime) timeOut = minutesToHHMM_(endTime.hour * 60 + endTime.minute);
+      } else if ((!dayEntry || !dayEntry.timeIn) && scheduledShift) {
+        // Any other scheduled value (a normal shift name, Leave, Holiday,
+        // Half Day Annual/Sick Leave, ...) with no real IN that day -- either
+        // zero AttendanceLog rows at all, or only a stray OUT with no
+        // matching IN (dayEntry.shift comes back blank in that case too,
+        // same reason as the Event branch above) -- still show it in the
+        // Shift column for reference, even though nobody clocked in. Time
+        // In/Out are left blank regardless (unlike the Event case above, a
+        // normal missed clock-in earns no special credit), so it's still
+        // obvious at a glance that nothing was actually recorded that day.
+        shift = scheduledShift;
       }
       var isLateDay = !!(dayEntry && dayEntry.late);
       var late = isLateDay ? 'Late' : '';
@@ -450,6 +474,45 @@ function autoResizeColumnsWithPadding_(sheet, numCols) {
 }
 
 /**
+ * Totals one employee's days worked/late/OT for a month from their real
+ * AttendanceLog day-entries, PLUS any day scheduled as an "Event ..." shift
+ * that has no entry at all -- those still count as a full day worked, never
+ * late, no OT, same as a real Event punch (eventShiftOverrideTimestamp_
+ * already forces that outcome when someone does tap in/out on one). Without
+ * this, an Event day nobody happened to clock would just look unworked in
+ * every report, even though the whole point of an Event shift is that
+ * nobody's expected to clock it the normal way. `scheduledShiftsForEmployee`
+ * is scheduledShiftsForMonth[employeeId] (may be undefined).
+ */
+function sumMonthTotals_(dayLogs, scheduledShiftsForEmployee, daysInMonth) {
+  var daysWorked = 0, lateCount = 0, otMinutesTotal = 0, otQuartersTotal = 0;
+  for (var day = 1; day <= daysInMonth; day++) {
+    // Checked first and unconditionally: an Event day always counts as a
+    // full day worked, never late, no OT, no matter what (or how little) of
+    // it got actually logged -- including the edge case of a stray OUT-only
+    // row with no matching IN (e.g. a backdated OUT, or a forgotten clock-in
+    // that day), which would otherwise silently fail the `entry.timeIn`
+    // check below and drop the day from Days Worked despite being an Event
+    // day. A real Event punch already has entry.timeIn forced to the
+    // shift's own start time (see eventShiftOverrideTimestamp_) and would
+    // count either way, so this never double-counts against the entry-based
+    // path below -- the two are mutually exclusive per day (continue).
+    if (isEventShift_(scheduledShiftsForEmployee && scheduledShiftsForEmployee[day])) {
+      daysWorked++;
+      continue;
+    }
+    var entry = dayLogs[day];
+    if (entry) {
+      if (entry.timeIn) daysWorked++;
+      if (entry.late) lateCount++;
+      otMinutesTotal += entry.otMinutes || 0;
+      otQuartersTotal += entry.otQuarters || 0;
+    }
+  }
+  return { daysWorked: daysWorked, lateCount: lateCount, otMinutesTotal: otMinutesTotal, otQuartersTotal: otQuartersTotal };
+}
+
+/**
  * Writes one condensed totals row per employee (days worked, late count, OT
  * totals, leave-type counts) into `sheet` starting at `startRow`. Same sort
  * order as the Report sheet (Japanese first, then Thai staff with any OT
@@ -458,6 +521,7 @@ function autoResizeColumnsWithPadding_(sheet, numCols) {
 function writeMonthlySummaryData_(sheet, startRow, year, month) {
   var logsByEmployee = getMonthLogsByEmployee_(year, month);
   var scheduledShiftsForMonth = getScheduledShiftsForMonth_(year, month);
+  var daysInMonth = new Date(year, month, 0).getDate();
 
   // Same rule as the Report sheet: Active, or has data this month.
   var employees = getAllEmployees_().filter(function (emp) {
@@ -480,17 +544,9 @@ function writeMonthlySummaryData_(sheet, startRow, year, month) {
 
   employees.forEach(function (emp) {
     var dayLogs = logsByEmployee[emp.EmployeeID] || {};
-    var daysWorked = 0;
-    var lateCount = 0;
-    var otMinutesTotal = 0;
-    var otQuartersTotal = 0;
-    for (var day in dayLogs) {
-      var entry = dayLogs[day];
-      if (entry.timeIn) daysWorked++;
-      if (entry.late) lateCount++;
-      otMinutesTotal += entry.otMinutes || 0;
-      otQuartersTotal += entry.otQuarters || 0;
-    }
+    var totals = sumMonthTotals_(dayLogs, scheduledShiftsForMonth[emp.EmployeeID], daysInMonth);
+    var daysWorked = totals.daysWorked, lateCount = totals.lateCount;
+    var otMinutesTotal = totals.otMinutesTotal, otQuartersTotal = totals.otQuartersTotal;
 
     var otPay = computeOtPay_(emp, otMinutesTotal, otQuartersTotal);
     var leaveCounts = countLeavesForEmployee_(scheduledShiftsForMonth, emp.EmployeeID);
@@ -650,6 +706,40 @@ function aggregateYearSummary_(values, year) {
     totals.otMinutesTotal += entry.otMinutes;
     totals.otQuartersTotal += entry.otQuarters;
   }
+
+  // Second pass: Event-scheduled days still count as a full day worked no
+  // matter what (or how little) got actually logged, same rule as
+  // sumMonthTotals_ applies for a single month -- including a day with NO
+  // AttendanceLog rows at all (never shows up in byDate above), and the edge
+  // case of a stray OUT-only row with no matching IN (byDate has an entry,
+  // but entry.timeIn is null so the first pass above didn't count it).
+  // Reads each fiscal month's Schedule sheet once (12 reads total, same
+  // cost countLeavesForYear_ already pays for the same reason). Skipped
+  // only when byDate already has a REAL IN for that day -- a genuine Event
+  // punch already has entry.timeIn forced to the shift's own start time
+  // (see eventShiftOverrideTimestamp_) and was already counted by the first
+  // pass, so this never double-counts that case.
+  var employees = getAllEmployees_();
+  for (var m = 0; m < 12; m++) {
+    var monthDate = new Date(year, FISCAL_YEAR_START_MONTH + m, 1);
+    var calYear = monthDate.getFullYear();
+    var calMonth = monthDate.getMonth() + 1; // 1-indexed, matches getScheduledShiftsForMonth_'s expectation
+    var daysInThisMonth = new Date(calYear, calMonth, 0).getDate();
+    var shiftsForMonth = getScheduledShiftsForMonth_(calYear, calMonth);
+
+    employees.forEach(function (emp) {
+      var byDay = shiftsForMonth[emp.EmployeeID];
+      if (!byDay) return;
+      for (var d = 1; d <= daysInThisMonth; d++) {
+        if (!isEventShift_(byDay[d])) continue;
+        var dateKey = emp.EmployeeID + '|' + (calMonth - 1) + '|' + d; // 0-indexed month, matching the `key` format above
+        if (byDate[dateKey] && byDate[dateKey].timeIn) continue;
+        if (!result[emp.EmployeeID]) result[emp.EmployeeID] = { daysWorked: 0, lateCount: 0, otMinutesTotal: 0, otQuartersTotal: 0 };
+        result[emp.EmployeeID].daysWorked++;
+      }
+    });
+  }
+
   return result;
 }
 
@@ -931,7 +1021,7 @@ function highlightShiftMismatches_(sheet, year, month) {
   // loop below) and as a candidate "did you mean this instead" match here --
   // a one-off event isn't part of the normal shift rotation a stale entry
   // would actually get corrected to.
-  var timedShifts = SHIFTS.filter(function (s) { return getShiftStartMinutes_(s) !== null && !/^Event\b/.test(s); });
+  var timedShifts = SHIFTS.filter(function (s) { return getShiftStartMinutes_(s) !== null && !isEventShift_(s); });
 
   var values = sheet.getDataRange().getValues();
   var headers = values[0];
@@ -975,7 +1065,7 @@ function highlightShiftMismatches_(sheet, year, month) {
       var dayCol = headers.indexOf(d);
       if (dayCol === -1) continue;
       var scheduledShift = String(values[r][dayCol] || '').trim();
-      if (/^Event\b/.test(scheduledShift)) continue; // one-off/irregular by nature -- not a normal recurring shift to flag as "wrong"
+      if (isEventShift_(scheduledShift)) continue; // one-off/irregular by nature -- not a normal recurring shift to flag as "wrong"
       var scheduledStart = getShiftStartMinutes_(scheduledShift);
       if (scheduledStart === null) continue; // blank, Leave, Holiday, Half Day Annual Leave, or unparseable -- nothing to compare
 
@@ -1143,6 +1233,11 @@ function aggregateMonthLogs_(values, year, month) {
 function getDashboardSummaryData_(year, month) {
   var isAllMonths = String(month).trim().toLowerCase() === 'all';
 
+  // Read once and reuse -- this function needs the full employee list at
+  // several points below (totals, leave counts, the final Active-or-has-data
+  // filter), no need to re-read the Employees sheet each time.
+  var allEmployees = getAllEmployees_();
+
   var totalsByEmployee, leaveCountsByEmployee, sortGroupFor;
   if (isAllMonths) {
     var logSheet = getSheet_('AttendanceLog');
@@ -1152,28 +1247,30 @@ function getDashboardSummaryData_(year, month) {
   } else {
     var logsByEmployee = getMonthLogsByEmployee_(year, month);
     var scheduledShiftsForMonth = getScheduledShiftsForMonth_(year, month);
+    var daysInMonth = new Date(year, month, 0).getDate();
     totalsByEmployee = {};
-    Object.keys(logsByEmployee).forEach(function (employeeId) {
-      var dayLogs = logsByEmployee[employeeId];
-      var daysWorked = 0, lateCount = 0, otMinutesTotal = 0, otQuartersTotal = 0;
-      for (var day in dayLogs) {
-        var entry = dayLogs[day];
-        if (entry.timeIn) daysWorked++;
-        if (entry.late) lateCount++;
-        otMinutesTotal += entry.otMinutes || 0;
-        otQuartersTotal += entry.otQuarters || 0;
+    // Every employee, not just Object.keys(logsByEmployee) -- someone whose
+    // only activity this month was an Event day nobody happened to clock
+    // (see sumMonthTotals_) would otherwise never get a totals entry at all.
+    // Only keep a real (non-all-zero) entry, though -- an inactive employee
+    // with truly nothing this month must stay excluded by the "Active OR
+    // has data" filter just below, same as before.
+    allEmployees.forEach(function (emp) {
+      var dayLogs = logsByEmployee[emp.EmployeeID] || {};
+      var totals = sumMonthTotals_(dayLogs, scheduledShiftsForMonth[emp.EmployeeID], daysInMonth);
+      if (totals.daysWorked || totals.lateCount || totals.otMinutesTotal || totals.otQuartersTotal) {
+        totalsByEmployee[emp.EmployeeID] = totals;
       }
-      totalsByEmployee[employeeId] = { daysWorked: daysWorked, lateCount: lateCount, otMinutesTotal: otMinutesTotal, otQuartersTotal: otQuartersTotal };
     });
     leaveCountsByEmployee = {};
-    getAllEmployees_().forEach(function (emp) {
+    allEmployees.forEach(function (emp) {
       leaveCountsByEmployee[emp.EmployeeID] = countLeavesForEmployee_(scheduledShiftsForMonth, emp.EmployeeID);
     });
     sortGroupFor = function (emp) { return reportSortGroup_(emp, logsByEmployee[emp.EmployeeID]); };
   }
 
   // Same rule as the Summary sheet: Active, or has data this period.
-  var employees = getAllEmployees_().filter(function (emp) {
+  var employees = allEmployees.filter(function (emp) {
     return isTrue_(emp.Active) || !!totalsByEmployee[emp.EmployeeID];
   });
 

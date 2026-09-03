@@ -55,16 +55,21 @@ function getShiftStartTime_(shiftOrEvent) {
  * read as the clean official hours, with no Late flag and no OT, no matter
  * when someone genuinely arrived or left. Returns `actualTimestamp`
  * unchanged for every other shift (or an Event shift with no parseable
- * time), so this is a no-op everywhere else. Same /^Event\b/ prefix rule
- * already used elsewhere to treat Event shifts specially (see
+ * time), so this is a no-op everywhere else. Uses the same isEventShift_
+ * definition as everywhere else that treats Event shifts specially (see
  * highlightShiftMismatches_) -- callers pass whatever's in the Shift
  * column, already known to be that day's scheduled shift text.
  */
 function eventShiftOverrideTimestamp_(scheduledShift, actualTimestamp, type) {
-  if (!scheduledShift || !/^Event\b/.test(scheduledShift)) return actualTimestamp;
+  if (!isEventShift_(scheduledShift)) return actualTimestamp;
   var time = type === 'IN' ? getShiftStartTime_(scheduledShift) : getShiftEndTime_(scheduledShift);
   if (!time) return actualTimestamp;
   return new Date(actualTimestamp.getFullYear(), actualTimestamp.getMonth(), actualTimestamp.getDate(), time.hour, time.minute, 0);
+}
+
+/** Same /^Event\b/ prefix rule as eventShiftOverrideTimestamp_ -- shared so every "is this an Event day" check (reports/summary included, not just the live check-in write path) agrees on the same definition. */
+function isEventShift_(scheduledShift) {
+  return !!scheduledShift && /^Event\b/.test(scheduledShift);
 }
 
 /** Minutes actually worked past shift end, or null if the shift/event string has no end time. */
@@ -281,13 +286,17 @@ function handleKioskMyAttendance_(params) {
  * standardized to just "Japanese"/"Thai") that would otherwise make this
  * silently skip them even after the employee record itself is fixed.
  *
- * Thai/non-Japanese OTQuarters is intentionally left untouched: unlike
- * Japanese OT (always auto-computed regardless of button), Thai OT only
- * counts if the employee pressed "OUT OT" specifically, and AttendanceLog
- * doesn't keep that raw button choice separate from the already-computed
- * OTQuarters value -- a blank Schedule and "pressed plain OUT" both look
- * identical (OTQuarters=0) after the fact, so there's no reliable way to
- * recompute it correctly after the fact.
+ * Thai/non-Japanese OTQuarters IS recomputed too, but only for rows that
+ * already have OT=TRUE -- unlike Japanese OT (always auto-computed
+ * regardless of button), Thai OT only counts if the employee pressed
+ * "OUT OT" specifically, and AttendanceLog doesn't keep that raw button
+ * choice separate from the already-computed OTQuarters value, so a blank
+ * Schedule and "pressed plain OUT" both look identical (OTQuarters=0)
+ * after the fact -- there's no reliable way to tell those apart, so a row
+ * that's currently OT=FALSE is left alone rather than risk inventing OT
+ * nobody asked for. A row that's already OT=TRUE has no such ambiguity
+ * (the employee did press OUT OT), so its OTQuarters count gets refreshed
+ * against the (possibly corrected) shift, same as Japanese.
  *
  * Also can't help a day with no OUT row at all (forgot to check out) -- there's
  * no real clock-out time to compute anything from.
@@ -310,6 +319,7 @@ function recomputeLateAndOt_(year, month, startDay, endDay) {
   var lateCol = headers.indexOf('Late');
   var otCol = headers.indexOf('OT');
   var otMinCol = headers.indexOf('OTMinutes');
+  var otQCol = headers.indexOf('OTQuarters');
 
   // Find exactly which sheet rows belong to this month by scanning ONLY the
   // Timestamp column first (1 column instead of all of them) -- cheap even
@@ -361,7 +371,13 @@ function recomputeLateAndOt_(year, month, startDay, endDay) {
 
     var employeeId = String(sliceValues[i][idCol]);
     var scheduledShift = (shiftsForMonth[employeeId] && shiftsForMonth[employeeId][day]) || '';
-    var late = scheduledShift ? isLate_(scheduledShift, ts) : false;
+    // An Event day is always on time, no matter when the actual tap
+    // happened -- same rule eventShiftOverrideTimestamp_ enforces live at
+    // check-in time. Recompute has to enforce it too, since it works from
+    // the raw stored Timestamp (never touches that column), which stays
+    // whatever the actual tap time was, particularly when a day gets
+    // relabeled "Event ..." in the schedule after the punch already happened.
+    var late = isEventShift_(scheduledShift) ? false : (scheduledShift ? isLate_(scheduledShift, ts) : false);
 
     sliceValues[i][shiftCol] = scheduledShift;
     sliceValues[i][lateCol] = late;
@@ -378,17 +394,45 @@ function recomputeLateAndOt_(year, month, startDay, endDay) {
 
     var employeeId2 = String(sliceValues[j][idCol]);
     var currentEmp = findEmployeeRow_(employeeId2);
-    var currentDept = currentEmp ? currentEmp.row.Department : null;
-    if (currentDept !== 'Japanese') continue; // Thai/other OT can't be safely recomputed, see doc comment above
+    if (!currentEmp) continue;
+    var currentDept = currentEmp.row.Department;
 
+    // OT only ever counts when there's a matching IN row that same day --
+    // same rule the live/offline/backdated write paths already enforce (see
+    // recordAttendance_'s todayShift, matchingIn). No fallback to the
+    // schedule's shift when there's no matching IN: an OUT with nobody ever
+    // clocked IN that day must never earn OT just because a shift happened
+    // to be scheduled -- shiftByEmployeeDay only has this key when the
+    // IN-row loop above actually found and processed an IN row for this
+    // employee/day.
     var key = employeeId2 + '|' + day2;
-    var shift = shiftByEmployeeDay.hasOwnProperty(key) ? shiftByEmployeeDay[key] : (shiftsForMonth[employeeId2] && shiftsForMonth[employeeId2][day2]) || '';
-    var capMinutes = Number(currentEmp.row.OTMaxMinutes) || JP_OT_CAP_MINUTES;
+    var shift = shiftByEmployeeDay.hasOwnProperty(key) ? shiftByEmployeeDay[key] : '';
 
-    var otMinutes = (isOtEligible_(currentEmp.row) && shift) ? computeJapaneseOtMinutes_(shift, ts2, capMinutes) : 0;
-    sliceValues[j][otMinCol] = otMinutes;
-    sliceValues[j][otCol] = otMinutes > 0;
-    outRowsUpdated++;
+    // An Event day never has OT, no matter when the actual OUT tap happened
+    // -- same "always the clean official hours" rule as the Late fix above.
+    var isEventDay = isEventShift_(shift);
+
+    if (currentDept === 'Japanese') {
+      var capMinutes = Number(currentEmp.row.OTMaxMinutes) || JP_OT_CAP_MINUTES;
+      var otMinutes = (isOtEligible_(currentEmp.row) && shift && !isEventDay) ? computeJapaneseOtMinutes_(shift, ts2, capMinutes) : 0;
+      sliceValues[j][otMinCol] = otMinutes;
+      if (otQCol !== -1) sliceValues[j][otQCol] = 0; // clear a stale Thai-regime value left over from before a Department correction
+      sliceValues[j][otCol] = otMinutes > 0;
+      outRowsUpdated++;
+    } else {
+      // Only touch rows already flagged OT=TRUE -- that's the one
+      // unambiguous signal we have that "OUT OT" was actually pressed (see
+      // doc comment above). Leave OT=FALSE rows exactly as they are -- except
+      // an Event day, which always forces OT off below regardless of that
+      // flag, since Event days never have OT.
+      var wasOt = isTrue_(sliceValues[j][otCol]);
+      if (!wasOt && !isEventDay) continue;
+      var otQuarters = (isOtEligible_(currentEmp.row) && shift && !isEventDay) ? computeThaiOtQuarters_(shift, ts2) : 0;
+      sliceValues[j][otQCol] = otQuarters;
+      sliceValues[j][otMinCol] = 0; // clear a stale Japanese-regime value left over from before a Department correction
+      sliceValues[j][otCol] = otQuarters > 0;
+      outRowsUpdated++;
+    }
   }
 
   if (inRowsUpdated > 0 || outRowsUpdated > 0) {
@@ -397,6 +441,9 @@ function recomputeLateAndOt_(year, month, startDay, endDay) {
     sheet.getRange(minRow, lateCol + 1, numRows, 1).setValues(sliceValues.map(function (r) { return [r[lateCol]]; }));
     sheet.getRange(minRow, otCol + 1, numRows, 1).setValues(sliceValues.map(function (r) { return [r[otCol]]; }));
     sheet.getRange(minRow, otMinCol + 1, numRows, 1).setValues(sliceValues.map(function (r) { return [r[otMinCol]]; }));
+    if (otQCol !== -1) {
+      sheet.getRange(minRow, otQCol + 1, numRows, 1).setValues(sliceValues.map(function (r) { return [r[otQCol]]; }));
+    }
   }
 
   return { inRowsUpdated: inRowsUpdated, outRowsUpdated: outRowsUpdated };
@@ -458,7 +505,7 @@ function runRecomputeLateAndOt() {
   var result = recomputeLateAndOt_(year, month, 1, daysInMonth);
   Logger.log(
     'Recomputed ' + activeSheet.getName() + ': updated ' + result.inRowsUpdated + ' IN row(s) (Shift/Late) and ' +
-    result.outRowsUpdated + ' OUT row(s) (Japanese OT).'
+    result.outRowsUpdated + ' OUT row(s) (OT -- Japanese: minutes, Thai/other: quarters, only where OT was already TRUE).'
   );
 }
 

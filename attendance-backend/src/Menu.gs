@@ -19,7 +19,6 @@ function onOpen() {
     .addItem('สร้าง/อัปเดตตารางกะ', 'menuCreateScheduleSheet_')
     .addItem('ไฮไลต์ Shift ที่อาจไม่ตรงกับเวลาจริง', 'menuHighlightShiftMismatches_')
     .addItem('คำนวณ Late/OT ใหม่ (เลือกเดือน)', 'menuRecomputeLateOtOneMonth_')
-    .addItem('คำนวณ Late/OT ใหม่ทุกเดือน', 'menuRecomputeLateOtAllMonths_')
     .addSeparator()
     .addItem('ออกรหัสตั้งค่าแอดมินใหม่', 'menuIssueSetupCode_')
     .addItem('ตั้งรหัส PIN ออกจากโหมด Kiosk', 'menuSetKioskExitPin_')
@@ -473,8 +472,8 @@ function menuCreateScheduleSheet_() {
  * Highlights Schedule cells where the actual check-in looks like it belongs
  * to a different shift than what's entered -- see highlightShiftMismatches_
  * in Report.gs for the matching rule. Run this first to see what needs
- * fixing, fix those cells, then run "Recompute Late/OT for ALL Months" to
- * update the Late/OT numbers to match.
+ * fixing, fix those cells, then run "Recompute Late/OT (เลือกเดือน)" for
+ * that month to update the Late/OT numbers to match.
  */
 function menuHighlightShiftMismatches_() {
   var ui = SpreadsheetApp.getUi();
@@ -513,11 +512,9 @@ function menuHighlightShiftMismatches_() {
 }
 
 /**
- * Recomputes Late/OT for ONE chosen month -- the normal way to run this, day
- * to day. Cheaper than menuRecomputeLateOtAllMonths_ (which redoes every
- * month that exists, all in one execution) and doesn't get slower as more
- * Schedule months pile up over time, since only the one requested month's
- * worth of work happens per click.
+ * Recomputes Late/OT for ONE chosen month -- the only way to run this now (an
+ * "all months at once" variant used to exist too, removed since it went
+ * unused; run this once per month instead).
  */
 function menuRecomputeLateOtOneMonth_() {
   var ui = SpreadsheetApp.getUi();
@@ -566,78 +563,8 @@ function menuRecomputeLateOtOneMonth_() {
   checkMissingAttendance_(missingFindings, activeEmployees, year, month);
 
   var message = 'Recomputed ' + sheetName + ':\n\n' +
-    result.inRowsUpdated + ' IN row(s), ' + result.outRowsUpdated + ' OUT row(s) updated.\n\n' +
-    'Thai/non-Japanese OT was left untouched -- it can only be trusted from the moment it was recorded, not recomputed after the fact.\n\n' +
-    'Report and Summary tabs have been refreshed to match (whichever month each is currently showing).';
-
-  if (missingFindings.length > 0) {
-    var missingLines = missingFindings.map(function (f, i) { return (i + 1) + '. ' + f.message; });
-    message += '\n\n⚠ ' + missingFindings.length + ' day(s) scheduled with no check-in at all:\n\n' + missingLines.join('\n');
-  }
-
-  ui.alert('Done', message, ui.ButtonSet.OK);
-}
-
-/**
- * Runs the recompute across every "Schedule YYYY-MM" tab that exists in the
- * spreadsheet, one after another -- no need to open each tab first. Slower
- * as more months pile up (redoes ALL of them every time, in one execution --
- * see menuRecomputeLateOtOneMonth_ for the normal day-to-day version, scoped
- * to just one month). Asks for confirmation first since it touches every
- * month at once.
- */
-function menuRecomputeLateOtAllMonths_() {
-  var ui = SpreadsheetApp.getUi();
-  var scheduleMatches = SpreadsheetApp.getActiveSpreadsheet()
-    .getSheets()
-    .map(function (s) { return s.getName().match(/^Schedule (\d{4})-(\d{2})$/); })
-    .filter(function (m) { return m; });
-
-  if (scheduleMatches.length === 0) {
-    ui.alert('No "Schedule YYYY-MM" sheets found.');
-    return;
-  }
-
-  var monthNames = scheduleMatches.map(function (m) { return m[0]; }).join(', ');
-  var confirm = ui.alert(
-    'Recompute Late/OT for ALL Months',
-    'This recomputes Late/OT across every Schedule month found (' + scheduleMatches.length + '): ' + monthNames + '.\n\nContinue?',
-    ui.ButtonSet.YES_NO
-  );
-  if (confirm !== ui.Button.YES) return;
-
-  var totalIn = 0;
-  var totalOut = 0;
-  var summaryLines = scheduleMatches.map(function (m) {
-    var year = Number(m[1]);
-    var month = Number(m[2]);
-    var daysInMonth = new Date(year, month, 0).getDate();
-    var result = recomputeLateAndOt_(year, month, 1, daysInMonth);
-    totalIn += result.inRowsUpdated;
-    totalOut += result.outRowsUpdated;
-    return m[0] + ': ' + result.inRowsUpdated + ' IN, ' + result.outRowsUpdated + ' OUT';
-  });
-
-  // Report/Summary only pull fresh data when their Year/Month dropdown is
-  // edited (see onEdit in Report.gs) -- refresh both here too so whatever
-  // month they're currently showing reflects the recompute immediately,
-  // without the admin having to flip the dropdown back and forth.
-  refreshLiveReportSheet_();
-  refreshLiveSummarySheet_();
-
-  // Same "scheduled but no check-in at all" check Health Check runs, across
-  // every month just recomputed -- surfaces forgotten punches / days that
-  // should have been marked Leave right here, instead of waiting for a
-  // separate Health Check run to notice.
-  var activeEmployees = getAllEmployees_().filter(function (emp) { return isTrue_(emp.Active); });
-  var missingFindings = [];
-  scheduleMatches.forEach(function (m) {
-    checkMissingAttendance_(missingFindings, activeEmployees, Number(m[1]), Number(m[2]));
-  });
-
-  var message = 'Recomputed ' + scheduleMatches.length + ' month(s):\n\n' + summaryLines.join('\n') +
-    '\n\nTotal: ' + totalIn + ' IN row(s), ' + totalOut + ' OUT row(s) updated.\n\n' +
-    'Thai/non-Japanese OT was left untouched -- it can only be trusted from the moment it was recorded, not recomputed after the fact.\n\n' +
+    result.inRowsUpdated + ' IN row(s), ' + result.outRowsUpdated + ' OUT row(s) updated ' +
+    '(OT -- Japanese: minutes, Thai/other: quarters, only where OT was already TRUE).\n\n' +
     'Report and Summary tabs have been refreshed to match (whichever month each is currently showing).';
 
   if (missingFindings.length > 0) {
