@@ -14,7 +14,7 @@ var SHIFTS = ['7:00-16:00', '7:30-16:30', '8:00-17:00', '8:30-17:30', 'Event 8:0
 // "Holiday" is the whole company closed.
 var FULL_DAY_OFF_SHIFTS = ['Annual Leave', 'Sick Leave', 'Unpaid Leave', 'Paid Special Leave', 'Holiday'];
 var BRANCHES = ['PP', 'TL']; // Phrom Phong, Thonglor -- Schedule sheet row order: this branch order first, then Japanese before Thai within each branch
-var OT_GRACE_MINUTES = 15; // first 15 min after shift end never counts as OT, for either group
+var OT_GRACE_MINUTES = 15; // first 15 min after shift end never counts as Japanese OT (see computeJapaneseOtMinutes_). Thai OT's free period is governed by OT_QUARTER_MINUTES instead (see computeThaiOtQuarters_) -- the two happen to be the same value today, but changing one no longer changes the other.
 var JP_OT_CAP_MINUTES = 75; // default Japanese OT cap, in minutes/day -- overridden per employee by Employees.OTMaxMinutes when set
 var OT_QUARTER_MINUTES = 15; // Thai OT is counted in whole 15-min blocks, no cap
 
@@ -115,18 +115,22 @@ function isOtEligible_(emp) {
 /**
  * Thai (or any non-Japanese) OT, in 15-minute quarters, no cap. Only counted
  * when the employee explicitly pressed OUT OT -- a plain OUT never earns OT
- * even if they happened to leave late (e.g. just stayed chatting). Rounds UP
- * to the next quarter as soon as they step into it -- e.g. shift ends 17:00,
- * grace to 17:15: clocking out anytime 17:16-17:30 earns 1 quarter (not just
- * exactly at 17:30), 17:31-17:45 earns 2, and so on. Only staying through
- * the grace period itself (up to and including 17:15) earns 0.
+ * even if they happened to leave late (e.g. just stayed chatting). Reaching a
+ * 15-minute mark earns that quarter immediately, no need to go past it --
+ * e.g. shift ends 17:00: clocking out anytime 17:00-17:14 earns 0 (the free
+ * first 15 min), 17:15-17:29 earns 1 (17:15 exactly already counts), 17:30-
+ * 17:44 earns 2, and so on. Note minutesPastShiftEnd_ rounds to the nearest
+ * minute first, so e.g. 17:14:30-17:14:59 already rounds up to 15 and earns
+ * the quarter a few seconds early -- same round-to-nearest-minute rule
+ * computeJapaneseOtMinutes_ uses (via the same minutesPastShiftEnd_ helper).
+ * isLate_ is NOT the same: it uses a hard full-minute-elapsed threshold
+ * (>=60000ms), not round-to-nearest, so Late and OT do not necessarily trip
+ * at the same instant near a boundary.
  */
 function computeThaiOtQuarters_(shiftOrEvent, outTimestamp) {
   var pastEnd = minutesPastShiftEnd_(shiftOrEvent, outTimestamp);
-  if (pastEnd === null) return 0;
-  var pastGrace = pastEnd - OT_GRACE_MINUTES;
-  if (pastGrace <= 0) return 0;
-  return Math.ceil(pastGrace / OT_QUARTER_MINUTES);
+  if (pastEnd === null || pastEnd < OT_QUARTER_MINUTES) return 0;
+  return Math.floor(pastEnd / OT_QUARTER_MINUTES);
 }
 
 /**
