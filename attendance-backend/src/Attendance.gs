@@ -3,7 +3,7 @@
  */
 
 var DUPLICATE_GUARD_MS = 60 * 1000; // reject re-scans within 60s of the last log for the same employee
-var SHIFTS = ['7:00-16:00', '7:30-16:30', '8:00-17:00', '8:30-17:30', 'Event 8:00-17:00', 'Annual Leave', 'Sick Leave', 'Unpaid Leave', 'Paid Special Leave', 'Half Day Annual Leave', 'Half Day Sick Leave', 'Half Day Unpaid Leave', 'Holiday'];
+var SHIFTS = ['7:00-16:00', '7:30-16:30', '8:00-17:00', '8:30-17:30', '7:00-17:00', 'Event 8:00-17:00', 'Annual Leave', 'Sick Leave', 'Unpaid Leave', 'Paid Special Leave', 'Half Day Annual Leave', 'Half Day Sick Leave', 'Half Day Unpaid Leave', 'Holiday'];
 // Shift values that mean "nobody's expected in at all that day" -- as
 // opposed to a blank cell (not scheduled yet) or "Half Day Annual
 // Leave"/"Half Day Sick Leave"/"Half Day Unpaid Leave" (still expected in
@@ -80,17 +80,32 @@ function minutesPastShiftEnd_(shiftOrEvent, outTimestamp) {
   return Math.round((outTimestamp.getTime() - shiftEnd.getTime()) / 60000);
 }
 
+// A few shifts cap Japanese OT on their own -- e.g. "7:00-17:00" is an hour
+// longer than the other Japanese shifts, so real OT past that already-long
+// day is capped low on purpose. Keyed by the exact Shift string; combined
+// with capMinutes by taking whichever is STRICTER (see
+// computeJapaneseOtMinutes_) -- this is a ceiling, not a replacement, so it
+// can only lower an employee's own tighter OTMaxMinutes further, never
+// loosen it back up past what the employee's own cap already restricts.
+// Thai OT never reads this -- it has no cap at all (see
+// computeThaiOtQuarters_).
+var SHIFT_OT_CAP_MINUTES_OVERRIDE = { '7:00-17:00': 15 };
+
 /**
  * Japanese OT, in minutes: always auto-computed from actual clock-out vs the
  * day's shift end, regardless of which kiosk button was pressed (OUT and
  * OUT OT are equivalent for this group). First 15 min free, capped at
  * capMinutes (defaults to JP_OT_CAP_MINUTES if not given/blank -- see
- * Employees.OTMaxMinutes for the per-employee override).
+ * Employees.OTMaxMinutes for the per-employee override) -- or the shift's
+ * own fixed cap (see SHIFT_OT_CAP_MINUTES_OVERRIDE), whichever is stricter.
  */
 function computeJapaneseOtMinutes_(shiftOrEvent, outTimestamp, capMinutes) {
   var pastEnd = minutesPastShiftEnd_(shiftOrEvent, outTimestamp);
   if (pastEnd === null || pastEnd <= OT_GRACE_MINUTES) return 0;
   var cap = capMinutes || JP_OT_CAP_MINUTES;
+  if (SHIFT_OT_CAP_MINUTES_OVERRIDE.hasOwnProperty(shiftOrEvent)) {
+    cap = Math.min(cap, SHIFT_OT_CAP_MINUTES_OVERRIDE[shiftOrEvent]);
+  }
   return Math.min(pastEnd - OT_GRACE_MINUTES, cap);
 }
 
