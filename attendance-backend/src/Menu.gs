@@ -10,6 +10,7 @@ function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('แอดมินระบบเช็คชื่อ')
     .addItem('ตรวจสอบความผิดปกติของระบบ', 'menuHealthCheck_')
+    .addItem('เติมเวลาที่ลืมตอก (ทีละคน)', 'menuFillMissedPunches_')
     .addItem('ใครยังไม่เข้างานวันนี้', 'menuWhoIsAbsentToday_')
     .addItem('แก้ไข IN ที่กดผิดหลัง 16:00 (→ OUT)', 'menuFixLateInAsOut_')
     .addItem('เพิ่มพนักงานใหม่', 'menuAddNewEmployee_')
@@ -704,6 +705,163 @@ function menuAddBackdatedAttendance_() {
   });
 
   ui.alert('Done', employee.Name + '\n' + summaryLines.join('\n'), ui.ButtonSet.OK);
+}
+
+/**
+ * Faster companion to Health Check's missing-IN/missing-checkout findings
+ * (checkMissingAttendance_/checkMissingCheckouts_) for the common weekly
+ * task of catching up a handful of forgotten punches: scans this month
+ * (every day before today, same "today may not be over yet" rule as Health
+ * Check) for every Active employee scheduled a real shift (not blank, not a
+ * full day off -- see FULL_DAY_OFF_SHIFTS -- "Half Day Annual/Sick Leave"
+ * still counts) who's missing an IN, an OUT, or both that day, then walks
+ * through each one as its own prompt so an admin can type the missing
+ * time(s) right there instead of separately looking each case up and
+ * re-opening Add Backdated Check-in/Check-out for every single one. Leave a
+ * time blank to skip just that punch; Cancel stops the whole run (whatever
+ * was already entered stays saved). No OT prompt here on purpose -- this
+ * tool is for completing an ordinary forgotten punch, not for backdating an
+ * OT claim; use Add Backdated Check-in/Check-out for that.
+ */
+function menuFillMissedPunches_() {
+  var ui = SpreadsheetApp.getUi();
+  var title = 'เติมเวลาที่ลืมตอก';
+  var now = new Date();
+  var year = now.getFullYear();
+  var month = now.getMonth() + 1;
+  var lastDayToCheck = now.getDate() - 1;
+
+  if (lastDayToCheck < 1) {
+    ui.alert(title, 'ยังไม่มีวันที่ผ่านไปแล้วในเดือนนี้ให้ตรวจสอบ', ui.ButtonSet.OK);
+    return;
+  }
+
+  var sheetName = 'Schedule ' + year + '-' + (month < 10 ? '0' + month : month);
+  if (!SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName)) {
+    ui.alert(title, 'ไม่พบชีท "' + sheetName + '"', ui.ButtonSet.OK);
+    return;
+  }
+
+  var scheduledShiftsForMonth = getScheduledShiftsForMonth_(year, month);
+  var activeEmployees = getAllEmployees_().filter(function (emp) { return isTrue_(emp.Active); });
+
+  var logSheet = getSheet_('AttendanceLog');
+  var logValues = logSheet.getDataRange().getValues();
+  var logHeaders = logValues[0];
+  var tsCol = logHeaders.indexOf('Timestamp');
+  var idCol = logHeaders.indexOf('EmployeeID');
+  var typeCol = logHeaders.indexOf('Type');
+
+  var hasInByKey = {};
+  var hasOutByKey = {};
+  for (var i = 1; i < logValues.length; i++) {
+    var ts = new Date(logValues[i][tsCol]);
+    if (ts.getFullYear() !== year || ts.getMonth() + 1 !== month) continue;
+    var key = String(logValues[i][idCol]) + '|' + ts.getDate();
+    if (logValues[i][typeCol] === 'IN') hasInByKey[key] = true;
+    else if (logValues[i][typeCol] === 'OUT') hasOutByKey[key] = true;
+  }
+
+  var findings = [];
+  activeEmployees.forEach(function (emp) {
+    var shiftsByDay = scheduledShiftsForMonth[emp.EmployeeID] || {};
+    for (var day = 1; day <= lastDayToCheck; day++) {
+      var shift = shiftsByDay[day];
+      if (!shift || FULL_DAY_OFF_SHIFTS.indexOf(shift) !== -1) continue;
+      var key = emp.EmployeeID + '|' + day;
+      var missingIn = !hasInByKey[key];
+      var missingOut = !hasOutByKey[key];
+      if (!missingIn && !missingOut) continue;
+      findings.push({ employeeId: emp.EmployeeID, name: emp.Name, day: day, shift: shift, missingIn: missingIn, missingOut: missingOut });
+    }
+  });
+
+  if (findings.length === 0) {
+    ui.alert(title, 'ไม่พบวันที่ลืมตอกเลยในเดือนนี้ (จนถึงเมื่อวาน)', ui.ButtonSet.OK);
+    return;
+  }
+
+  var filled = 0, skipped = 0, stopped = false;
+  var dateLabelFor = function (day) { return (day < 10 ? '0' + day : day) + '/' + (month < 10 ? '0' + month : month) + '/' + year; };
+
+  outer:
+  for (var f = 0; f < findings.length; f++) {
+    var finding = findings[f];
+    var dateLabel = dateLabelFor(finding.day);
+    var progress = '(' + (f + 1) + '/' + findings.length + ') ' + finding.name;
+    var dayStart = new Date(year, month - 1, finding.day);
+    var enteredInTimestamp = null; // set below if IN gets typed this same finding, so OUT can be checked against it
+
+    var punchTypes = [];
+    if (finding.missingIn) punchTypes.push('IN');
+    if (finding.missingOut) punchTypes.push('OUT');
+
+    for (var p = 0; p < punchTypes.length; p++) {
+      var type = punchTypes[p];
+      var resp = ui.prompt(
+        progress,
+        dateLabel + ' -- กะ: ' + finding.shift + '\nขาด: ' + type +
+        '\n\nใส่เวลา' + (type === 'IN' ? 'เข้างาน' : 'ออกงาน') + ' (HH:MM) หรือเว้นว่างเพื่อข้าม:',
+        ui.ButtonSet.OK_CANCEL
+      );
+      if (resp.getSelectedButton() !== ui.Button.OK) { stopped = true; break outer; }
+
+      var text = resp.getResponseText().trim();
+      if (!text) { skipped++; continue; }
+
+      var timeParts = text.split(':');
+      var hour = timeParts.length === 2 ? Number(timeParts[0]) : NaN;
+      var minute = timeParts.length === 2 ? Number(timeParts[1]) : NaN;
+      var validRange = !isNaN(hour) && !isNaN(minute) && hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59;
+      if (!validRange) {
+        ui.alert(title, 'รูปแบบเวลาไม่ถูกต้อง ("' + text + '") -- ต้องเป็น HH:MM ชั่วโมง 00-23 นาที 00-59 -- ข้าม ' + type + ' ของ ' + finding.name + ' วันที่ ' + dateLabel, ui.ButtonSet.OK);
+        skipped++;
+        continue;
+      }
+      var timestamp = new Date(year, month - 1, finding.day, hour, minute, 0);
+
+      // Someone else may have added this exact punch since the scan ran at
+      // the top of this function (a long interactive session, another
+      // editor active) -- re-check right before writing, same safety net
+      // menuAddBackdatedAttendance_ already has, instead of silently
+      // appending a duplicate row.
+      var existing = findLogEntryForDate_(finding.employeeId, type, dayStart);
+      if (existing) {
+        ui.alert(title, finding.name + ' มี ' + type + ' บันทึกไว้แล้ว (เวลา ' +
+          Utilities.formatDate(existing.timestamp, Session.getScriptTimeZone(), 'HH:mm') +
+          ') วันที่ ' + dateLabel + ' -- ข้าม', ui.ButtonSet.OK);
+        skipped++;
+        if (type === 'IN') enteredInTimestamp = existing.timestamp;
+        continue;
+      }
+
+      // OUT must land after IN -- whichever IN applies (just typed above in
+      // this same finding, or already on record from before this run).
+      if (type === 'OUT') {
+        var inTimestamp = enteredInTimestamp || (findLogEntryForDate_(finding.employeeId, 'IN', dayStart) || {}).timestamp;
+        if (inTimestamp && timestamp.getTime() <= inTimestamp.getTime()) {
+          ui.alert(title, 'เวลา OUT (' + text + ') ต้องอยู่หลังเวลา IN (' +
+            Utilities.formatDate(inTimestamp, Session.getScriptTimeZone(), 'HH:mm') +
+            ') -- ข้าม OUT ของ ' + finding.name + ' วันที่ ' + dateLabel, ui.ButtonSet.OK);
+          skipped++;
+          continue;
+        }
+      }
+
+      recordBackdatedAttendance_(finding.employeeId, type, timestamp, false, finding.shift);
+      if (type === 'IN') enteredInTimestamp = timestamp;
+      filled++;
+    }
+  }
+
+  refreshLiveReportSheet_();
+  refreshLiveSummarySheet_();
+
+  ui.alert(
+    title + ' เสร็จสิ้น',
+    'เติมไปแล้ว ' + filled + ' รายการ, ข้าม ' + skipped + ' รายการ' + (stopped ? ' (กด Cancel หยุดกลางทาง -- ที่เติมไปแล้วยังถูกบันทึกอยู่)' : ''),
+    ui.ButtonSet.OK
+  );
 }
 
 /**
