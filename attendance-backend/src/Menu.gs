@@ -712,16 +712,21 @@ function menuAddBackdatedAttendance_() {
  * (checkMissingAttendance_/checkMissingCheckouts_) for the common weekly
  * task of catching up a handful of forgotten punches: scans this month
  * (every day before today, same "today may not be over yet" rule as Health
- * Check) for every Active employee scheduled a real shift (not blank, not a
- * full day off -- see FULL_DAY_OFF_SHIFTS -- "Half Day Annual/Sick Leave"
- * still counts) who's missing an IN, an OUT, or both that day, then walks
- * through each one as its own prompt so an admin can type the missing
- * time(s) right there instead of separately looking each case up and
- * re-opening Add Backdated Check-in/Check-out for every single one. Leave a
- * time blank to skip just that punch; Cancel stops the whole run (whatever
- * was already entered stays saved). No OT prompt here on purpose -- this
- * tool is for completing an ordinary forgotten punch, not for backdating an
- * OT claim; use Add Backdated Check-in/Check-out for that.
+ * Check) for every Active employee missing an IN, an OUT, or both on a day
+ * there's a reason to think something should be there -- either a real
+ * scheduled shift (not blank, not a full day off -- see
+ * FULL_DAY_OFF_SHIFTS -- "Half Day Annual/Sick Leave" still counts), OR,
+ * even with no shift set at all, a real punch already on record with its
+ * other half missing (e.g. someone genuinely forgot to tap OUT on a day
+ * nobody got around to scheduling yet -- a blank Schedule cell alone,
+ * with nothing punched either, still isn't enough to flag on its own).
+ * Walks through each finding as its own prompt so an admin can type the
+ * missing time(s) right there instead of separately looking each case up
+ * and re-opening Add Backdated Check-in/Check-out for every single one.
+ * Leave a time blank to skip just that punch; Cancel stops the whole run
+ * (whatever was already entered stays saved). No OT prompt here on
+ * purpose -- this tool is for completing an ordinary forgotten punch, not
+ * for backdating an OT claim; use Add Backdated Check-in/Check-out for that.
  */
 function menuFillMissedPunches_() {
   var ui = SpreadsheetApp.getUi();
@@ -762,16 +767,35 @@ function menuFillMissedPunches_() {
     else if (logValues[i][typeCol] === 'OUT') hasOutByKey[key] = true;
   }
 
+  // Flags a day when something's missing AND there's a reason to think it
+  // shouldn't be: either a real scheduled shift that day (the original
+  // rule), OR -- even with no shift set at all -- a real punch already sitting
+  // there with its other half missing (e.g. a genuine forgotten OUT on a day
+  // nobody got around to scheduling yet). A day with neither a shift nor any
+  // punch at all stays excluded either way -- nothing to go on. An explicit
+  // full day off (Leave/Holiday -- see FULL_DAY_OFF_SHIFTS) is excluded
+  // unconditionally, even with a stray punch sitting there: filling in the
+  // "missing" half would write a real timed OUT row with that Leave/Holiday
+  // label as its Shift, fabricating a full workday on someone's day off --
+  // a stray tap on a day off is a different problem to fix by hand, not
+  // something this tool should offer to complete.
   var findings = [];
   activeEmployees.forEach(function (emp) {
     var shiftsByDay = scheduledShiftsForMonth[emp.EmployeeID] || {};
     for (var day = 1; day <= lastDayToCheck; day++) {
-      var shift = shiftsByDay[day];
-      if (!shift || FULL_DAY_OFF_SHIFTS.indexOf(shift) !== -1) continue;
+      var shift = shiftsByDay[day] || '';
+      if (FULL_DAY_OFF_SHIFTS.indexOf(shift) !== -1) continue;
+
       var key = emp.EmployeeID + '|' + day;
-      var missingIn = !hasInByKey[key];
-      var missingOut = !hasOutByKey[key];
-      if (!missingIn && !missingOut) continue;
+      var hasIn = !!hasInByKey[key];
+      var hasOut = !!hasOutByKey[key];
+      var missingIn = !hasIn;
+      var missingOut = !hasOut;
+      if (!missingIn && !missingOut) continue; // already complete
+
+      var isRealShiftDay = !!shift;
+      if (!isRealShiftDay && !hasIn && !hasOut) continue; // no shift and nothing punched -- no evidence this was a workday
+
       findings.push({ employeeId: emp.EmployeeID, name: emp.Name, day: day, shift: shift, missingIn: missingIn, missingOut: missingOut });
     }
   });
@@ -800,7 +824,7 @@ function menuFillMissedPunches_() {
       var type = punchTypes[p];
       var resp = ui.prompt(
         progress,
-        dateLabel + ' -- กะ: ' + finding.shift + '\nขาด: ' + type +
+        dateLabel + ' -- กะ: ' + (finding.shift || '(ยังไม่ได้ลงกะ)') + '\nขาด: ' + type +
         '\n\nใส่เวลา' + (type === 'IN' ? 'เข้างาน' : 'ออกงาน') + ' (HH:MM) หรือเว้นว่างเพื่อข้าม:',
         ui.ButtonSet.OK_CANCEL
       );

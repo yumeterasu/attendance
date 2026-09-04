@@ -247,7 +247,15 @@ function handleKioskMyAttendance_(params) {
   var tz = Session.getScriptTimeZone();
 
   var daysInMonth = new Date(year, month, 0).getDate();
-  var dayLogs = (getRecentMonthLogsByEmployee_(year, month))[found.row.EmployeeID] || {};
+  // The fast bounded-tail read only reliably covers recent activity -- fine
+  // for the default (current month, checked by almost everyone almost every
+  // day) but a genuinely past month someone deliberately navigates back to
+  // could already have scrolled out of that tail once AttendanceLog grows
+  // enough, silently coming back empty. Full-sheet read only for that
+  // deliberate, occasional case; the everyday current-month path is
+  // untouched, so this can't slow down or time out the routine check-in rush.
+  var isCurrentMonth = year === now.getFullYear() && month === now.getMonth() + 1;
+  var dayLogs = (isCurrentMonth ? getRecentMonthLogsByEmployee_(year, month) : getMonthLogsByEmployee_(year, month))[found.row.EmployeeID] || {};
   // Only consulted for days with no actual punch -- lets a day scheduled as
   // "Leave"/"Holiday"/anything else non-time-based show that label instead
   // of sitting blank. No hardcoded list of which labels count: whatever's

@@ -4,9 +4,10 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   ...config,
   name: 'Attendance',
   slug: 'attendance-app',
-  version: '1.6.14', // bump this with each meaningful feature build so Install page / device settings show something readable, not just a git hash
+  version: '1.6.16', // bump this with each meaningful feature build so Install page / device settings show something readable, not just a git hash
   orientation: 'portrait',
   userInterfaceStyle: 'light',
+  icon: './assets/icon.png',
   splash: {
     resizeMode: 'contain',
     backgroundColor: '#ffffff'
@@ -19,7 +20,11 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   },
   android: {
     permissions: ['CAMERA'],
-    package: 'com.attendance.app'
+    package: 'com.attendance.app',
+    adaptiveIcon: {
+      foregroundImage: './assets/adaptive-icon.png',
+      backgroundColor: '#E4F1FC'
+    }
   },
   plugins: ['expo-font', 'expo-audio', './plugins/withPortraitLock'],
   extra: {

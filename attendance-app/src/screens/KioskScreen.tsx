@@ -218,6 +218,21 @@ export default function KioskScreen({ navigation }: Props) {
   // connection) -- pin stays put so "Try Again" can resubmit it as-is,
   // same pattern as lookupIssue on the main check-in screen.
   const [scheduleIssue, setScheduleIssue] = useState<string | null>(null);
+  // Remembered from the PIN that got scheduleData in the first place, so
+  // paging to an earlier/later month can re-call kioskMyAttendance without
+  // making the employee type their code in again.
+  const [scheduleAuthPin, setScheduleAuthPin] = useState('');
+  const [isChangingScheduleMonth, setIsChangingScheduleMonth] = useState(false);
+  // Mirrors isChangingScheduleMonth but read/written synchronously (state
+  // updates don't land until the next render, so two taps inside the same
+  // event-loop tick -- faster than a render -- would both see the old
+  // isChangingScheduleMonth and both fire) -- this ref is the actual
+  // re-entrancy guard; the state is just for disabling/animating the UI.
+  const isChangingScheduleMonthRef = useRef(false);
+  // Brief inline error for a failed month change -- the calendar already on
+  // screen stays put (unlike scheduleIssue, which blocks the whole PIN
+  // entry step), so this is its own flag rather than reusing that one.
+  const [scheduleMonthNavError, setScheduleMonthNavError] = useState<string | null>(null);
 
   const showFeedback = (next: Feedback) => {
     if (feedbackTimerRef.current) clearTimeout(feedbackTimerRef.current);
@@ -419,6 +434,7 @@ export default function KioskScreen({ navigation }: Props) {
     if (res.success) {
       setSchedulePin('');
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      setScheduleAuthPin(value);
       setScheduleData({ name: res.name, year: res.year, month: res.month, days: res.days });
       setMode('scheduleResult');
     } else if (res.error === 'timeout' || res.error === 'network_error') {
@@ -432,6 +448,50 @@ export default function KioskScreen({ navigation }: Props) {
       setTimeout(() => setScheduleError(false), ERROR_FLASH_DURATION_MS);
     }
   };
+
+  // Pages the calendar already on screen to a different month, reusing the
+  // PIN from the original lookup -- no re-entry, no leaving scheduleResult.
+  // Always one step at a time (prev/next), so there's never a reason to
+  // reach for year/month directly.
+  const goToScheduleMonth = async (year: number, month: number) => {
+    if (isChangingScheduleMonthRef.current) return;
+    if (!isConnected) {
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      setScheduleMonthNavError('No connection. Check your internet and try again.');
+      return;
+    }
+    isChangingScheduleMonthRef.current = true;
+    setScheduleMonthNavError(null);
+    setIsChangingScheduleMonth(true);
+    const res = await kioskMyAttendance(scheduleAuthPin, year, month);
+    isChangingScheduleMonthRef.current = false;
+    setIsChangingScheduleMonth(false);
+
+    if (res.success) {
+      setScheduleData({ name: res.name, year: res.year, month: res.month, days: res.days });
+    } else {
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      setScheduleMonthNavError(res.message);
+    }
+  };
+
+  const goToPreviousScheduleMonth = () => {
+    if (!scheduleData) return;
+    const isJanuary = scheduleData.month === 1;
+    goToScheduleMonth(isJanuary ? scheduleData.year - 1 : scheduleData.year, isJanuary ? 12 : scheduleData.month - 1);
+  };
+
+  const goToNextScheduleMonth = () => {
+    if (!scheduleData) return;
+    const isDecember = scheduleData.month === 12;
+    goToScheduleMonth(isDecember ? scheduleData.year + 1 : scheduleData.year, isDecember ? 1 : scheduleData.month + 1);
+  };
+
+  // Next is disabled once the calendar reaches the current month -- nothing
+  // beyond that has happened yet.
+  const now_ = new Date();
+  const isAtCurrentScheduleMonth =
+    !scheduleData || (scheduleData.year === now_.getFullYear() && scheduleData.month === now_.getMonth() + 1);
 
   const onScheduleKeyPress = (key: string) => {
     if (isLoadingSchedule) return;
@@ -536,9 +596,30 @@ export default function KioskScreen({ navigation }: Props) {
         style={styles.container}
       >
         <Text style={[styles.title, styles.titleDark]}>{scheduleData.name}</Text>
-        <Text style={styles.subtitleDark}>
-          {MONTH_NAMES[scheduleData.month - 1]} {scheduleData.year}
-        </Text>
+        <View style={styles.monthNavRow}>
+          <Pressable
+            style={styles.monthNavButton}
+            disabled={isChangingScheduleMonth}
+            onPress={goToPreviousScheduleMonth}
+          >
+            <Text style={styles.monthNavArrow}>‹</Text>
+          </Pressable>
+          {isChangingScheduleMonth ? (
+            <ActivityIndicator color={SCHEDULE_ACCENT_DARK} style={styles.monthNavLoading} />
+          ) : (
+            <Text style={styles.subtitleDark}>
+              {MONTH_NAMES[scheduleData.month - 1]} {scheduleData.year}
+            </Text>
+          )}
+          <Pressable
+            style={[styles.monthNavButton, isAtCurrentScheduleMonth && styles.monthNavButtonDisabled]}
+            disabled={isChangingScheduleMonth || isAtCurrentScheduleMonth}
+            onPress={goToNextScheduleMonth}
+          >
+            <Text style={[styles.monthNavArrow, isAtCurrentScheduleMonth && styles.monthNavArrowDisabled]}>›</Text>
+          </Pressable>
+        </View>
+        {scheduleMonthNavError && <Text style={styles.errorText}>{scheduleMonthNavError}</Text>}
 
         <View style={styles.calendarWeekRow}>
           {WEEKDAY_HEADERS.map((h, i) => (
@@ -817,6 +898,12 @@ const styles = StyleSheet.create({
   titleDark: { color: TEXT },
   titleDanger: { color: '#3A1210' },
   subtitleDark: { color: TEXT_MUTED, fontSize: 15, fontFamily: FONT_BODY_MEDIUM, marginBottom: 8 },
+  monthNavRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 18, marginBottom: 4 },
+  monthNavButton: { padding: 8, borderRadius: 999 },
+  monthNavButtonDisabled: { opacity: 0.3 },
+  monthNavArrow: { fontSize: 28, fontFamily: FONT_DISPLAY_BOLD, color: SCHEDULE_ACCENT_DARK, lineHeight: 30 },
+  monthNavArrowDisabled: { color: TEXT_MUTED },
+  monthNavLoading: { width: 120 },
   subtitleDanger: { color: '#A9645D', fontSize: 13, fontFamily: FONT_BODY_MEDIUM, marginBottom: 8, textAlign: 'center' },
   badge: {
     width: 64,

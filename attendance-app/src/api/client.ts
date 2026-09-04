@@ -5,6 +5,12 @@ const API_KEY = process.env.EXPO_PUBLIC_API_KEY ?? '';
 const REQUEST_TIMEOUT_MS = 15000; // a hung request with no internet route used to wait forever with no feedback
 const KIOSK_TIMEOUT_MS = 3000; // lookup/checkin have a local fallback, so fail fast and let it take over instead of making the employee wait
 const SCHEDULE_TIMEOUT_MS = 8000; // My Schedule has no local fallback (it needs a live report) -- was 4000ms, too tight: reads up to 8000 rows of AttendanceLog plus a possible Apps Script cold start regularly pushed past it, showing as "sometimes works, sometimes doesn't"
+// A month other than the current one makes the server fall back to a full
+// AttendanceLog read (see handleKioskMyAttendance_) instead of the bounded
+// tail SCHEDULE_TIMEOUT_MS was tuned for -- give paging to a previous/next
+// month more room before giving up, since it's a deliberate, occasional tap,
+// not the routine path.
+const SCHEDULE_MONTH_NAV_TIMEOUT_MS = 20000;
 
 export type ApiResult<T> =
   | ({ success: true } & T)
@@ -60,13 +66,19 @@ export function kioskLookupPin(pin: string) {
   return postAction<{ name: string }>('kioskLookupPin', { pin }, KIOSK_TIMEOUT_MS);
 }
 
-export function kioskMyAttendance(pin: string) {
+// year/month select which month to look back at -- omit both for the
+// current month (the default, and the only case the server's fast bounded
+// read covers; a past month falls back to a slower full-sheet read there,
+// see handleKioskMyAttendance_).
+export function kioskMyAttendance(pin: string, year?: number, month?: number) {
+  const now = new Date();
+  const isCurrentMonth = year === undefined || month === undefined || (year === now.getFullYear() && month === now.getMonth() + 1);
   return postAction<{
     name: string;
     year: number;
     month: number;
     days: { day: number; date: string; timeIn: string; timeOut: string; shift: string; note: string; late: boolean; ot: boolean }[];
-  }>('kioskMyAttendance', { pin }, SCHEDULE_TIMEOUT_MS);
+  }>('kioskMyAttendance', { pin, year, month }, isCurrentMonth ? SCHEDULE_TIMEOUT_MS : SCHEDULE_MONTH_NAV_TIMEOUT_MS);
 }
 
 export function verifyKioskExitPin(pin: string) {
