@@ -173,6 +173,7 @@ function findEmployeeByNameOrId_(query) {
   var data = getCachedEmployees_();
   var nameCol = data.headers.indexOf('Name');
   var needle = String(query).toLowerCase().trim();
+  if (!needle) return null; // otherwise every name.indexOf('') below is 0 -- a blank query would "match" whoever happens to sort first instead of nobody
 
   for (var i = 0; i < data.rows.length; i++) {
     var name = String(data.rows[i][nameCol] || '');

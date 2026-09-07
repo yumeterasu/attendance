@@ -9,8 +9,15 @@
  * Writes the report table (employee blocks, colors, borders) into `sheet`
  * starting at `startRow`, column 1. Shared by the one-off "Report YYYY-MM"
  * generator and the permanent live "Report" sheet (see refreshLiveReportSheet_).
+ *
+ * onlyEmployeeId (optional) restricts the table to just that one employee,
+ * regardless of Active status or whether they have any data this month --
+ * used by menuPrintEmployeeReport_ to print a single person's month on
+ * demand, bypassing the normal "Active, or has data" filter below (a
+ * deliberately-requested reprint should still show a genuinely blank month
+ * for that person, not silently produce nothing).
  */
-function writeMonthlyReportData_(sheet, startRow, year, month, precomputedLogsByEmployee) {
+function writeMonthlyReportData_(sheet, startRow, year, month, precomputedLogsByEmployee, onlyEmployeeId) {
   var tz = Session.getScriptTimeZone();
   var daysInMonth = new Date(year, month, 0).getDate();
   // Omit precomputedLogsByEmployee (undefined) to keep the old single-call
@@ -30,8 +37,10 @@ function writeMonthlyReportData_(sheet, startRow, year, month, precomputedLogsBy
   // Show an employee if they're currently Active, or they have any
   // attendance data this month (e.g. someone who left mid-month still needs
   // to show up for the month they actually worked) -- otherwise a departed
-  // employee would clutter every future month's report forever.
+  // employee would clutter every future month's report forever. Skipped
+  // entirely when onlyEmployeeId is given -- see doc comment above.
   var employees = getAllEmployees_().filter(function (emp) {
+    if (onlyEmployeeId) return String(emp.EmployeeID) === String(onlyEmployeeId);
     return isTrue_(emp.Active) || !!logsByEmployee[emp.EmployeeID];
   });
 

@@ -20,6 +20,7 @@ function onOpen() {
     .addItem('สร้าง/อัปเดตตารางกะ', 'menuCreateScheduleSheet_')
     .addItem('ไฮไลต์ Shift ที่อาจไม่ตรงกับเวลาจริง', 'menuHighlightShiftMismatches_')
     .addItem('คำนวณ Late/OT ใหม่ (เลือกเดือน)', 'menuRecomputeLateOtOneMonth_')
+    .addItem('พิมพ์รายงานพนักงาน (เลือกคน/เดือน/ปี)', 'menuPrintEmployeeReport_')
     .addSeparator()
     .addItem('ออกรหัสตั้งค่าแอดมินใหม่', 'menuIssueSetupCode_')
     .addItem('ตั้งรหัส PIN ออกจากโหมด Kiosk', 'menuSetKioskExitPin_')
@@ -574,6 +575,86 @@ function menuRecomputeLateOtOneMonth_() {
   }
 
   ui.alert('Done', message, ui.ButtonSet.OK);
+}
+
+/** Live "Print Report" sheet name -- one employee's one month, rebuilt fresh (sheet.clear()) every time menuPrintEmployeeReport_ runs, so it never accumulates old printouts. */
+var PRINT_REPORT_SHEET_NAME = 'Print Report';
+
+/**
+ * Prints (or saves as PDF) one employee's report for one month -- picks the
+ * person by name/ID (same lookup as Add Backdated Check-in/Check-out),
+ * then Year and Month, and rebuilds a dedicated "Print Report" sheet with
+ * just that one person's day-by-day block (reusing writeMonthlyReportData_'s
+ * onlyEmployeeId option, so it's the exact same table/colors/borders as the
+ * full Report sheet, just narrowed to one person). Apps Script has no direct
+ * "print" API, so this hands off to Sheets' own File > Print (Ctrl+P) --
+ * which also offers "Save as PDF" -- rather than trying to generate a PDF
+ * here, which would mean guessing at Sheets' undocumented PDF-export URL
+ * parameters instead of using the one print path Sheets already gets right.
+ */
+function menuPrintEmployeeReport_() {
+  var ui = SpreadsheetApp.getUi();
+  var title = 'พิมพ์รายงานพนักงาน';
+
+  var employeeResp = ui.prompt(title, 'ชื่อหรือรหัสพนักงาน:', ui.ButtonSet.OK_CANCEL);
+  if (employeeResp.getSelectedButton() !== ui.Button.OK) return;
+  var employee = findEmployeeByNameOrId_(employeeResp.getResponseText().trim());
+  if (!employee) {
+    ui.alert(title, 'ไม่พบพนักงานที่ตรงกับ "' + employeeResp.getResponseText().trim() + '"', ui.ButtonSet.OK);
+    return;
+  }
+
+  // Same extra confirmation step menuAddBackdatedAttendance_ uses -- a
+  // partial-name match could resolve to the wrong person.
+  var confirmEmployee = ui.alert(title, 'พบ: ' + employee.Name + ' (' + employee.EmployeeID + ') ใช่คนนี้หรือไม่?', ui.ButtonSet.YES_NO);
+  if (confirmEmployee !== ui.Button.YES) return;
+
+  var now = new Date();
+  var yearResp = ui.prompt(title, 'ปี (เช่น ' + now.getFullYear() + '):', ui.ButtonSet.OK_CANCEL);
+  if (yearResp.getSelectedButton() !== ui.Button.OK) return;
+  var year = Number(yearResp.getResponseText().trim());
+
+  var monthResp = ui.prompt(title, 'เดือน (1-12):', ui.ButtonSet.OK_CANCEL);
+  if (monthResp.getSelectedButton() !== ui.Button.OK) return;
+  var month = Number(monthResp.getResponseText().trim());
+
+  if (!year || !month || month < 1 || month > 12) {
+    ui.alert(title, 'กรุณาใส่ปีและเดือน (1-12) ให้ถูกต้อง', ui.ButtonSet.OK);
+    return;
+  }
+
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName(PRINT_REPORT_SHEET_NAME);
+  if (!sheet) {
+    sheet = ss.insertSheet(PRINT_REPORT_SHEET_NAME);
+  } else {
+    // breakApart() first -- clear() alone doesn't undo a merge left over
+    // from a previous printout's header row (same reason
+    // refreshLiveReportSheet_ needs the same call before its own clear).
+    // Skipped on a truly empty sheet (nothing to break apart) since
+    // breakApart() on a range with no merges is a harmless no-op anyway,
+    // but getDataRange() on a blank sheet still returns a valid 1x1 range.
+    sheet.getDataRange().breakApart();
+    sheet.clear();
+  }
+
+  var tz = Session.getScriptTimeZone();
+  var headerLabel = employee.Name + ' (' + employee.EmployeeID + ') -- ' +
+    Utilities.formatDate(new Date(year, month - 1, 1), tz, 'MMMM yyyy');
+  // setWrap so a long name doesn't force column A wide enough to unbalance
+  // the table below it -- writeMonthlyReportData_'s own autoResizeColumns
+  // call measures column A across the whole sheet, header row included, and
+  // an unwrapped long single line would otherwise win that measurement.
+  sheet.getRange(1, 1, 1, 8).merge().setValue(headerLabel).setFontWeight('bold').setFontSize(14).setWrap(true);
+
+  writeMonthlyReportData_(sheet, 3, year, month, undefined, employee.EmployeeID);
+
+  ss.setActiveSheet(sheet);
+  ui.alert(
+    title,
+    'พร้อมแล้ว! เปิดเมนู File > Print (หรือกด Ctrl+P) เพื่อพิมพ์ หรือเลือก "Save as PDF" เพื่อบันทึกเป็นไฟล์',
+    ui.ButtonSet.OK
+  );
 }
 
 /**
