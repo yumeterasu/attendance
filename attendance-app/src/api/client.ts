@@ -66,6 +66,8 @@ export function kioskLookupPin(pin: string) {
   return postAction<{ name: string }>('kioskLookupPin', { pin }, KIOSK_TIMEOUT_MS);
 }
 
+export type ScheduleDay = { day: number; date: string; timeIn: string; timeOut: string; shift: string; note: string; late: boolean; ot: boolean };
+
 // year/month select which month to look back at -- omit both for the
 // current month (the default, and the only case the server's fast bounded
 // read covers; a past month falls back to a slower full-sheet read there,
@@ -77,8 +79,23 @@ export function kioskMyAttendance(pin: string, year?: number, month?: number) {
     name: string;
     year: number;
     month: number;
-    days: { day: number; date: string; timeIn: string; timeOut: string; shift: string; note: string; late: boolean; ot: boolean }[];
+    days: ScheduleDay[];
   }>('kioskMyAttendance', { pin, year, month }, isCurrentMonth ? SCHEDULE_TIMEOUT_MS : SCHEDULE_MONTH_NAV_TIMEOUT_MS);
+}
+
+// Fetches the last year of My Schedule history in one call, for the
+// background sync that runs right after a successful My Schedule PIN entry
+// (see syncScheduleHistory in KioskScreen) -- reads more than either of the
+// other two timeouts above budget for (a full AttendanceLog read plus up to
+// a year of Schedule sheets), but it's a background, best-effort fetch that
+// never blocks anything on screen, so a generous timeout costs nothing.
+const SCHEDULE_BULK_SYNC_TIMEOUT_MS = 45000;
+
+export function kioskMyAttendanceBulk(pin: string) {
+  return postAction<{
+    name: string;
+    months: { year: number; month: number; days: ScheduleDay[] }[];
+  }>('kioskMyAttendanceBulk', { pin }, SCHEDULE_BULK_SYNC_TIMEOUT_MS);
 }
 
 export function verifyKioskExitPin(pin: string) {

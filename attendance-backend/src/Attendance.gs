@@ -230,41 +230,14 @@ function handleKioskSyncOffline_(params) {
 }
 
 /**
- * Lets an employee check their own month's check-in/out times right from the
- * kiosk, by re-entering their same 4-digit KioskPIN -- no admin session
- * needed. Defaults to the current year/month if not given.
+ * Builds the { day, date, timeIn, timeOut, shift, note, late, ot } list for
+ * one employee's one month, shared by handleKioskMyAttendance_ (one month)
+ * and handleKioskMyAttendanceBulk_ (many months in one call). dayLogs and
+ * scheduledShiftsForMonth are already scoped to the one employee (the
+ * EmployeeID-keyed lookup already done by the caller).
  */
-function handleKioskMyAttendance_(params) {
-  if (!checkApiKey_(params.apiKey)) return fail_('unauthorized', 'Invalid API key');
-  if (!params.pin) return fail_('bad_request', 'pin is required');
-
-  var found = findEmployeeByKioskPin_(params.pin);
-  if (!found) return fail_('not_found', 'Code not recognized');
-
-  var now = new Date();
-  var year = Number(params.year) || now.getFullYear();
-  var month = Number(params.month) || (now.getMonth() + 1);
-  var tz = Session.getScriptTimeZone();
-
+function buildMyAttendanceDays_(year, month, dayLogs, scheduledShiftsForMonth, tz) {
   var daysInMonth = new Date(year, month, 0).getDate();
-  // The fast bounded-tail read only reliably covers recent activity -- fine
-  // for the default (current month, checked by almost everyone almost every
-  // day) but a genuinely past month someone deliberately navigates back to
-  // could already have scrolled out of that tail once AttendanceLog grows
-  // enough, silently coming back empty. Full-sheet read only for that
-  // deliberate, occasional case; the everyday current-month path is
-  // untouched, so this can't slow down or time out the routine check-in rush.
-  var isCurrentMonth = year === now.getFullYear() && month === now.getMonth() + 1;
-  var dayLogs = (isCurrentMonth ? getRecentMonthLogsByEmployee_(year, month) : getMonthLogsByEmployee_(year, month))[found.row.EmployeeID] || {};
-  // Only consulted for days with no actual punch -- lets a day scheduled as
-  // "Leave"/"Holiday"/anything else non-time-based show that label instead
-  // of sitting blank. No hardcoded list of which labels count: whatever's
-  // typed into the Schedule sheet for that day is shown verbatim as long as
-  // it doesn't look like a real shift's clock time, so a brand new option
-  // (e.g. "Sick Leave") works here the moment it's added to the Shift
-  // dropdown -- nothing in this function needs to change for it.
-  var scheduledShiftsForMonth = (getScheduledShiftsForMonth_(year, month))[found.row.EmployeeID] || {};
-
   var days = [];
   for (var d = 1; d <= daysInMonth; d++) {
     var entry = dayLogs[d];
@@ -282,6 +255,14 @@ function handleKioskMyAttendance_(params) {
       continue;
     }
 
+    // Only consulted for days with no actual punch -- lets a day scheduled
+    // as "Leave"/"Holiday"/anything else non-time-based show that label
+    // instead of sitting blank. No hardcoded list of which labels count:
+    // whatever's typed into the Schedule sheet for that day is shown
+    // verbatim as long as it doesn't look like a real shift's clock time,
+    // so a brand new option (e.g. "Sick Leave") works here the moment it's
+    // added to the Shift dropdown -- nothing in this function needs to
+    // change for it.
     var scheduled = scheduledShiftsForMonth[d];
     if (scheduled && !/\d{1,2}:\d{2}/.test(scheduled)) {
       days.push({
@@ -296,8 +277,84 @@ function handleKioskMyAttendance_(params) {
       });
     }
   }
+  return days;
+}
 
+/**
+ * Lets an employee check their own month's check-in/out times right from the
+ * kiosk, by re-entering their same 4-digit KioskPIN -- no admin session
+ * needed. Defaults to the current year/month if not given.
+ */
+function handleKioskMyAttendance_(params) {
+  if (!checkApiKey_(params.apiKey)) return fail_('unauthorized', 'Invalid API key');
+  if (!params.pin) return fail_('bad_request', 'pin is required');
+
+  var found = findEmployeeByKioskPin_(params.pin);
+  if (!found) return fail_('not_found', 'Code not recognized');
+
+  var now = new Date();
+  var year = Number(params.year) || now.getFullYear();
+  var month = Number(params.month) || (now.getMonth() + 1);
+  var tz = Session.getScriptTimeZone();
+
+  // The fast bounded-tail read only reliably covers recent activity -- fine
+  // for the default (current month, checked by almost everyone almost every
+  // day) but a genuinely past month someone deliberately navigates back to
+  // could already have scrolled out of that tail once AttendanceLog grows
+  // enough, silently coming back empty. Full-sheet read only for that
+  // deliberate, occasional case; the everyday current-month path is
+  // untouched, so this can't slow down or time out the routine check-in rush.
+  var isCurrentMonth = year === now.getFullYear() && month === now.getMonth() + 1;
+  var dayLogs = (isCurrentMonth ? getRecentMonthLogsByEmployee_(year, month) : getMonthLogsByEmployee_(year, month))[found.row.EmployeeID] || {};
+  var scheduledShiftsForMonth = (getScheduledShiftsForMonth_(year, month))[found.row.EmployeeID] || {};
+
+  var days = buildMyAttendanceDays_(year, month, dayLogs, scheduledShiftsForMonth, tz);
   return ok_({ name: found.row.Name, year: year, month: month, days: days });
+}
+
+var MY_ATTENDANCE_BULK_MONTHS = 12; // how many months back (including the current one) the app silently pre-syncs when My Schedule opens
+
+/**
+ * Same data as handleKioskMyAttendance_, but for the last
+ * MY_ATTENDANCE_BULK_MONTHS months in one call instead of one month per
+ * call -- the app fires this once in the background right after a
+ * successful My Schedule PIN entry, then caches every month it gets back
+ * on-device, so paging Prev/Next through recent history is instant instead
+ * of paying a live round trip (and, for any month but the current one, a
+ * full-sheet read -- see handleKioskMyAttendance_) on every single tap.
+ * Reads AttendanceLog exactly once (aggregateMonthLogs_ takes the already-
+ * read values and just re-filters them per month) no matter how many months
+ * this covers, unlike calling handleKioskMyAttendance_ N times over -- that
+ * repeated full-sheet read is the one this function was written to avoid,
+ * since AttendanceLog is by far the biggest sheet here. getScheduledShiftsForMonth_
+ * still reads its own "Schedule YYYY-MM" sheet once per month either way
+ * (each is its own small sheet, so N reads of those cost little next to the
+ * AttendanceLog savings above).
+ */
+function handleKioskMyAttendanceBulk_(params) {
+  if (!checkApiKey_(params.apiKey)) return fail_('unauthorized', 'Invalid API key');
+  if (!params.pin) return fail_('bad_request', 'pin is required');
+
+  var found = findEmployeeByKioskPin_(params.pin);
+  if (!found) return fail_('not_found', 'Code not recognized');
+
+  var tz = Session.getScriptTimeZone();
+  var now = new Date();
+  var employeeId = found.row.EmployeeID;
+  var logValues = getSheet_('AttendanceLog').getDataRange().getValues();
+
+  var months = [];
+  for (var i = 0; i < MY_ATTENDANCE_BULK_MONTHS; i++) {
+    var monthDate = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    var year = monthDate.getFullYear();
+    var month = monthDate.getMonth() + 1;
+
+    var dayLogs = (aggregateMonthLogs_(logValues, year, month))[employeeId] || {};
+    var scheduledShiftsForMonth = (getScheduledShiftsForMonth_(year, month))[employeeId] || {};
+    months.push({ year: year, month: month, days: buildMyAttendanceDays_(year, month, dayLogs, scheduledShiftsForMonth, tz) });
+  }
+
+  return ok_({ name: found.row.Name, months: months });
 }
 
 /**

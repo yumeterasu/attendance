@@ -5,12 +5,13 @@ import * as Haptics from 'expo-haptics';
 import Constants from 'expo-constants';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../navigation/types';
-import { kioskCheckin, kioskLookupPin, kioskMyAttendance, verifyKioskExitPin } from '../api/client';
+import { kioskCheckin, kioskLookupPin, kioskMyAttendance, kioskMyAttendanceBulk, verifyKioskExitPin, ScheduleDay } from '../api/client';
 import { useNetworkStatus } from '../hooks/useNetworkStatus';
 import { useOfflineSync } from '../hooks/useOfflineSync';
 import { useSession } from '../context/SessionContext';
 import { lookupPinLocally } from '../utils/employeeDirectory';
 import { enqueueCheckin } from '../utils/offlineQueue';
+import { cacheScheduleMonth, getCachedScheduleMonth, CachedMonth } from '../utils/scheduleCache';
 import { configureCheckinAudio, playCheckinSound, playCheckoutSound } from '../utils/sound';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Kiosk'>;
@@ -58,12 +59,11 @@ const MONTH_NAMES = [
 ];
 const WEEKDAY_HEADERS = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
 
-// `note` is set only for a day with no actual punch that was scheduled as
-// something other than a real clock-time shift (Leave, Holiday, and any
-// future addition like Sick Leave -- the server decides this generically,
-// nothing here needs updating when a new one is added). Shown instead of
-// the (blank) time-in/time-out for that day.
-type ScheduleDay = { day: number; date: string; timeIn: string; timeOut: string; shift: string; note: string; late: boolean; ot: boolean };
+// ScheduleDay's `note` is set only for a day with no actual punch that was
+// scheduled as something other than a real clock-time shift (Leave,
+// Holiday, and any future addition like Sick Leave -- the server decides
+// this generically, nothing here needs updating when a new one is added).
+// Shown instead of the (blank) time-in/time-out for that day.
 type CalendarCell = { day: number; entry?: ScheduleDay } | null;
 
 // Lays the month out as a real calendar grid (leading/trailing blanks so day 1
@@ -88,12 +88,10 @@ type Feedback =
   | { kind: 'success'; type: 'IN' | 'OUT'; name: string; timestamp: string; late?: boolean; ot?: boolean; queued?: boolean }
   | { kind: 'error'; message: string };
 
-type ScheduleData = {
-  name: string;
-  year: number;
-  month: number;
-  days: ScheduleDay[];
-};
+// Same shape scheduleCache.ts's CachedMonth uses -- kept as one type so a
+// value read from the cache and one from a live fetch are interchangeable
+// wherever scheduleData gets set (see submitSchedulePin/goToScheduleMonth).
+type ScheduleData = CachedMonth;
 
 type Mode = 'checkin' | 'exit' | 'scheduleEntry' | 'scheduleResult';
 // 'OUT_OT' is a regular OUT with the overtime flag set -- a third button so the
@@ -437,6 +435,12 @@ export default function KioskScreen({ navigation }: Props) {
       setScheduleAuthPin(value);
       setScheduleData({ name: res.name, year: res.year, month: res.month, days: res.days });
       setMode('scheduleResult');
+      // Fire-and-forget: pulls up to a year of history in the background so
+      // paging Prev/Next lands on an instant local cache hit for most
+      // months instead of a live round trip every single tap (see
+      // goToScheduleMonth). Never awaited -- the screen above is already
+      // showing the current month and shouldn't wait on this.
+      syncScheduleHistory(value);
     } else if (res.error === 'timeout' || res.error === 'network_error') {
       // Connection dropped mid-request -- offer a retry instead of just flashing an error.
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
@@ -449,19 +453,66 @@ export default function KioskScreen({ navigation }: Props) {
     }
   };
 
+  // Pulls up to a year of history in one background call right after PIN
+  // entry (see submitSchedulePin) and caches every month it gets back, so
+  // goToScheduleMonth below can serve most Prev/Next taps from disk instead
+  // of a live request. Never shows an error on screen if this fails (no
+  // connection, timeout, whatever) -- it's a nice-to-have background sync,
+  // not something the employee is waiting on; a tap that lands on a month
+  // this didn't reach just falls back to fetching that one month live.
+  // Skips whichever returned month is still the CURRENT one (matching the
+  // never-cache-current rule goToScheduleMonth reads by) -- caching it here
+  // would freeze in whatever partial days it has as of right now, and once
+  // the calendar rolls into next month that snapshot looks like a normal
+  // past month and would otherwise get trusted forever with no re-sync.
+  const syncScheduleHistory = async (pin: string) => {
+    const res = await kioskMyAttendanceBulk(pin);
+    if (!res.success) return;
+    const now = new Date();
+    const writes = res.months
+      .filter((m) => !(m.year === now.getFullYear() && m.month === now.getMonth() + 1))
+      .map((m) => cacheScheduleMonth(pin, { name: res.name, year: m.year, month: m.month, days: m.days }));
+    await Promise.all(writes);
+  };
+
   // Pages the calendar already on screen to a different month, reusing the
   // PIN from the original lookup -- no re-entry, no leaving scheduleResult.
   // Always one step at a time (prev/next), so there's never a reason to
   // reach for year/month directly.
   const goToScheduleMonth = async (year: number, month: number) => {
     if (isChangingScheduleMonthRef.current) return;
+    // Set synchronously, before any await below -- otherwise a fast
+    // double-tap could both read this as still false (neither call has
+    // reached the line that flips it yet) and both fall through, e.g. both
+    // missing the cache and firing duplicate live requests for the same month.
+    isChangingScheduleMonthRef.current = true;
+    setScheduleMonthNavError(null);
+
+    // The current month changes all day (people are still clocking in/out),
+    // so it's never served from cache -- only a genuinely past month, which
+    // syncScheduleHistory may have already fetched.
+    const now = new Date();
+    const isCurrentMonth = year === now.getFullYear() && month === now.getMonth() + 1;
+    if (!isCurrentMonth) {
+      const cached = await getCachedScheduleMonth(scheduleAuthPin, year, month);
+      // A KioskPIN can end up reassigned to a different employee over time;
+      // the name on the cached entry is compared against the name already
+      // showing on screen (itself always from a fresh, never-cached fetch)
+      // so a stale cache left over from whoever held this PIN before never
+      // gets shown as if it were the current employee's own history.
+      if (cached && cached.name === scheduleData?.name) {
+        isChangingScheduleMonthRef.current = false;
+        setScheduleData(cached);
+        return;
+      }
+    }
+
     if (!isConnected) {
+      isChangingScheduleMonthRef.current = false;
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       setScheduleMonthNavError('No connection. Check your internet and try again.');
       return;
     }
-    isChangingScheduleMonthRef.current = true;
-    setScheduleMonthNavError(null);
     setIsChangingScheduleMonth(true);
     const res = await kioskMyAttendance(scheduleAuthPin, year, month);
     isChangingScheduleMonthRef.current = false;
