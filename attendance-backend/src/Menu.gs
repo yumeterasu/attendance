@@ -693,14 +693,11 @@ function generateEmployeeReportPdf_(employee, year, month) {
       Utilities.formatDate(new Date(year, month - 1, 1), tz, 'yyyy-MM') + '.pdf';
     var blob = response.getBlob().setName(fileName);
 
+    // Always a brand new file -- reprinting the same employee/month (e.g.
+    // after fixing a backdated punch) keeps the earlier PDF around too,
+    // rather than trashing it, so there's a paper trail of what a report
+    // looked like at each point instead of only ever the latest version.
     var folder = getOrCreateDriveFolder_('Attendance Reports');
-    // Replace any earlier PDF for this exact employee+month instead of
-    // piling up duplicates every time this is reprinted (e.g. after fixing
-    // a backdated punch) -- same "one current artifact" guarantee the old
-    // sheet.clear()-based version had.
-    var existing = folder.getFilesByName(fileName);
-    while (existing.hasNext()) existing.next().setTrashed(true);
-
     var file = folder.createFile(blob);
     file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
     return file;
