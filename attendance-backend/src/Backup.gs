@@ -15,10 +15,10 @@ function backupSpreadsheetToDrive_() {
 }
 
 function getOrCreateBackupFolder_() {
-  var name = 'Attendance Backups';
-  var folders = DriveApp.getFoldersByName(name);
-  if (folders.hasNext()) return folders.next();
-  return DriveApp.createFolder(name);
+  // Shared get-or-create-by-name helper -- see Menu.gs's getOrCreateDriveFolder_
+  // (originally written here first, generalized when generateEmployeeReportPdf_
+  // needed the same pattern for its own "Attendance Reports" folder).
+  return getOrCreateDriveFolder_('Attendance Backups');
 }
 
 /**

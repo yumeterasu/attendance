@@ -577,20 +577,16 @@ function menuRecomputeLateOtOneMonth_() {
   ui.alert('Done', message, ui.ButtonSet.OK);
 }
 
-/** Live "Print Report" sheet name -- one employee's one month, rebuilt fresh (sheet.clear()) every time menuPrintEmployeeReport_ runs, so it never accumulates old printouts. */
-var PRINT_REPORT_SHEET_NAME = 'Print Report';
-
 /**
- * Prints (or saves as PDF) one employee's report for one month -- picks the
+ * Generates one employee's report for one month as a PDF -- picks the
  * person by name/ID (same lookup as Add Backdated Check-in/Check-out),
- * then Year and Month, and rebuilds a dedicated "Print Report" sheet with
- * just that one person's day-by-day block (reusing writeMonthlyReportData_'s
- * onlyEmployeeId option, so it's the exact same table/colors/borders as the
- * full Report sheet, just narrowed to one person). Apps Script has no direct
- * "print" API, so this hands off to Sheets' own File > Print (Ctrl+P) --
- * which also offers "Save as PDF" -- rather than trying to generate a PDF
- * here, which would mean guessing at Sheets' undocumented PDF-export URL
- * parameters instead of using the one print path Sheets already gets right.
+ * then Year and Month, builds the report on a throwaway sheet (same table/
+ * colors/borders as the full Report sheet, via writeMonthlyReportData_'s
+ * onlyEmployeeId option), exports that sheet to PDF, saves it into an
+ * "Attendance Reports" Drive folder, then deletes the throwaway sheet --
+ * see generateEmployeeReportPdf_ below for the export/cleanup details.
+ * Nothing new is left behind in the spreadsheet itself, on purpose: no tab
+ * to remember to delete afterward (and risk deleting the wrong one).
  */
 function menuPrintEmployeeReport_() {
   var ui = SpreadsheetApp.getUi();
@@ -623,38 +619,104 @@ function menuPrintEmployeeReport_() {
     return;
   }
 
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var sheet = ss.getSheetByName(PRINT_REPORT_SHEET_NAME);
-  if (!sheet) {
-    sheet = ss.insertSheet(PRINT_REPORT_SHEET_NAME);
-  } else {
-    // breakApart() first -- clear() alone doesn't undo a merge left over
-    // from a previous printout's header row (same reason
-    // refreshLiveReportSheet_ needs the same call before its own clear).
-    // Skipped on a truly empty sheet (nothing to break apart) since
-    // breakApart() on a range with no merges is a harmless no-op anyway,
-    // but getDataRange() on a blank sheet still returns a valid 1x1 range.
-    sheet.getDataRange().breakApart();
-    sheet.clear();
+  var pdfFile;
+  try {
+    pdfFile = generateEmployeeReportPdf_(employee, year, month);
+  } catch (err) {
+    ui.alert(title, 'สร้าง PDF ไม่สำเร็จ: ' + err.message, ui.ButtonSet.OK);
+    return;
   }
 
-  var tz = Session.getScriptTimeZone();
-  var headerLabel = employee.Name + ' (' + employee.EmployeeID + ') -- ' +
-    Utilities.formatDate(new Date(year, month - 1, 1), tz, 'MMMM yyyy');
-  // setWrap so a long name doesn't force column A wide enough to unbalance
-  // the table below it -- writeMonthlyReportData_'s own autoResizeColumns
-  // call measures column A across the whole sheet, header row included, and
-  // an unwrapped long single line would otherwise win that measurement.
-  sheet.getRange(1, 1, 1, 8).merge().setValue(headerLabel).setFontWeight('bold').setFontSize(14).setWrap(true);
+  var html = HtmlService.createHtmlOutput(
+    '<div style="font-family:Arial,sans-serif;padding:6px;">' +
+    '<p>PDF พร้อมแล้ว!</p>' +
+    '<p><a href="' + pdfFile.getUrl() + '" target="_blank" style="font-size:16px;">📄 เปิด / ดาวน์โหลด PDF</a></p>' +
+    '<p style="color:#666;font-size:12px;">ลิงก์นี้เปิดได้จากใครก็ตามที่มีลิงก์ ส่งต่อให้พนักงานหรือคนอื่นได้เลย</p>' +
+    '</div>'
+  ).setWidth(340).setHeight(160);
+  ui.showModalDialog(html, title);
+}
 
-  writeMonthlyReportData_(sheet, 3, year, month, undefined, employee.EmployeeID);
+/**
+ * Builds one employee's report for one month on a throwaway sheet (always
+ * deleted before this returns, success or failure -- see the finally
+ * block), exports that sheet as PDF via Sheets' own export endpoint
+ * (UrlFetchApp + the script's own OAuth token -- Apps Script has no direct
+ * "export to PDF" API, this is the same endpoint the Sheets UI's own
+ * File > Download > PDF uses), and saves the PDF into an "Attendance
+ * Reports" Drive folder (see getOrCreateDriveFolder_). Returns the Drive
+ * File, shared as "anyone with the link can view" -- a fresh Drive file is
+ * owner-only by default, which the admin running this from the shared
+ * spreadsheet would not expect (the report used to live as a sheet inside
+ * that already-shared spreadsheet); this keeps the resulting link usable
+ * for whoever it gets forwarded to, same as the QR-code APK links this
+ * project already shares the same way.
+ */
+function generateEmployeeReportPdf_(employee, year, month) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var tempName = '_PrintReportTemp_' + new Date().getTime();
+  var sheet = ss.insertSheet(tempName);
 
-  ss.setActiveSheet(sheet);
-  ui.alert(
-    title,
-    'พร้อมแล้ว! เปิดเมนู File > Print (หรือกด Ctrl+P) เพื่อพิมพ์ หรือเลือก "Save as PDF" เพื่อบันทึกเป็นไฟล์',
-    ui.ButtonSet.OK
-  );
+  try {
+    var tz = Session.getScriptTimeZone();
+    var headerLabel = employee.Name + ' (' + employee.EmployeeID + ') -- ' +
+      Utilities.formatDate(new Date(year, month - 1, 1), tz, 'MMMM yyyy');
+    // setWrap so a long name doesn't force column A wide enough to unbalance
+    // the table below it -- writeMonthlyReportData_'s own autoResizeColumns
+    // call measures column A across the whole sheet, header row included,
+    // and an unwrapped long single line would otherwise win that measurement.
+    sheet.getRange(1, 1, 1, 8).merge().setValue(headerLabel).setFontWeight('bold').setFontSize(14).setWrap(true);
+
+    writeMonthlyReportData_(sheet, 3, year, month, undefined, employee.EmployeeID);
+    SpreadsheetApp.flush(); // commit the sheet's real content/sizing before exporting it
+
+    var exportUrl = 'https://docs.google.com/spreadsheets/d/' + ss.getId() + '/export' +
+      '?format=pdf&gid=' + sheet.getSheetId() +
+      '&size=A4&portrait=true&fitw=true' +
+      '&top_margin=0.4&bottom_margin=0.4&left_margin=0.4&right_margin=0.4' +
+      '&sheetnames=false&printtitle=false&pagenumbers=false&gridlines=false&fzr=false';
+    var response = UrlFetchApp.fetch(exportUrl, {
+      headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
+      muteHttpExceptions: true
+    });
+    // The export endpoint isn't a documented API -- an insufficient token or
+    // a Google-side hiccup can come back as a 200 with an HTML error/sign-in
+    // page instead of a real PDF. Check both the status and the content type
+    // before trusting the blob, instead of silently saving garbage as a
+    // ".pdf" and telling the admin it's ready.
+    var contentType = response.getHeaders()['Content-Type'] || '';
+    if (response.getResponseCode() !== 200 || contentType.indexOf('pdf') === -1) {
+      throw new Error('Export endpoint returned ' + response.getResponseCode() + ' (' + contentType + ') instead of a PDF -- try again in a moment.');
+    }
+
+    var fileName = 'Report - ' + employee.Name + ' - ' +
+      Utilities.formatDate(new Date(year, month - 1, 1), tz, 'yyyy-MM') + '.pdf';
+    var blob = response.getBlob().setName(fileName);
+
+    var folder = getOrCreateDriveFolder_('Attendance Reports');
+    // Replace any earlier PDF for this exact employee+month instead of
+    // piling up duplicates every time this is reprinted (e.g. after fixing
+    // a backdated punch) -- same "one current artifact" guarantee the old
+    // sheet.clear()-based version had.
+    var existing = folder.getFilesByName(fileName);
+    while (existing.hasNext()) existing.next().setTrashed(true);
+
+    var file = folder.createFile(blob);
+    file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+    return file;
+  } finally {
+    // Runs even if the export above throws -- the throwaway sheet never
+    // sticks around either way, so there's never a stray tab for anyone to
+    // have to notice and clean up by hand.
+    ss.deleteSheet(sheet);
+  }
+}
+
+/** Shared by generateEmployeeReportPdf_ and Backup.gs's getOrCreateBackupFolder_ -- same get-or-create-by-name pattern, one Drive folder per purpose. */
+function getOrCreateDriveFolder_(name) {
+  var folders = DriveApp.getFoldersByName(name);
+  if (folders.hasNext()) return folders.next();
+  return DriveApp.createFolder(name);
 }
 
 /**
