@@ -318,7 +318,10 @@
     box-shadow: 0 1px 2px rgba(20,20,20,0.06);
   }
 
-  #dailyView { display: none; }
+  /* Daily opens by default (see showDashboard()) -- hide Monthly until its
+     tab is clicked, matching what the JS sets on boot, so there's no flash
+     of the wrong view while the page is still parsing. */
+  #monthlyView { display: none; }
 
   .controls .field input[type="date"] {
     cursor: pointer;
@@ -420,6 +423,19 @@
     border-bottom: 1px solid var(--border);
     white-space: nowrap;
   }
+  thead th.sortable {
+    cursor: pointer;
+    user-select: none;
+  }
+  thead th.sortable:hover { color: var(--accent-dark); }
+  thead th.sortable::after {
+    content: '';
+    display: inline-block;
+    width: 12px;
+  }
+  thead th.sortable.sort-asc::after { content: '▲'; font-size: 9px; margin-left: 3px; }
+  thead th.sortable.sort-desc::after { content: '▼'; font-size: 9px; margin-left: 3px; }
+  thead th.sortable.sort-asc, thead th.sortable.sort-desc { color: var(--accent-dark); }
 
   tbody td {
     padding: 11px 14px;
@@ -535,8 +551,8 @@
 
   <div id="dashboardView">
     <div class="view-tabs">
-      <button type="button" class="view-tab active" id="viewTabMonthly">Monthly</button>
-      <button type="button" class="view-tab" id="viewTabDaily">Daily</button>
+      <button type="button" class="view-tab" id="viewTabMonthly">Monthly</button>
+      <button type="button" class="view-tab active" id="viewTabDaily">Daily</button>
     </div>
 
     <div id="monthlyView">
@@ -577,15 +593,15 @@
         <table id="summaryTable" style="display:none;">
           <thead>
             <tr>
-              <th>Employee</th>
-              <th>Branch</th>
-              <th>Department</th>
-              <th>Days Worked</th>
-              <th>Late</th>
-              <th>OT (min)</th>
-              <th>OT (qtr)</th>
-              <th>OT Pay</th>
-              <th>Leave</th>
+              <th class="sortable" data-sort="name">Employee</th>
+              <th class="sortable" data-sort="branch">Branch</th>
+              <th class="sortable" data-sort="department">Department</th>
+              <th class="sortable" data-sort="daysWorked">Days Worked</th>
+              <th class="sortable" data-sort="lateCount">Late</th>
+              <th class="sortable" data-sort="otMinutes">OT (min)</th>
+              <th class="sortable" data-sort="otQuarters">OT (qtr)</th>
+              <th class="sortable" data-sort="otPay">OT Pay</th>
+              <th class="sortable" data-sort="leaveTotal">Leave</th>
             </tr>
           </thead>
           <tbody id="summaryBody"></tbody>
@@ -866,6 +882,78 @@
     btn.classList.toggle('spinning', isRefreshing);
   }
 
+  // ---------- Monthly table sorting ----------
+  //
+  // The API's own row order (roughly branch/department grouped -- see
+  // reportSortGroup_ in Report.gs) is "default". Sorting is purely a
+  // client-side view over the last-fetched rows -- lastEmployees is never
+  // re-ordered in place, so clearing currentSortKey always restores exactly
+  // what the server sent. A fresh fetch (Refresh, or changing Year/Month)
+  // always resets the sort back to that default per the admin's request.
+
+  var lastEmployees = [];
+  var currentSortKey = null;
+  var currentSortDir = 'asc';
+
+  function leaveTotal(emp) {
+    return (emp.leave.annual || 0) + (emp.leave.sick || 0) + (emp.leave.paidSpecial || 0) + (emp.leave.unpaid || 0);
+  }
+
+  function sortValueFor(emp, key) {
+    switch (key) {
+      case 'name': return emp.name || '';
+      case 'branch': return branchLabel(emp.branch);
+      case 'department': return emp.department || '';
+      case 'daysWorked': return emp.daysWorked;
+      case 'lateCount': return emp.lateCount;
+      case 'otMinutes': return emp.otMinutes;
+      case 'otQuarters': return emp.otQuarters;
+      case 'otPay': return emp.otPay; // can be null (Thai employees have no OT pay rate)
+      case 'leaveTotal': return leaveTotal(emp);
+      default: return '';
+    }
+  }
+
+  function applySortAndRender() {
+    var list = lastEmployees.slice();
+    if (currentSortKey) {
+      var key = currentSortKey;
+      var dir = currentSortDir === 'asc' ? 1 : -1;
+      list.sort(function (a, b) {
+        var va = sortValueFor(a, key);
+        var vb = sortValueFor(b, key);
+        // Null OT Pay always sorts last, whichever direction is active --
+        // "no rate set" isn't a low or high value, it's not a value at all.
+        var aNull = va === null || va === undefined;
+        var bNull = vb === null || vb === undefined;
+        if (aNull || bNull) return aNull === bNull ? 0 : (aNull ? 1 : -1);
+        if (typeof va === 'string') return va.localeCompare(vb) * dir;
+        return (va - vb) * dir;
+      });
+    }
+    renderRows(list);
+
+    document.querySelectorAll('#summaryTable thead th.sortable').forEach(function (th) {
+      th.classList.remove('sort-asc', 'sort-desc');
+      if (th.dataset.sort === currentSortKey) {
+        th.classList.add(currentSortDir === 'asc' ? 'sort-asc' : 'sort-desc');
+      }
+    });
+  }
+
+  document.querySelectorAll('#summaryTable thead th.sortable').forEach(function (th) {
+    th.addEventListener('click', function () {
+      var key = th.dataset.sort;
+      if (currentSortKey === key) {
+        currentSortDir = currentSortDir === 'asc' ? 'desc' : 'asc';
+      } else {
+        currentSortKey = key;
+        currentSortDir = 'asc';
+      }
+      applySortAndRender();
+    });
+  });
+
   function loadSummary() {
     var session = loadSession();
     if (!session) return;
@@ -898,12 +986,16 @@
         return;
       }
 
+      lastEmployees = result.employees;
+      currentSortKey = null;
+      currentSortDir = 'asc';
+
       if (result.employees.length === 0) {
         document.getElementById('emptyState').style.display = 'block';
         return;
       }
 
-      renderRows(result.employees);
+      applySortAndRender();
       document.getElementById('summaryTable').style.display = 'table';
     });
   }
@@ -919,6 +1011,7 @@
   var monthlyView = document.getElementById('monthlyView');
   var dailyView = document.getElementById('dailyView');
   var dailyLoadedOnce = false;
+  var monthlyLoadedOnce = false;
 
   function setDashboardView(view) {
     var isMonthly = view === 'monthly';
@@ -926,10 +1019,14 @@
     viewTabDaily.classList.toggle('active', !isMonthly);
     monthlyView.style.display = isMonthly ? 'block' : 'none';
     dailyView.style.display = isMonthly ? 'none' : 'block';
-    // Lazy-load: Daily's own data isn't fetched until someone actually
-    // switches to it, so a session that only ever looks at Monthly never
-    // pays for the extra request.
-    if (!isMonthly && !dailyLoadedOnce) {
+    // Lazy-load either side: Daily is what opens by default, so Monthly's
+    // data isn't fetched until someone actually clicks that tab, and vice
+    // versa -- a session that only ever looks at one view never pays for
+    // the other's request.
+    if (isMonthly && !monthlyLoadedOnce) {
+      monthlyLoadedOnce = true;
+      loadSummary();
+    } else if (!isMonthly && !dailyLoadedOnce) {
       dailyLoadedOnce = true;
       loadDaily();
     }
@@ -1023,7 +1120,7 @@
     document.getElementById('whoami').style.display = 'flex';
     document.getElementById('whoamiName').textContent = session.name;
     updateFiscalHint();
-    loadSummary();
+    setDashboardView('daily'); // Daily opens by default; Monthly is a click away.
   }
 
   // ---------- Boot ----------
