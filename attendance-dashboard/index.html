@@ -24,6 +24,7 @@
     --success-text: #1E7B3A;
     --warn-bg: #FFF3E0;
     --warn-text: #B8631A;
+    --warn-border: #F0C892;
   }
 
   * { box-sizing: border-box; }
@@ -339,6 +340,7 @@
   }
   .stat-tile.present { background: var(--success-bg); border-color: var(--success-border); }
   .stat-tile.absent { background: var(--danger-bg); border-color: var(--danger-border); }
+  .stat-tile.leave { background: var(--warn-bg); border-color: var(--warn-border); }
   .stat-tile .stat-label {
     font-size: 12px;
     font-weight: 700;
@@ -347,6 +349,7 @@
   }
   .stat-tile.present .stat-label { color: var(--success-text); }
   .stat-tile.absent .stat-label { color: var(--danger-text); }
+  .stat-tile.leave .stat-label { color: var(--warn-text); }
   .stat-tile .stat-value {
     font-size: 36px;
     font-weight: 800;
@@ -356,6 +359,14 @@
   }
   .stat-tile.present .stat-value { color: var(--success-text); }
   .stat-tile.absent .stat-value { color: var(--danger-text); }
+  .stat-tile.leave .stat-value { color: var(--warn-text); }
+
+  .stat-tile .stat-hint {
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-top: 6px;
+    line-height: 1.4;
+  }
 
   .section-label {
     font-size: 13px;
@@ -381,6 +392,8 @@
   }
   .name-chip .chip-name { font-size: 13px; font-weight: 700; }
   .name-chip .chip-meta { font-size: 11px; color: var(--text-muted); margin-top: 1px; }
+  .name-chip .chip-note { font-size: 11px; font-weight: 700; margin-top: 3px; }
+  .name-chip.leave .chip-note { color: var(--warn-text); }
 
   .card {
     background: var(--card);
@@ -388,6 +401,7 @@
     border-radius: 16px;
     overflow: hidden;
   }
+  #dailyContent .card + .card { margin-top: 16px; }
 
   table {
     width: 100%;
@@ -460,6 +474,8 @@
     header { padding: 16px 18px; }
     .controls { flex-wrap: wrap; }
     table { font-size: 12px; }
+    .stat-row { flex-wrap: wrap; }
+    .stat-tile { flex: 1 1 calc(50% - 8px); }
   }
 </style>
 </head>
@@ -587,7 +603,7 @@
           <span id="dailyRefreshIcon">↻</span> Refresh
         </button>
         <div class="spacer"></div>
-        <p class="fiscal-hint">Counts only staff scheduled a real shift that day (or who tapped in anyway) — a blank/unscheduled day never counts as absent.</p>
+        <p class="fiscal-hint">A blank/unscheduled day with no punch counts toward nothing below — can't tell "not scheduled yet" apart from "day off".</p>
       </div>
 
       <div id="dailyLoadingState" style="text-align:center;padding:60px 20px;color:var(--text-muted);font-size:14px;">Loading…</div>
@@ -596,19 +612,32 @@
       <div id="dailyContent" style="display:none;">
         <div class="stat-row">
           <div class="stat-tile present">
-            <div class="stat-label">Present</div>
+            <div class="stat-label">Punched In</div>
             <div class="stat-value" id="presentCount">0</div>
+            <div class="stat-hint">Everyone who tapped in today, scheduled or not.</div>
           </div>
           <div class="stat-tile absent">
             <div class="stat-label">Absent</div>
             <div class="stat-value" id="absentCount">0</div>
+            <div class="stat-hint">Had a real shift today, never tapped in.</div>
+          </div>
+          <div class="stat-tile leave">
+            <div class="stat-label">On Leave</div>
+            <div class="stat-value" id="onLeaveCount">0</div>
+            <div class="stat-hint">Shift marked Leave/Holiday, never tapped in.</div>
           </div>
         </div>
 
         <div class="card">
-          <div class="section-label">Absent today</div>
+          <div class="section-label">Absent today — scheduled, didn't punch in</div>
           <div id="absentEmptyState" style="display:none;padding:4px 20px 20px;color:var(--text-muted);font-size:13px;">Nobody — everyone scheduled today showed up.</div>
           <div class="name-list" id="absentList"></div>
+        </div>
+
+        <div class="card">
+          <div class="section-label">On leave today</div>
+          <div id="onLeaveEmptyState" style="display:none;padding:4px 20px 20px;color:var(--text-muted);font-size:13px;">Nobody on leave today.</div>
+          <div class="name-list" id="onLeaveList"></div>
         </div>
       </div>
     </div>
@@ -918,15 +947,21 @@
     btn.classList.toggle('spinning', isRefreshing);
   }
 
-  function renderNameList(elId, employees) {
+  // Both lists show the day's shift value as a note (which shift the Absent
+  // group missed, which Leave type the On Leave group is on). `noteClass`
+  // (e.g. "leave") just tints that line amber for the On Leave list so it
+  // reads as a status, not a plain label like the Absent list's shift name.
+  function renderNameList(elId, employees, noteClass) {
     var el = document.getElementById(elId);
     el.innerHTML = '';
     employees.forEach(function (emp) {
       var chip = document.createElement('div');
-      chip.className = 'name-chip';
+      chip.className = noteClass ? 'name-chip ' + noteClass : 'name-chip';
+      var noteHtml = emp.shift ? '<span class="chip-note">' + escapeHtml(emp.shift) + '</span>' : '';
       chip.innerHTML =
         '<span class="chip-name">' + escapeHtml(emp.name) + '</span>' +
-        '<span class="chip-meta">' + escapeHtml(branchLabel(emp.branch)) + ' · ' + escapeHtml(emp.department || '') + '</span>';
+        '<span class="chip-meta">' + escapeHtml(branchLabel(emp.branch)) + ' · ' + escapeHtml(emp.department || '') + '</span>' +
+        noteHtml;
       el.appendChild(chip);
     });
   }
@@ -969,8 +1004,11 @@
 
       document.getElementById('presentCount').textContent = result.presentCount;
       document.getElementById('absentCount').textContent = result.absentCount;
+      document.getElementById('onLeaveCount').textContent = result.onLeaveCount;
       document.getElementById('absentEmptyState').style.display = result.absentCount === 0 ? 'block' : 'none';
+      document.getElementById('onLeaveEmptyState').style.display = result.onLeaveCount === 0 ? 'block' : 'none';
       renderNameList('absentList', result.absent);
+      renderNameList('onLeaveList', result.onLeave, 'leave');
       document.getElementById('dailyContent').style.display = 'block';
     });
   }

@@ -1375,15 +1375,22 @@ function handleDashboardSummary_(params) {
  * showed up and who didn't on one specific day, for the executive-facing
  * "today at a glance" view. Same auth as handleDashboardSummary_.
  *
- * Only counts an employee toward either list when there's a real reason to
- * expect them in that day: a genuine scheduled shift (not blank, not a
- * full day off -- see FULL_DAY_OFF_SHIFTS), OR they showed up anyway (a
- * real IN is never excluded just because nothing was scheduled -- being
- * present is unambiguous evidence either way). An employee with a blank
- * schedule who never tapped in is left out of both counts entirely: there's
- * no way to tell "not scheduled yet" apart from "day off" from here, so
- * this can't responsibly call it a no-show. This mirrors the exact same
- * rule menuFillMissedPunches_ (Menu.gs) uses for the same reason.
+ * Splits every active employee into (at most) one of three buckets, so an
+ * admin can tell "didn't come because already on leave" apart from
+ * "didn't come despite a real shift" at a glance instead of both reading as
+ * one undifferentiated "absent":
+ *   - present: tapped IN today, regardless of what (if anything) was
+ *     scheduled -- a real IN is never excluded just because nothing was
+ *     scheduled, being present is unambiguous evidence either way.
+ *   - absent: a genuine scheduled shift (not blank, not a full day off --
+ *     see FULL_DAY_OFF_SHIFTS) but never tapped in.
+ *   - onLeave: no tap in, and the day's shift IS one of FULL_DAY_OFF_SHIFTS
+ *     (Annual/Sick/Unpaid/Paid Special Leave, or Holiday).
+ * An employee with a blank schedule who never tapped in falls into none of
+ * the three: there's no way to tell "not scheduled yet" apart from "day
+ * off" from here, so this can't responsibly call it a no-show. This mirrors
+ * the exact same rule menuFillMissedPunches_ (Menu.gs) uses for the same
+ * reason.
  */
 function handleDashboardDaily_(params) {
   var access = requireDashboardAccess_(params);
@@ -1418,17 +1425,21 @@ function handleDashboardDaily_(params) {
 
   var presentCount = 0;
   var absent = [];
+  var onLeave = [];
   activeEmployees.forEach(function (emp) {
     var shift = (scheduledShiftsForMonth[emp.EmployeeID] && scheduledShiftsForMonth[emp.EmployeeID][day]) || '';
-    var isRealShiftDay = !!shift && FULL_DAY_OFF_SHIFTS.indexOf(shift) === -1;
     var hasIn = !!hasInToday[emp.EmployeeID];
-    if (!isRealShiftDay && !hasIn) return; // not expected in, and didn't show up either
 
     if (hasIn) {
       presentCount++;
-    } else {
-      absent.push({ employeeId: emp.EmployeeID, name: emp.Name, department: emp.Department, branch: emp.Branch || '' });
+      return;
     }
+    var entry = { employeeId: emp.EmployeeID, name: emp.Name, department: emp.Department, branch: emp.Branch || '', shift: shift };
+    if (FULL_DAY_OFF_SHIFTS.indexOf(shift) !== -1) {
+      onLeave.push(entry);
+    } else if (shift) {
+      absent.push(entry);
+    } // else: blank schedule, never tapped in -- not expected in, left uncounted
   });
 
   return ok_({
@@ -1437,6 +1448,8 @@ function handleDashboardDaily_(params) {
     day: day,
     presentCount: presentCount,
     absentCount: absent.length,
-    absent: absent
+    onLeaveCount: onLeave.length,
+    absent: absent,
+    onLeave: onLeave
   });
 }
