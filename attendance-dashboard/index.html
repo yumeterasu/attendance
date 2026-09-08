@@ -434,6 +434,7 @@
   .name-chip .chip-meta { font-size: 11px; color: var(--text-muted); margin-top: 1px; }
   .name-chip .chip-note { font-size: 11px; font-weight: 700; margin-top: 3px; }
   .name-chip.leave .chip-note { color: var(--warn-text); }
+  .name-chip.present .chip-note { color: var(--success-text); }
 
   .card {
     background: var(--card);
@@ -694,6 +695,12 @@
         </div>
 
         <div class="card">
+          <div class="section-label" data-i18n="presentSectionTitle">Present today — punched in</div>
+          <div id="presentEmptyState" style="display:none;padding:4px 20px 20px;color:var(--text-muted);font-size:13px;" data-i18n="presentEmpty">Nobody has punched in yet today.</div>
+          <div class="name-list" id="presentList"></div>
+        </div>
+
+        <div class="card">
           <div class="section-label" data-i18n="absentSectionTitle">Absent today — scheduled, didn't punch in</div>
           <div id="absentEmptyState" style="display:none;padding:4px 20px 20px;color:var(--text-muted);font-size:13px;" data-i18n="absentEmpty">Nobody — everyone scheduled today showed up.</div>
           <div class="name-list" id="absentList"></div>
@@ -771,6 +778,8 @@
       absentHint: 'Had a real shift today, never tapped in.',
       onLeaveLabel: 'On Leave',
       onLeaveHint: 'Shift marked Leave/Holiday, never tapped in.',
+      presentSectionTitle: 'Present today — punched in',
+      presentEmpty: 'Nobody has punched in yet today.',
       absentSectionTitle: 'Absent today — scheduled, didn’t punch in',
       absentEmpty: 'Nobody — everyone scheduled today showed up.',
       onLeaveSectionTitle: 'On leave today',
@@ -830,6 +839,8 @@
       absentHint: '本日シフトがあったが、打刻していない。',
       onLeaveLabel: '休暇中',
       onLeaveHint: 'シフトが休暇/休日で、打刻していない。',
+      presentSectionTitle: '本日の出勤者 — 打刻済み',
+      presentEmpty: '本日、まだ誰も打刻していません。',
       absentSectionTitle: '本日の欠勤者 — シフトありで未打刻',
       absentEmpty: '該当者なし — 本日予定の全員が出勤しました。',
       onLeaveSectionTitle: '本日の休暇者',
@@ -1373,7 +1384,10 @@
     (employees || []).forEach(function (emp) {
       var chip = document.createElement('div');
       chip.className = noteClass ? 'name-chip ' + noteClass : 'name-chip';
-      var noteHtml = emp.shift ? '<span class="chip-note">' + escapeHtml(emp.shift) + '</span>' : '';
+      // Present entries carry a check-in time (emp.inTime), Absent/On Leave
+      // entries carry the day's shift value (emp.shift) -- never both.
+      var note = emp.shift || emp.inTime;
+      var noteHtml = note ? '<span class="chip-note">' + escapeHtml(note) + '</span>' : '';
       chip.innerHTML =
         '<span class="chip-name">' + escapeHtml(emp.name) + '</span>' +
         '<span class="chip-meta">' + escapeHtml(branchLabel(emp.branch)) + ' · ' + escapeHtml(emp.department || '') + '</span>' +
@@ -1382,9 +1396,11 @@
     });
   }
 
-  // Kept alongside lastEmployees (Monthly) so setLanguage() can re-render
-  // whichever list is currently on screen after a language switch without
-  // re-fetching from the server.
+  // Holds the Daily view's last-fetched lists. NOT re-rendered by
+  // setLanguage() -- unlike lastEmployees (Monthly), these chips only ever
+  // show raw data (name/branch/department/shift/check-in time), nothing
+  // translated, so a language switch has nothing here to update.
+  var lastPresent = [];
   var lastAbsent = [];
   var lastOnLeave = [];
 
@@ -1426,14 +1442,17 @@
       }
 
       dailyErrorInfo = null;
+      lastPresent = result.present;
       lastAbsent = result.absent;
       lastOnLeave = result.onLeave;
 
       document.getElementById('presentCount').textContent = result.presentCount;
       document.getElementById('absentCount').textContent = result.absentCount;
       document.getElementById('onLeaveCount').textContent = result.onLeaveCount;
+      document.getElementById('presentEmptyState').style.display = result.presentCount === 0 ? 'block' : 'none';
       document.getElementById('absentEmptyState').style.display = result.absentCount === 0 ? 'block' : 'none';
       document.getElementById('onLeaveEmptyState').style.display = result.onLeaveCount === 0 ? 'block' : 'none';
+      renderNameList('presentList', lastPresent, 'present');
       renderNameList('absentList', lastAbsent);
       renderNameList('onLeaveList', lastOnLeave, 'leave');
       document.getElementById('dailyContent').style.display = 'block';

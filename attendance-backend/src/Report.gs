@@ -1381,7 +1381,9 @@ function handleDashboardSummary_(params) {
  * one undifferentiated "absent":
  *   - present: tapped IN today, regardless of what (if anything) was
  *     scheduled -- a real IN is never excluded just because nothing was
- *     scheduled, being present is unambiguous evidence either way.
+ *     scheduled, being present is unambiguous evidence either way. Listed
+ *     with each person's check-in time (earliest IN of the day, if more
+ *     than one).
  *   - absent: a genuine scheduled shift (not blank, not a full day off --
  *     see FULL_DAY_OFF_SHIFTS) but never tapped in.
  *   - onLeave: no tap in, and the day's shift IS one of FULL_DAY_OFF_SHIFTS
@@ -1405,33 +1407,41 @@ function handleDashboardDaily_(params) {
   var daysInMonth = new Date(year, month, 0).getDate();
   if (day > daysInMonth) return fail_('bad_request', 'day ' + day + ' does not exist in ' + year + '-' + month);
   var targetDate = new Date(year, month - 1, day);
+  var tz = Session.getScriptTimeZone();
 
   var scheduledShiftsForMonth = getScheduledShiftsForMonth_(year, month);
   var activeEmployees = getAllEmployees_().filter(function (emp) { return isTrue_(emp.Active); });
 
-  // Only need whether an IN exists that day at all, not which one -- unlike
-  // getMonthLogsByEmployee_, there's no "earliest wins" tie to resolve here.
+  // Earliest IN of the day wins if there's more than one (offline sync
+  // duplicate, etc.) -- same convention getMonthLogsByEmployee_ uses --
+  // since it's also shown as the present list's check-in time now, not
+  // just a yes/no flag.
   var logValues = getSheet_('AttendanceLog').getDataRange().getValues();
   var logHeaders = logValues[0];
   var idCol = logHeaders.indexOf('EmployeeID');
   var tsCol = logHeaders.indexOf('Timestamp');
   var typeCol = logHeaders.indexOf('Type');
-  var hasInToday = {};
+  var inTimeByEmployee = {};
   for (var i = 1; i < logValues.length; i++) {
     if (logValues[i][typeCol] !== 'IN') continue;
-    if (!isSameDay_(new Date(logValues[i][tsCol]), targetDate)) continue;
-    hasInToday[String(logValues[i][idCol])] = true;
+    var ts = new Date(logValues[i][tsCol]);
+    if (!isSameDay_(ts, targetDate)) continue;
+    var empId = String(logValues[i][idCol]);
+    if (!inTimeByEmployee[empId] || ts < inTimeByEmployee[empId]) inTimeByEmployee[empId] = ts;
   }
 
-  var presentCount = 0;
+  var present = [];
   var absent = [];
   var onLeave = [];
   activeEmployees.forEach(function (emp) {
     var shift = (scheduledShiftsForMonth[emp.EmployeeID] && scheduledShiftsForMonth[emp.EmployeeID][day]) || '';
-    var hasIn = !!hasInToday[emp.EmployeeID];
+    var inTime = inTimeByEmployee[emp.EmployeeID];
 
-    if (hasIn) {
-      presentCount++;
+    if (inTime) {
+      present.push({
+        employeeId: emp.EmployeeID, name: emp.Name, department: emp.Department, branch: emp.Branch || '',
+        inTime: Utilities.formatDate(inTime, tz, 'HH:mm')
+      });
       return;
     }
     var entry = { employeeId: emp.EmployeeID, name: emp.Name, department: emp.Department, branch: emp.Branch || '', shift: shift };
@@ -1446,9 +1456,10 @@ function handleDashboardDaily_(params) {
     year: year,
     month: month,
     day: day,
-    presentCount: presentCount,
+    presentCount: present.length,
     absentCount: absent.length,
     onLeaveCount: onLeave.length,
+    present: present,
     absent: absent,
     onLeave: onLeave
   });
