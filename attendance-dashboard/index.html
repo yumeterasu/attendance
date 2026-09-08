@@ -265,11 +265,13 @@
   }
   .refresh-btn:hover { background: #E4EBFC; }
   .refresh-btn:disabled { opacity: 0.6; cursor: default; }
-  .refresh-btn #refreshIcon {
+  .refresh-btn #refreshIcon,
+  .refresh-btn #dailyRefreshIcon {
     display: inline-block;
     font-size: 15px;
   }
-  .refresh-btn.spinning #refreshIcon {
+  .refresh-btn.spinning #refreshIcon,
+  .refresh-btn.spinning #dailyRefreshIcon {
     animation: spin 0.7s linear infinite;
   }
   @keyframes spin {
@@ -285,6 +287,100 @@
     max-width: 220px;
     line-height: 1.4;
   }
+
+  /* View tabs (Monthly / Daily) -- same pill-tab look the login screen's
+     Admin/Viewer Access tabs already use, so it reads as the same kind of
+     control at a glance. */
+  .view-tabs {
+    display: inline-flex;
+    gap: 4px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 4px;
+    margin-bottom: 20px;
+  }
+  .view-tab {
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--text-muted);
+    background: transparent;
+    border: none;
+    border-radius: 8px;
+    padding: 9px 18px;
+    cursor: pointer;
+  }
+  .view-tab.active {
+    background: var(--card);
+    color: var(--text);
+    box-shadow: 0 1px 2px rgba(20,20,20,0.06);
+  }
+
+  #dailyView { display: none; }
+
+  .controls .field input[type="date"] {
+    cursor: pointer;
+  }
+
+  /* Present/Absent stat tiles -- semantic color (green/red) carries the
+     state at a glance, same idea as the existing late/OT pills, just much
+     larger since this is the headline number of the whole Daily view. */
+  .stat-row {
+    display: flex;
+    gap: 16px;
+    margin-bottom: 24px;
+  }
+  .stat-tile {
+    flex: 1;
+    border-radius: 16px;
+    padding: 20px 22px;
+    border: 1px solid var(--border);
+  }
+  .stat-tile.present { background: var(--success-bg); border-color: var(--success-border); }
+  .stat-tile.absent { background: var(--danger-bg); border-color: var(--danger-border); }
+  .stat-tile .stat-label {
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .stat-tile.present .stat-label { color: var(--success-text); }
+  .stat-tile.absent .stat-label { color: var(--danger-text); }
+  .stat-tile .stat-value {
+    font-size: 36px;
+    font-weight: 800;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.2;
+    margin-top: 4px;
+  }
+  .stat-tile.present .stat-value { color: var(--success-text); }
+  .stat-tile.absent .stat-value { color: var(--danger-text); }
+
+  .section-label {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--text-muted);
+    padding: 16px 20px 4px;
+  }
+
+  .name-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 12px 20px 20px;
+  }
+  .name-chip {
+    display: flex;
+    flex-direction: column;
+    background: #FAFBFF;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 8px 12px;
+    min-width: 140px;
+  }
+  .name-chip .chip-name { font-size: 13px; font-weight: 700; }
+  .name-chip .chip-meta { font-size: 11px; color: var(--text-muted); margin-top: 1px; }
 
   .card {
     background: var(--card);
@@ -422,55 +518,99 @@
   </div>
 
   <div id="dashboardView">
-    <div class="controls">
-      <div class="field">
-        <label for="yearSelect">Year</label>
-        <select id="yearSelect"></select>
-      </div>
-      <div class="field">
-        <label for="monthSelect">Month</label>
-        <select id="monthSelect">
-          <option value="1">January</option>
-          <option value="2">February</option>
-          <option value="3">March</option>
-          <option value="4">April</option>
-          <option value="5">May</option>
-          <option value="6">June</option>
-          <option value="7">July</option>
-          <option value="8">August</option>
-          <option value="9">September</option>
-          <option value="10">October</option>
-          <option value="11">November</option>
-          <option value="12">December</option>
-          <option value="All">All (fiscal year)</option>
-        </select>
-      </div>
-      <button class="refresh-btn" id="refreshBtn" type="button" title="Reload from Google Sheet">
-        <span id="refreshIcon">↻</span> Refresh
-      </button>
-      <div class="spacer"></div>
-      <p class="fiscal-hint" id="fiscalHint"></p>
+    <div class="view-tabs">
+      <button type="button" class="view-tab active" id="viewTabMonthly">Monthly</button>
+      <button type="button" class="view-tab" id="viewTabDaily">Daily</button>
     </div>
 
-    <div class="card">
-      <div id="loadingState">Loading…</div>
-      <div id="errorState"></div>
-      <div id="emptyState" style="display:none;">No employees to show for this period.</div>
-      <table id="summaryTable" style="display:none;">
-        <thead>
-          <tr>
-            <th>Employee</th>
-            <th>Department</th>
-            <th>Days Worked</th>
-            <th>Late</th>
-            <th>OT (min)</th>
-            <th>OT (qtr)</th>
-            <th>OT Pay</th>
-            <th>Leave</th>
-          </tr>
-        </thead>
-        <tbody id="summaryBody"></tbody>
-      </table>
+    <div id="monthlyView">
+      <div class="controls">
+        <div class="field">
+          <label for="yearSelect">Year</label>
+          <select id="yearSelect"></select>
+        </div>
+        <div class="field">
+          <label for="monthSelect">Month</label>
+          <select id="monthSelect">
+            <option value="1">January</option>
+            <option value="2">February</option>
+            <option value="3">March</option>
+            <option value="4">April</option>
+            <option value="5">May</option>
+            <option value="6">June</option>
+            <option value="7">July</option>
+            <option value="8">August</option>
+            <option value="9">September</option>
+            <option value="10">October</option>
+            <option value="11">November</option>
+            <option value="12">December</option>
+            <option value="All">All (fiscal year)</option>
+          </select>
+        </div>
+        <button class="refresh-btn" id="refreshBtn" type="button" title="Reload from Google Sheet">
+          <span id="refreshIcon">↻</span> Refresh
+        </button>
+        <div class="spacer"></div>
+        <p class="fiscal-hint" id="fiscalHint"></p>
+      </div>
+
+      <div class="card">
+        <div id="loadingState">Loading…</div>
+        <div id="errorState"></div>
+        <div id="emptyState" style="display:none;">No employees to show for this period.</div>
+        <table id="summaryTable" style="display:none;">
+          <thead>
+            <tr>
+              <th>Employee</th>
+              <th>Branch</th>
+              <th>Department</th>
+              <th>Days Worked</th>
+              <th>Late</th>
+              <th>OT (min)</th>
+              <th>OT (qtr)</th>
+              <th>OT Pay</th>
+              <th>Leave</th>
+            </tr>
+          </thead>
+          <tbody id="summaryBody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="dailyView">
+      <div class="controls">
+        <div class="field" style="flex-basis:180px;">
+          <label for="dailyDateInput">Date</label>
+          <input type="date" id="dailyDateInput" />
+        </div>
+        <button class="refresh-btn" id="dailyRefreshBtn" type="button" title="Reload from Google Sheet">
+          <span id="dailyRefreshIcon">↻</span> Refresh
+        </button>
+        <div class="spacer"></div>
+        <p class="fiscal-hint">Counts only staff scheduled a real shift that day (or who tapped in anyway) — a blank/unscheduled day never counts as absent.</p>
+      </div>
+
+      <div id="dailyLoadingState" style="text-align:center;padding:60px 20px;color:var(--text-muted);font-size:14px;">Loading…</div>
+      <div id="dailyErrorState" style="text-align:center;padding:60px 20px;color:var(--danger-text);font-size:14px;display:none;"></div>
+
+      <div id="dailyContent" style="display:none;">
+        <div class="stat-row">
+          <div class="stat-tile present">
+            <div class="stat-label">Present</div>
+            <div class="stat-value" id="presentCount">0</div>
+          </div>
+          <div class="stat-tile absent">
+            <div class="stat-label">Absent</div>
+            <div class="stat-value" id="absentCount">0</div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="section-label">Absent today</div>
+          <div id="absentEmptyState" style="display:none;padding:4px 20px 20px;color:var(--text-muted);font-size:13px;">Nobody — everyone scheduled today showed up.</div>
+          <div class="name-list" id="absentList"></div>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -638,6 +778,15 @@
     return n % 1 === 0 ? String(n) : n.toFixed(1);
   }
 
+  // Employees.Branch stores the short code (see BRANCHES in Attendance.gs);
+  // shown here as the actual place name. Falls back to the raw code itself
+  // for anything unmapped, so a future third branch still shows *something*
+  // instead of going blank.
+  var BRANCH_LABELS = { PP: 'Phrom Phong', TL: 'Thonglor' };
+  function branchLabel(code) {
+    return BRANCH_LABELS[code] || code || '—';
+  }
+
   function renderRows(employees) {
     var body = document.getElementById('summaryBody');
     body.innerHTML = '';
@@ -664,6 +813,7 @@
 
       tr.innerHTML =
         '<td class="name">' + escapeHtml(emp.name) + '</td>' +
+        '<td class="dept">' + escapeHtml(branchLabel(emp.branch)) + '</td>' +
         '<td class="dept">' + escapeHtml(emp.department || '') + '</td>' +
         '<td class="num">' + emp.daysWorked + '</td>' +
         '<td class="num">' + lateHtml + '</td>' +
@@ -733,6 +883,101 @@
   monthSelect.addEventListener('change', function () { updateFiscalHint(); loadSummary(); });
   document.getElementById('refreshBtn').addEventListener('click', loadSummary);
 
+  // ---------- Dashboard: Monthly / Daily view switch ----------
+
+  var viewTabMonthly = document.getElementById('viewTabMonthly');
+  var viewTabDaily = document.getElementById('viewTabDaily');
+  var monthlyView = document.getElementById('monthlyView');
+  var dailyView = document.getElementById('dailyView');
+  var dailyLoadedOnce = false;
+
+  function setDashboardView(view) {
+    var isMonthly = view === 'monthly';
+    viewTabMonthly.classList.toggle('active', isMonthly);
+    viewTabDaily.classList.toggle('active', !isMonthly);
+    monthlyView.style.display = isMonthly ? 'block' : 'none';
+    dailyView.style.display = isMonthly ? 'none' : 'block';
+    // Lazy-load: Daily's own data isn't fetched until someone actually
+    // switches to it, so a session that only ever looks at Monthly never
+    // pays for the extra request.
+    if (!isMonthly && !dailyLoadedOnce) {
+      dailyLoadedOnce = true;
+      loadDaily();
+    }
+  }
+  viewTabMonthly.addEventListener('click', function () { setDashboardView('monthly'); });
+  viewTabDaily.addEventListener('click', function () { setDashboardView('daily'); });
+
+  // ---------- Dashboard: Daily view ----------
+
+  var dailyDateInput = document.getElementById('dailyDateInput');
+
+  function setDailyRefreshing(isRefreshing) {
+    var btn = document.getElementById('dailyRefreshBtn');
+    btn.disabled = isRefreshing;
+    btn.classList.toggle('spinning', isRefreshing);
+  }
+
+  function renderNameList(elId, employees) {
+    var el = document.getElementById(elId);
+    el.innerHTML = '';
+    employees.forEach(function (emp) {
+      var chip = document.createElement('div');
+      chip.className = 'name-chip';
+      chip.innerHTML =
+        '<span class="chip-name">' + escapeHtml(emp.name) + '</span>' +
+        '<span class="chip-meta">' + escapeHtml(branchLabel(emp.branch)) + ' · ' + escapeHtml(emp.department || '') + '</span>';
+      el.appendChild(chip);
+    });
+  }
+
+  function loadDaily() {
+    var session = loadSession();
+    if (!session) return;
+    // input[type=date] gives "YYYY-MM-DD" directly, already in the local
+    // date the browser's picker shows -- split by hand rather than `new
+    // Date(str)`, which parses a bare date string as UTC midnight and can
+    // land on the wrong calendar day once shifted to local time.
+    var parts = dailyDateInput.value.split('-');
+    if (parts.length !== 3) return;
+
+    setDailyRefreshing(true);
+    document.getElementById('dailyLoadingState').style.display = 'block';
+    document.getElementById('dailyErrorState').style.display = 'none';
+    document.getElementById('dailyContent').style.display = 'none';
+
+    apiGet('dashboardDaily', {
+      sessionToken: session.isViewer ? '' : session.sessionToken,
+      viewerPassword: session.isViewer ? session.viewerPassword : '',
+      year: parts[0],
+      month: parts[1],
+      day: parts[2]
+    }).then(function (result) {
+      setDailyRefreshing(false);
+      document.getElementById('dailyLoadingState').style.display = 'none';
+
+      if (!result.success) {
+        if (result.error === 'session_expired' || result.error === 'forbidden') {
+          clearSession();
+          location.reload();
+          return;
+        }
+        document.getElementById('dailyErrorState').textContent = result.message || 'Something went wrong.';
+        document.getElementById('dailyErrorState').style.display = 'block';
+        return;
+      }
+
+      document.getElementById('presentCount').textContent = result.presentCount;
+      document.getElementById('absentCount').textContent = result.absentCount;
+      document.getElementById('absentEmptyState').style.display = result.absentCount === 0 ? 'block' : 'none';
+      renderNameList('absentList', result.absent);
+      document.getElementById('dailyContent').style.display = 'block';
+    });
+  }
+
+  dailyDateInput.addEventListener('change', loadDaily);
+  document.getElementById('dailyRefreshBtn').addEventListener('click', loadDaily);
+
   function showDashboard() {
     var session = loadSession();
     document.getElementById('loginView').style.display = 'none';
@@ -747,6 +992,13 @@
 
   populateYears();
   monthSelect.value = String(new Date().getMonth() + 1);
+
+  (function setDefaultDailyDate() {
+    var now = new Date();
+    var mm = String(now.getMonth() + 1).padStart(2, '0');
+    var dd = String(now.getDate()).padStart(2, '0');
+    dailyDateInput.value = now.getFullYear() + '-' + mm + '-' + dd;
+  })();
 
   if (loadSession()) {
     showDashboard();

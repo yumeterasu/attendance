@@ -1301,6 +1301,7 @@ function getDashboardSummaryData_(year, month) {
       employeeId: emp.EmployeeID,
       name: emp.Name,
       department: emp.Department,
+      branch: emp.Branch || '', // 'PP'/'TL' -- see BRANCHES in Attendance.gs; the Dashboard maps these to Phrom Phong/Thonglor for display
       daysWorked: totals.daysWorked,
       lateCount: totals.lateCount,
       otMinutes: totals.otMinutesTotal,
@@ -1317,32 +1318,42 @@ function getDashboardSummaryData_(year, month) {
 }
 
 /**
- * Web Dashboard's data endpoint (doGet -> dashboardSummary). Gated the same
- * way the in-app Admin screen is -- a real admin sessionToken from the
- * pairing flow (handlePair_), not a new auth scheme -- so a browser
+ * Shared by every Web Dashboard data endpoint. Two ways in: a real admin
+ * sessionToken (existing "Admin Sign In" flow -- same pairing system the
+ * app uses), or a shared viewer password for people who just need to look
+ * at the numbers without an admin account. The password lives only in
+ * Script Properties (Project Settings > Script Properties >
+ * DASHBOARD_VIEWER_PASSWORD) -- the admin sets/changes it there directly,
+ * no code change or redeploy needed, and it's never visible in this
+ * source. Blank/unset property means the viewer-password path is simply
+ * never satisfied (checkViewerPassword_ requires a non-empty value on both
+ * sides), so leaving it unset is the same as disabling viewer access
+ * entirely -- Admin Sign In still works either way. Returns { ok: true }
+ * or { ok: false, response: <fail_() result to return as-is> }.
+ */
+function requireDashboardAccess_(params) {
+  if (!checkApiKey_(params.apiKey)) return { ok: false, response: fail_('unauthorized', 'Invalid API key') };
+
+  var isViewer = checkViewerPassword_(params.viewerPassword);
+  if (isViewer) return { ok: true };
+
+  var admin = requireAdmin_(params.sessionToken);
+  if (!admin.ok) return { ok: false, response: admin.response };
+  return { ok: true };
+}
+
+/**
+ * Web Dashboard's monthly data endpoint (doGet -> dashboardSummary). Gated
+ * the same way the in-app Admin screen is -- a real admin sessionToken from
+ * the pairing flow (handlePair_), not a new auth scheme -- so a browser
  * "logs in" with the exact same username + one-time setup code an admin
  * device pairing uses, and an admin can issue one for the Dashboard the
  * same way they'd issue one for a lost phone (Admin screen's "Lost
  * Device / New Setup Code", or issueSetupCodeForLockedOutEmployee).
  */
 function handleDashboardSummary_(params) {
-  if (!checkApiKey_(params.apiKey)) return fail_('unauthorized', 'Invalid API key');
-
-  // Two ways in: a real admin sessionToken (existing "Admin Sign In" flow --
-  // same pairing system the app uses), or a shared viewer password for
-  // people who just need to look at the numbers without an admin account.
-  // The password lives only in Script Properties (Project Settings > Script
-  // Properties > DASHBOARD_VIEWER_PASSWORD) -- the admin sets/changes it
-  // there directly, no code change or redeploy needed, and it's never
-  // visible in this source. Blank/unset property means the viewer-password
-  // path is simply never satisfied (checkViewerPassword_ requires a
-  // non-empty value on both sides), so leaving it unset is the same as
-  // disabling viewer access entirely -- Admin Sign In still works either way.
-  var isViewer = checkViewerPassword_(params.viewerPassword);
-  if (!isViewer) {
-    var admin = requireAdmin_(params.sessionToken);
-    if (!admin.ok) return admin.response;
-  }
+  var access = requireDashboardAccess_(params);
+  if (!access.ok) return access.response;
 
   if (!params.year || !params.month) return fail_('bad_request', 'year and month are required');
 
@@ -1357,4 +1368,75 @@ function handleDashboardSummary_(params) {
   var month = isAllMonths ? 'All' : Number(params.month);
   var employees = getDashboardSummaryData_(year, month);
   return ok_({ year: year, month: month, employees: employees });
+}
+
+/**
+ * Web Dashboard's daily data endpoint (doGet -> dashboardDaily) -- who
+ * showed up and who didn't on one specific day, for the executive-facing
+ * "today at a glance" view. Same auth as handleDashboardSummary_.
+ *
+ * Only counts an employee toward either list when there's a real reason to
+ * expect them in that day: a genuine scheduled shift (not blank, not a
+ * full day off -- see FULL_DAY_OFF_SHIFTS), OR they showed up anyway (a
+ * real IN is never excluded just because nothing was scheduled -- being
+ * present is unambiguous evidence either way). An employee with a blank
+ * schedule who never tapped in is left out of both counts entirely: there's
+ * no way to tell "not scheduled yet" apart from "day off" from here, so
+ * this can't responsibly call it a no-show. This mirrors the exact same
+ * rule menuFillMissedPunches_ (Menu.gs) uses for the same reason.
+ */
+function handleDashboardDaily_(params) {
+  var access = requireDashboardAccess_(params);
+  if (!access.ok) return access.response;
+
+  var year = Number(params.year);
+  var month = Number(params.month);
+  var day = Number(params.day);
+  if (!year || !month || month < 1 || month > 12 || !day || day < 1 || day > 31) {
+    return fail_('bad_request', 'year, month (1-12), and day are required');
+  }
+  var daysInMonth = new Date(year, month, 0).getDate();
+  if (day > daysInMonth) return fail_('bad_request', 'day ' + day + ' does not exist in ' + year + '-' + month);
+  var targetDate = new Date(year, month - 1, day);
+
+  var scheduledShiftsForMonth = getScheduledShiftsForMonth_(year, month);
+  var activeEmployees = getAllEmployees_().filter(function (emp) { return isTrue_(emp.Active); });
+
+  // Only need whether an IN exists that day at all, not which one -- unlike
+  // getMonthLogsByEmployee_, there's no "earliest wins" tie to resolve here.
+  var logValues = getSheet_('AttendanceLog').getDataRange().getValues();
+  var logHeaders = logValues[0];
+  var idCol = logHeaders.indexOf('EmployeeID');
+  var tsCol = logHeaders.indexOf('Timestamp');
+  var typeCol = logHeaders.indexOf('Type');
+  var hasInToday = {};
+  for (var i = 1; i < logValues.length; i++) {
+    if (logValues[i][typeCol] !== 'IN') continue;
+    if (!isSameDay_(new Date(logValues[i][tsCol]), targetDate)) continue;
+    hasInToday[String(logValues[i][idCol])] = true;
+  }
+
+  var presentCount = 0;
+  var absent = [];
+  activeEmployees.forEach(function (emp) {
+    var shift = (scheduledShiftsForMonth[emp.EmployeeID] && scheduledShiftsForMonth[emp.EmployeeID][day]) || '';
+    var isRealShiftDay = !!shift && FULL_DAY_OFF_SHIFTS.indexOf(shift) === -1;
+    var hasIn = !!hasInToday[emp.EmployeeID];
+    if (!isRealShiftDay && !hasIn) return; // not expected in, and didn't show up either
+
+    if (hasIn) {
+      presentCount++;
+    } else {
+      absent.push({ employeeId: emp.EmployeeID, name: emp.Name, department: emp.Department, branch: emp.Branch || '' });
+    }
+  });
+
+  return ok_({
+    year: year,
+    month: month,
+    day: day,
+    presentCount: presentCount,
+    absentCount: absent.length,
+    absent: absent
+  });
 }
