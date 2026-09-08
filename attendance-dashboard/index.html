@@ -78,6 +78,41 @@
     color: var(--text-muted);
   }
 
+  .header-right {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+
+  /* Small pill toggle, same family as .login-tabs/.view-tabs but compact
+     enough to sit in the header bar next to the account controls -- and,
+     unlike those, visible before login too, so the language choice applies
+     to the sign-in screen itself. */
+  .lang-toggle {
+    display: inline-flex;
+    gap: 2px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 3px;
+  }
+  .lang-btn {
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--text-muted);
+    background: transparent;
+    border: none;
+    border-radius: 7px;
+    padding: 6px 10px;
+    cursor: pointer;
+  }
+  .lang-btn.active {
+    background: var(--card);
+    color: var(--text);
+    box-shadow: 0 1px 2px rgba(20,20,20,0.06);
+  }
+
   #whoami {
     display: flex;
     align-items: center;
@@ -299,7 +334,9 @@
     border: 1px solid var(--border);
     border-radius: 12px;
     padding: 4px;
-    margin-bottom: 20px;
+    /* Now a flex child inside .controls, alongside the tabs -- align-items:
+       flex-end on that row lines its bottom edge up with the field inputs
+       below their labels, so no margin of its own is needed here. */
   }
   .view-tab {
     font-family: inherit;
@@ -428,13 +465,20 @@
     user-select: none;
   }
   thead th.sortable:hover { color: var(--accent-dark); }
+  /* Faint ⇅ on every sortable header at rest, so it reads as clickable
+     before anyone hovers or sorts anything -- not just an empty space
+     reserved for a state that hasn't happened yet. */
   thead th.sortable::after {
-    content: '';
+    content: '⇅';
     display: inline-block;
     width: 12px;
+    margin-left: 3px;
+    font-size: 9px;
+    opacity: 0.35;
   }
-  thead th.sortable.sort-asc::after { content: '▲'; font-size: 9px; margin-left: 3px; }
-  thead th.sortable.sort-desc::after { content: '▼'; font-size: 9px; margin-left: 3px; }
+  thead th.sortable:hover::after { opacity: 0.7; }
+  thead th.sortable.sort-asc::after { content: '▲'; opacity: 1; }
+  thead th.sortable.sort-desc::after { content: '▼'; opacity: 1; }
   thead th.sortable.sort-asc, thead th.sortable.sort-desc { color: var(--accent-dark); }
 
   tbody td {
@@ -487,7 +531,8 @@
 
   @media (max-width: 720px) {
     main { padding: 24px 12px 60px; }
-    header { padding: 16px 18px; }
+    header { padding: 16px 18px; flex-wrap: wrap; row-gap: 10px; }
+    .header-right { flex-wrap: wrap; justify-content: flex-end; }
     .controls { flex-wrap: wrap; }
     table { font-size: 12px; }
     .stat-row { flex-wrap: wrap; }
@@ -501,13 +546,19 @@
   <div class="brand">
     <div class="brand-badge">📊</div>
     <div class="brand-text">
-      <h1>Attendance Dashboard</h1>
+      <h1 data-i18n="brandTitle">Attendance Dashboard</h1>
       <p>Yume Terasu</p>
     </div>
   </div>
-  <div id="whoami" style="display:none;">
-    <span id="whoamiName"></span>
-    <button id="logoutBtn">Log out</button>
+  <div class="header-right">
+    <div class="lang-toggle" id="langToggle">
+      <button type="button" class="lang-btn" data-lang="en">EN</button>
+      <button type="button" class="lang-btn" data-lang="ja">日本語</button>
+    </div>
+    <div id="whoami" style="display:none;">
+      <span id="whoamiName"></span>
+      <button id="logoutBtn" data-i18n="logout">Log out</button>
+    </div>
   </div>
 </header>
 
@@ -516,33 +567,33 @@
   <div id="loginView">
     <div class="login-card">
       <div class="brand-badge">🔒</div>
-      <h2 id="loginTitle">Admin Sign In</h2>
+      <h2 id="loginTitle" data-i18n="loginAdminTitle">Admin Sign In</h2>
 
       <div class="login-tabs">
-        <button type="button" class="login-tab active" id="tabAdmin">Admin</button>
-        <button type="button" class="login-tab" id="tabViewer">Viewer Access</button>
+        <button type="button" class="login-tab active" id="tabAdmin" data-i18n="tabAdmin">Admin</button>
+        <button type="button" class="login-tab" id="tabViewer" data-i18n="tabViewer">Viewer Access</button>
       </div>
 
       <form id="loginForm">
-        <p class="hint">Use the same username and one-time setup code an admin issues for a new device (Admin screen → "Lost Device / New Setup Code").</p>
+        <p class="hint" data-i18n="adminHint">Use the same username and one-time setup code an admin issues for a new device (Admin screen → "Lost Device / New Setup Code").</p>
         <div class="field">
-          <label for="username">Username</label>
+          <label for="username" data-i18n="usernameLabel">Username</label>
           <input id="username" autocomplete="username" placeholder="EMP001" autocapitalize="characters" />
         </div>
         <div class="field">
-          <label for="setupCode">Setup Code</label>
+          <label for="setupCode" data-i18n="setupCodeLabel">Setup Code</label>
           <input id="setupCode" autocomplete="one-time-code" placeholder="123456" />
         </div>
-        <button class="primary" type="submit" id="loginBtn">Sign In</button>
+        <button class="primary" type="submit" id="loginBtn" data-i18n="signIn">Sign In</button>
       </form>
 
       <form id="viewerForm" style="display:none;">
-        <p class="hint">Enter the viewing password shared with you to see attendance summaries. Read-only — no admin account needed.</p>
+        <p class="hint" data-i18n="viewerHint">Enter the viewing password shared with you to see attendance summaries. Read-only — no admin account needed.</p>
         <div class="field">
-          <label for="viewerPassword">Password</label>
+          <label for="viewerPassword" data-i18n="passwordLabel">Password</label>
           <input id="viewerPassword" type="password" autocomplete="current-password" placeholder="••••••" />
         </div>
-        <button class="primary" type="submit" id="viewerBtn">View Dashboard</button>
+        <button class="primary" type="submit" id="viewerBtn" data-i18n="viewDashboard">View Dashboard</button>
       </form>
 
       <div class="error-msg" id="loginError"></div>
@@ -550,58 +601,68 @@
   </div>
 
   <div id="dashboardView">
-    <div class="view-tabs">
-      <button type="button" class="view-tab" id="viewTabMonthly">Monthly</button>
-      <button type="button" class="view-tab active" id="viewTabDaily">Daily</button>
+    <div class="controls">
+      <div class="view-tabs">
+        <button type="button" class="view-tab" id="viewTabMonthly" data-i18n="tabMonthly">Monthly</button>
+        <button type="button" class="view-tab active" id="viewTabDaily" data-i18n="tabDaily">Daily</button>
+      </div>
+
+      <div class="field" id="yearField" style="display:none;">
+        <label for="yearSelect" data-i18n="yearLabel">Year</label>
+        <select id="yearSelect"></select>
+      </div>
+      <div class="field" id="monthField" style="display:none;">
+        <label for="monthSelect" data-i18n="monthLabel">Month</label>
+        <select id="monthSelect">
+          <option value="1">January</option>
+          <option value="2">February</option>
+          <option value="3">March</option>
+          <option value="4">April</option>
+          <option value="5">May</option>
+          <option value="6">June</option>
+          <option value="7">July</option>
+          <option value="8">August</option>
+          <option value="9">September</option>
+          <option value="10">October</option>
+          <option value="11">November</option>
+          <option value="12">December</option>
+          <option value="All" data-i18n="monthAll">All (fiscal year)</option>
+        </select>
+      </div>
+      <div class="field" id="dateField" style="flex-basis:180px;">
+        <label for="dailyDateInput" data-i18n="dateLabel">Date</label>
+        <input type="date" id="dailyDateInput" />
+      </div>
+
+      <button class="refresh-btn" id="refreshBtn" type="button" data-i18n-title="reloadTitle" title="Reload from Google Sheet" style="display:none;">
+        <span id="refreshIcon">↻</span> <span data-i18n="refresh">Refresh</span>
+      </button>
+      <button class="refresh-btn" id="dailyRefreshBtn" type="button" data-i18n-title="reloadTitle" title="Reload from Google Sheet">
+        <span id="dailyRefreshIcon">↻</span> <span data-i18n="refresh">Refresh</span>
+      </button>
+
+      <div class="spacer"></div>
+      <p class="fiscal-hint" id="fiscalHint" style="display:none;"></p>
+      <p class="fiscal-hint" id="dailyHint" data-i18n="dailyHint">A blank/unscheduled day with no punch counts toward nothing below — can't tell "not scheduled yet" apart from "day off".</p>
     </div>
 
     <div id="monthlyView">
-      <div class="controls">
-        <div class="field">
-          <label for="yearSelect">Year</label>
-          <select id="yearSelect"></select>
-        </div>
-        <div class="field">
-          <label for="monthSelect">Month</label>
-          <select id="monthSelect">
-            <option value="1">January</option>
-            <option value="2">February</option>
-            <option value="3">March</option>
-            <option value="4">April</option>
-            <option value="5">May</option>
-            <option value="6">June</option>
-            <option value="7">July</option>
-            <option value="8">August</option>
-            <option value="9">September</option>
-            <option value="10">October</option>
-            <option value="11">November</option>
-            <option value="12">December</option>
-            <option value="All">All (fiscal year)</option>
-          </select>
-        </div>
-        <button class="refresh-btn" id="refreshBtn" type="button" title="Reload from Google Sheet">
-          <span id="refreshIcon">↻</span> Refresh
-        </button>
-        <div class="spacer"></div>
-        <p class="fiscal-hint" id="fiscalHint"></p>
-      </div>
-
       <div class="card">
-        <div id="loadingState">Loading…</div>
+        <div id="loadingState" data-i18n="loading">Loading…</div>
         <div id="errorState"></div>
-        <div id="emptyState" style="display:none;">No employees to show for this period.</div>
+        <div id="emptyState" style="display:none;" data-i18n="noEmployees">No employees to show for this period.</div>
         <table id="summaryTable" style="display:none;">
           <thead>
             <tr>
-              <th class="sortable" data-sort="name">Employee</th>
-              <th class="sortable" data-sort="branch">Branch</th>
-              <th class="sortable" data-sort="department">Department</th>
-              <th class="sortable" data-sort="daysWorked">Days Worked</th>
-              <th class="sortable" data-sort="lateCount">Late</th>
-              <th class="sortable" data-sort="otMinutes">OT (min)</th>
-              <th class="sortable" data-sort="otQuarters">OT (qtr)</th>
-              <th class="sortable" data-sort="otPay">OT Pay</th>
-              <th class="sortable" data-sort="leaveTotal">Leave</th>
+              <th class="sortable" data-sort="name" data-i18n="tableEmployee">Employee</th>
+              <th class="sortable" data-sort="branch" data-i18n="tableBranch">Branch</th>
+              <th class="sortable" data-sort="department" data-i18n="tableDepartment">Department</th>
+              <th class="sortable" data-sort="daysWorked" data-i18n="tableDaysWorked">Days Worked</th>
+              <th class="sortable" data-sort="lateCount" data-i18n="tableLate">Late</th>
+              <th class="sortable" data-sort="otMinutes" data-i18n="tableOtMin">OT (min)</th>
+              <th class="sortable" data-sort="otQuarters" data-i18n="tableOtQtr">OT (qtr)</th>
+              <th class="sortable" data-sort="otPay" data-i18n="tableOtPay">OT Pay</th>
+              <th class="sortable" data-sort="leaveTotal" data-i18n="tableLeave">Leave</th>
             </tr>
           </thead>
           <tbody id="summaryBody"></tbody>
@@ -610,49 +671,37 @@
     </div>
 
     <div id="dailyView">
-      <div class="controls">
-        <div class="field" style="flex-basis:180px;">
-          <label for="dailyDateInput">Date</label>
-          <input type="date" id="dailyDateInput" />
-        </div>
-        <button class="refresh-btn" id="dailyRefreshBtn" type="button" title="Reload from Google Sheet">
-          <span id="dailyRefreshIcon">↻</span> Refresh
-        </button>
-        <div class="spacer"></div>
-        <p class="fiscal-hint">A blank/unscheduled day with no punch counts toward nothing below — can't tell "not scheduled yet" apart from "day off".</p>
-      </div>
-
-      <div id="dailyLoadingState" style="text-align:center;padding:60px 20px;color:var(--text-muted);font-size:14px;">Loading…</div>
+      <div id="dailyLoadingState" style="text-align:center;padding:60px 20px;color:var(--text-muted);font-size:14px;" data-i18n="loading">Loading…</div>
       <div id="dailyErrorState" style="text-align:center;padding:60px 20px;color:var(--danger-text);font-size:14px;display:none;"></div>
 
       <div id="dailyContent" style="display:none;">
         <div class="stat-row">
           <div class="stat-tile present">
-            <div class="stat-label">Punched In</div>
+            <div class="stat-label" data-i18n="punchedIn">Punched In</div>
             <div class="stat-value" id="presentCount">0</div>
-            <div class="stat-hint">Everyone who tapped in today, scheduled or not.</div>
+            <div class="stat-hint" data-i18n="punchedInHint">Everyone who tapped in today, scheduled or not.</div>
           </div>
           <div class="stat-tile absent">
-            <div class="stat-label">Absent</div>
+            <div class="stat-label" data-i18n="absentLabel">Absent</div>
             <div class="stat-value" id="absentCount">0</div>
-            <div class="stat-hint">Had a real shift today, never tapped in.</div>
+            <div class="stat-hint" data-i18n="absentHint">Had a real shift today, never tapped in.</div>
           </div>
           <div class="stat-tile leave">
-            <div class="stat-label">On Leave</div>
+            <div class="stat-label" data-i18n="onLeaveLabel">On Leave</div>
             <div class="stat-value" id="onLeaveCount">0</div>
-            <div class="stat-hint">Shift marked Leave/Holiday, never tapped in.</div>
+            <div class="stat-hint" data-i18n="onLeaveHint">Shift marked Leave/Holiday, never tapped in.</div>
           </div>
         </div>
 
         <div class="card">
-          <div class="section-label">Absent today — scheduled, didn't punch in</div>
-          <div id="absentEmptyState" style="display:none;padding:4px 20px 20px;color:var(--text-muted);font-size:13px;">Nobody — everyone scheduled today showed up.</div>
+          <div class="section-label" data-i18n="absentSectionTitle">Absent today — scheduled, didn't punch in</div>
+          <div id="absentEmptyState" style="display:none;padding:4px 20px 20px;color:var(--text-muted);font-size:13px;" data-i18n="absentEmpty">Nobody — everyone scheduled today showed up.</div>
           <div class="name-list" id="absentList"></div>
         </div>
 
         <div class="card">
-          <div class="section-label">On leave today</div>
-          <div id="onLeaveEmptyState" style="display:none;padding:4px 20px 20px;color:var(--text-muted);font-size:13px;">Nobody on leave today.</div>
+          <div class="section-label" data-i18n="onLeaveSectionTitle">On leave today</div>
+          <div id="onLeaveEmptyState" style="display:none;padding:4px 20px 20px;color:var(--text-muted);font-size:13px;" data-i18n="onLeaveEmpty">Nobody on leave today.</div>
           <div class="name-list" id="onLeaveList"></div>
         </div>
       </div>
@@ -662,6 +711,221 @@
 </main>
 
 <script>
+  // ---------- Language ----------
+  //
+  // Covers the page's own chrome (labels, buttons, hints) -- not the data
+  // itself (employee names, department/shift/leave-type strings, which
+  // come straight from the Sheet in whatever language they were entered).
+  // Translating those would need a backend change and isn't what this
+  // toggle is for.
+
+  var LANG_KEY = 'attendance_dashboard_lang_v1';
+
+  var TRANSLATIONS = {
+    en: {
+      brandTitle: 'Attendance Dashboard',
+      logout: 'Log out',
+      loginAdminTitle: 'Admin Sign In',
+      loginViewerTitle: 'Viewer Access',
+      tabAdmin: 'Admin',
+      tabViewer: 'Viewer Access',
+      adminHint: 'Use the same username and one-time setup code an admin issues for a new device (Admin screen → "Lost Device / New Setup Code").',
+      usernameLabel: 'Username',
+      setupCodeLabel: 'Setup Code',
+      signIn: 'Sign In',
+      signingIn: 'Signing in…',
+      viewerHint: 'Enter the viewing password shared with you to see attendance summaries. Read-only — no admin account needed.',
+      passwordLabel: 'Password',
+      viewDashboard: 'View Dashboard',
+      checking: 'Checking…',
+      errIncorrectPassword: 'Incorrect password.',
+      errNotAdmin: 'This account is not an admin. Ask an admin to issue a code for an admin account instead.',
+      errSignInFailed: 'Sign in failed.',
+      errGeneric: 'Something went wrong.',
+      errNetwork: 'Could not reach the server. Check your connection.',
+      tabMonthly: 'Monthly',
+      tabDaily: 'Daily',
+      yearLabel: 'Year',
+      monthLabel: 'Month',
+      monthAll: 'All (fiscal year)',
+      months: ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'],
+      refresh: 'Refresh',
+      reloadTitle: 'Reload from Google Sheet',
+      loading: 'Loading…',
+      noEmployees: 'No employees to show for this period.',
+      fiscalHint: function (year) { return '"All" covers the fiscal year: April ' + year + ' – March ' + (Number(year) + 1) + '.'; },
+      tableEmployee: 'Employee',
+      tableBranch: 'Branch',
+      tableDepartment: 'Department',
+      tableDaysWorked: 'Days Worked',
+      tableLate: 'Late',
+      tableOtMin: 'OT (min)',
+      tableOtQtr: 'OT (qtr)',
+      tableOtPay: 'OT Pay',
+      tableLeave: 'Leave',
+      dateLabel: 'Date',
+      dailyHint: 'A blank/unscheduled day with no punch counts toward nothing below — can’t tell "not scheduled yet" apart from "day off".',
+      punchedIn: 'Punched In',
+      punchedInHint: 'Everyone who tapped in today, scheduled or not.',
+      absentLabel: 'Absent',
+      absentHint: 'Had a real shift today, never tapped in.',
+      onLeaveLabel: 'On Leave',
+      onLeaveHint: 'Shift marked Leave/Holiday, never tapped in.',
+      absentSectionTitle: 'Absent today — scheduled, didn’t punch in',
+      absentEmpty: 'Nobody — everyone scheduled today showed up.',
+      onLeaveSectionTitle: 'On leave today',
+      onLeaveEmpty: 'Nobody on leave today.',
+      leaveAnnual: 'Annual',
+      leaveSick: 'Sick',
+      leavePaidSpecial: 'Paid Special',
+      leaveUnpaid: 'Unpaid',
+      viewerName: 'Viewer'
+    },
+    ja: {
+      brandTitle: '勤怠ダッシュボード',
+      logout: 'ログアウト',
+      loginAdminTitle: '管理者ログイン',
+      loginViewerTitle: '閲覧者アクセス',
+      tabAdmin: '管理者',
+      tabViewer: '閲覧者アクセス',
+      adminHint: '新しい端末には、管理者が発行したユーザー名とワンタイムのセットアップコードを入力してください(管理者画面 →「デバイス紛失/新しいセットアップコード」)。',
+      usernameLabel: 'ユーザー名',
+      setupCodeLabel: 'セットアップコード',
+      signIn: 'サインイン',
+      signingIn: 'サインイン中…',
+      viewerHint: '共有された閲覧用パスワードを入力すると、勤怠サマリーを確認できます。閲覧専用 — 管理者アカウントは不要です。',
+      passwordLabel: 'パスワード',
+      viewDashboard: 'ダッシュボードを見る',
+      checking: '確認中…',
+      errIncorrectPassword: 'パスワードが違います。',
+      errNotAdmin: 'このアカウントは管理者ではありません。管理者アカウント用のコードを発行してもらってください。',
+      errSignInFailed: 'サインインに失敗しました。',
+      errGeneric: 'エラーが発生しました。',
+      errNetwork: 'サーバーに接続できません。接続を確認してください。',
+      tabMonthly: '月次',
+      tabDaily: '日次',
+      yearLabel: '年',
+      monthLabel: '月',
+      monthAll: '全期間(会計年度)',
+      months: ['1月', '2月', '3月', '4月', '5月', '6月', '7月', '8月', '9月', '10月', '11月', '12月'],
+      refresh: '更新',
+      reloadTitle: 'Googleスプレッドシートから再読み込み',
+      loading: '読み込み中…',
+      noEmployees: 'この期間に表示する従業員がいません。',
+      fiscalHint: function (year) { return '「全期間」は ' + year + '年4月 〜 ' + (Number(year) + 1) + '年3月 の会計年度です。'; },
+      tableEmployee: '従業員',
+      tableBranch: '支店',
+      tableDepartment: '部署',
+      tableDaysWorked: '出勤日数',
+      tableLate: '遅刻',
+      tableOtMin: '残業(分)',
+      tableOtQtr: '残業(15分単位)',
+      tableOtPay: '残業代',
+      tableLeave: '休暇',
+      dateLabel: '日付',
+      dailyHint: '予定なし・未打刻の日はどちらにも含まれません — 「まだ予定されていない」のか「休みの日」なのか区別できないためです。',
+      punchedIn: '出勤',
+      punchedInHint: '本日打刻した全員(シフトの有無を問わない)。',
+      absentLabel: '欠勤',
+      absentHint: '本日シフトがあったが、打刻していない。',
+      onLeaveLabel: '休暇中',
+      onLeaveHint: 'シフトが休暇/休日で、打刻していない。',
+      absentSectionTitle: '本日の欠勤者 — シフトありで未打刻',
+      absentEmpty: '該当者なし — 本日予定の全員が出勤しました。',
+      onLeaveSectionTitle: '本日の休暇者',
+      onLeaveEmpty: '本日、休暇者はいません。',
+      leaveAnnual: '年次有給',
+      leaveSick: '病気休暇',
+      leavePaidSpecial: '特別有給',
+      leaveUnpaid: '無給休暇',
+      viewerName: 'ビューアー'
+    }
+  };
+
+  var currentLang = 'en';
+  try {
+    var storedLang = localStorage.getItem(LANG_KEY);
+    if (storedLang === 'en' || storedLang === 'ja') currentLang = storedLang;
+  } catch (e) {}
+
+  function t(key) {
+    return TRANSLATIONS[currentLang][key];
+  }
+
+  // Sets textContent for every [data-i18n] element and title for every
+  // [data-i18n-title] element. Plain textContent, not innerHTML -- every
+  // translated string here is plain text, and this also means a future
+  // dictionary entry can never accidentally inject markup.
+  function applyStaticI18n() {
+    document.documentElement.lang = currentLang;
+    document.querySelectorAll('[data-i18n]').forEach(function (el) {
+      // Skip a disabled control -- loginBtn/viewerBtn both keep their idle
+      // data-i18n label in the HTML but get their text swapped to
+      // "Signing in…"/"Checking…" while a request is in flight (see their
+      // submit handlers); resetting that here would make a still-locked
+      // button look idle and clickable if the language is switched mid-request.
+      if (el.disabled) return;
+      el.textContent = t(el.getAttribute('data-i18n'));
+    });
+    document.querySelectorAll('[data-i18n-title]').forEach(function (el) {
+      el.title = t(el.getAttribute('data-i18n-title'));
+    });
+    var monthOptions = document.getElementById('monthSelect').querySelectorAll('option[value]:not([value="All"])');
+    var monthNames = t('months');
+    monthOptions.forEach(function (opt, i) { opt.textContent = monthNames[i]; });
+  }
+
+  // Builds the {key}/{text} shape setLanguage() knows how to re-render:
+  // `result.messageKey` (our own error, e.g. apiGet's network-error catch)
+  // always wins so it stays translatable; `result.message` (the backend's
+  // own text) is used as-is since there's no client-side way to translate
+  // it; `fallbackKey` covers a failure with no message at all.
+  function errorInfoFrom(result, fallbackKey) {
+    if (result.messageKey) return { key: result.messageKey };
+    if (result.message) return { text: result.message };
+    return { key: fallbackKey };
+  }
+  // The read side of the same {key}/{text} shape -- one place so every
+  // error slot resolves it identically instead of six separate inline
+  // ternaries drifting apart.
+  function resolveErrorText(info) {
+    return info.key ? t(info.key) : info.text;
+  }
+
+  function setLanguage(lang) {
+    if (lang !== 'en' && lang !== 'ja') return;
+    currentLang = lang;
+    try { localStorage.setItem(LANG_KEY, lang); } catch (e) {}
+    document.querySelectorAll('.lang-btn').forEach(function (btn) {
+      btn.classList.toggle('active', btn.getAttribute('data-lang') === lang);
+    });
+    applyStaticI18n();
+    // Re-run whatever dynamic text is currently on screen so it picks up
+    // the new language too -- static i18n only covers text that's the same
+    // every time; these are generated from live data/state.
+    setLoginTab(tabAdmin.classList.contains('active') ? 'admin' : 'viewer', false); // false: don't wipe an error just shown
+    if (loginErrorInfo) loginError.textContent = resolveErrorText(loginErrorInfo);
+    updateFiscalHint();
+    if (lastEmployees.length) applySortAndRender();
+    var errorStateEl = document.getElementById('errorState');
+    if (errorStateEl.style.display === 'block' && monthlyErrorInfo) {
+      errorStateEl.textContent = resolveErrorText(monthlyErrorInfo);
+    }
+    // (Absent/On Leave name chips aren't re-rendered here -- they only ever
+    // show raw data: name, branch, department, shift. None of it is looked
+    // up in TRANSLATIONS, so a language switch has nothing there to update.)
+    var dailyErrorStateEl = document.getElementById('dailyErrorState');
+    if (dailyErrorStateEl.style.display === 'block' && dailyErrorInfo) {
+      dailyErrorStateEl.textContent = resolveErrorText(dailyErrorInfo);
+    }
+    var session = loadSession();
+    if (session) document.getElementById('whoamiName').textContent = session.isViewer ? t('viewerName') : session.name;
+  }
+
+  document.querySelectorAll('.lang-btn').forEach(function (btn) {
+    btn.addEventListener('click', function () { setLanguage(btn.getAttribute('data-lang')); });
+  });
+
   // Points at the same Web App the Kiosk app uses -- same apiKey too,
   // already effectively public (shipped inside the distributed APK), so
   // reusing it here doesn't add a new exposure. Auth for what this page can
@@ -697,7 +961,10 @@
     return fetch(url.toString())
       .then(function (res) { return res.json(); })
       .catch(function () {
-        return { success: false, error: 'network_error', message: 'Could not reach the server. Check your connection.' };
+        // messageKey (not a baked-in message string) so this stays
+        // translatable if the language changes after this error is shown --
+        // see errorInfoFrom().
+        return { success: false, error: 'network_error', messageKey: 'errNetwork' };
       });
   }
 
@@ -707,6 +974,24 @@
   var loginBtn = document.getElementById('loginBtn');
   var loginError = document.getElementById('loginError');
 
+  // Tracks what's currently in loginError so a language switch can
+  // re-render it correctly instead of either leaving it in the old
+  // language or (setLoginTab's normal job) silently clearing it -- see
+  // showLoginError/clearLoginError and setLanguage() below. `key` is one
+  // of our own translatable strings; `text` is the backend's own message
+  // (English only, no client-side way to translate it), used as-is.
+  var loginErrorInfo = null;
+
+  function showLoginError(info) {
+    loginErrorInfo = info;
+    loginError.textContent = resolveErrorText(info);
+    loginError.classList.add('show');
+  }
+  function clearLoginError() {
+    loginErrorInfo = null;
+    loginError.classList.remove('show');
+  }
+
   loginForm.addEventListener('submit', function (e) {
     e.preventDefault();
     var username = document.getElementById('username').value.trim();
@@ -714,21 +999,19 @@
     if (!username || !setupCode) return;
 
     loginBtn.disabled = true;
-    loginBtn.textContent = 'Signing in…';
-    loginError.classList.remove('show');
+    loginBtn.textContent = t('signingIn');
+    clearLoginError();
 
     apiGet('pair', { username: username, setupCode: setupCode }).then(function (result) {
       loginBtn.disabled = false;
-      loginBtn.textContent = 'Sign In';
+      loginBtn.textContent = t('signIn');
 
       if (!result.success) {
-        loginError.textContent = result.message || 'Sign in failed.';
-        loginError.classList.add('show');
+        showLoginError(errorInfoFrom(result, 'errSignInFailed'));
         return;
       }
       if (!result.isAdmin) {
-        loginError.textContent = 'This account is not an admin. Ask an admin to issue a code for an admin account instead.';
-        loginError.classList.add('show');
+        showLoginError({ key: 'errNotAdmin' });
         return;
       }
       saveSession({ sessionToken: result.sessionToken, name: result.name });
@@ -748,14 +1031,17 @@
   var loginTitle = document.getElementById('loginTitle');
   var viewerForm = document.getElementById('viewerForm');
 
-  function setLoginTab(tab) {
+  // `resetError` defaults to true (a real tab click starts fresh); pass
+  // false when this is only being re-applied for a language switch (see
+  // setLanguage()) so an error already on screen isn't wiped out by it.
+  function setLoginTab(tab, resetError) {
     var isAdmin = tab === 'admin';
     tabAdmin.classList.toggle('active', isAdmin);
     tabViewer.classList.toggle('active', !isAdmin);
     loginForm.style.display = isAdmin ? 'block' : 'none';
     viewerForm.style.display = isAdmin ? 'none' : 'block';
-    loginTitle.textContent = isAdmin ? 'Admin Sign In' : 'Viewer Access';
-    loginError.classList.remove('show');
+    loginTitle.textContent = isAdmin ? t('loginAdminTitle') : t('loginViewerTitle');
+    if (resetError !== false) clearLoginError();
   }
   tabAdmin.addEventListener('click', function () { setLoginTab('admin'); });
   tabViewer.addEventListener('click', function () { setLoginTab('viewer'); });
@@ -768,8 +1054,8 @@
     if (!password) return;
 
     viewerBtn.disabled = true;
-    viewerBtn.textContent = 'Checking…';
-    loginError.classList.remove('show');
+    viewerBtn.textContent = t('checking');
+    clearLoginError();
 
     // No dedicated "check password" endpoint -- this doubles as the first
     // data fetch. Any success response proves the password was accepted.
@@ -779,13 +1065,21 @@
       month: monthSelect.value
     }).then(function (result) {
       viewerBtn.disabled = false;
-      viewerBtn.textContent = 'View Dashboard';
+      viewerBtn.textContent = t('viewDashboard');
 
       if (!result.success) {
-        loginError.textContent = 'Incorrect password.';
-        loginError.classList.add('show');
+        // Deliberately NOT errorInfoFrom(result, ...) here: with no
+        // sessionToken, a wrong viewer password fails the same backend path
+        // as an unauthenticated admin check and comes back as e.g. "Please
+        // log in again" (session_expired) -- accurate for the admin login
+        // form, nonsensical here. A real network failure is still shown
+        // correctly since apiGet's catch sets messageKey, not message.
+        showLoginError(result.messageKey ? { key: result.messageKey } : { key: 'errIncorrectPassword' });
         return;
       }
+      // isViewer:true is what actually drives the "Viewer" display -- see
+      // showDashboard() -- so this stored marker never needs to change with
+      // the language toggle.
       saveSession({ viewerPassword: password, name: 'Viewer', isViewer: true });
       showDashboard();
     });
@@ -811,7 +1105,7 @@
   function updateFiscalHint() {
     var year = yearSelect.value;
     if (monthSelect.value === 'All') {
-      fiscalHint.textContent = '"All" covers the fiscal year: April ' + year + ' – March ' + (Number(year) + 1) + '.';
+      fiscalHint.textContent = t('fiscalHint')(year);
     } else {
       fiscalHint.textContent = '';
     }
@@ -840,10 +1134,10 @@
       var tr = document.createElement('tr');
 
       var leaveBadges = [];
-      if (emp.leave.annual) leaveBadges.push('Annual ' + formatLeaveCount(emp.leave.annual));
-      if (emp.leave.sick) leaveBadges.push('Sick ' + formatLeaveCount(emp.leave.sick));
-      if (emp.leave.paidSpecial) leaveBadges.push('Paid Special ' + formatLeaveCount(emp.leave.paidSpecial));
-      if (emp.leave.unpaid) leaveBadges.push('Unpaid ' + formatLeaveCount(emp.leave.unpaid));
+      if (emp.leave.annual) leaveBadges.push(t('leaveAnnual') + ' ' + formatLeaveCount(emp.leave.annual));
+      if (emp.leave.sick) leaveBadges.push(t('leaveSick') + ' ' + formatLeaveCount(emp.leave.sick));
+      if (emp.leave.paidSpecial) leaveBadges.push(t('leavePaidSpecial') + ' ' + formatLeaveCount(emp.leave.paidSpecial));
+      if (emp.leave.unpaid) leaveBadges.push(t('leaveUnpaid') + ' ' + formatLeaveCount(emp.leave.unpaid));
       var leaveHtml = leaveBadges.length
         ? '<div class="leave-badges">' + leaveBadges.map(function (b) { return '<span class="leave-badge">' + b + '</span>'; }).join('') + '</div>'
         : '<span class="pill zero">—</span>';
@@ -894,6 +1188,11 @@
   var lastEmployees = [];
   var currentSortKey = null;
   var currentSortDir = 'asc';
+  // Same {key}/{text} shape as loginErrorInfo -- lets setLanguage() re-render
+  // an error already on screen in the new language (or, for a raw server
+  // message, at least keep it instead of blanking it).
+  var monthlyErrorInfo = null;
+  var dailyErrorInfo = null;
 
   function leaveTotal(emp) {
     return (emp.leave.annual || 0) + (emp.leave.sick || 0) + (emp.leave.paidSpecial || 0) + (emp.leave.unpaid || 0);
@@ -981,10 +1280,12 @@
           location.reload();
           return;
         }
-        document.getElementById('errorState').textContent = result.message || 'Something went wrong.';
+        monthlyErrorInfo = errorInfoFrom(result, 'errGeneric');
+        document.getElementById('errorState').textContent = resolveErrorText(monthlyErrorInfo);
         document.getElementById('errorState').style.display = 'block';
         return;
       }
+      monthlyErrorInfo = null;
 
       lastEmployees = result.employees;
       currentSortKey = null;
@@ -1013,12 +1314,30 @@
   var dailyLoadedOnce = false;
   var monthlyLoadedOnce = false;
 
+  // The Year/Month fields, the Date field, both Refresh buttons, and both
+  // hint lines all share one toolbar row now (merged with the view-tabs so
+  // switching views doesn't cost a whole extra row of vertical space) --
+  // only the pair matching the active view is shown at a time.
+  var toolbarMonthlyEls = [
+    document.getElementById('yearField'),
+    document.getElementById('monthField'),
+    document.getElementById('refreshBtn'),
+    fiscalHint // already cached above -- same node, not a fresh lookup
+  ];
+  var toolbarDailyEls = [
+    document.getElementById('dateField'),
+    document.getElementById('dailyRefreshBtn'),
+    document.getElementById('dailyHint')
+  ];
+
   function setDashboardView(view) {
     var isMonthly = view === 'monthly';
     viewTabMonthly.classList.toggle('active', isMonthly);
     viewTabDaily.classList.toggle('active', !isMonthly);
     monthlyView.style.display = isMonthly ? 'block' : 'none';
     dailyView.style.display = isMonthly ? 'none' : 'block';
+    toolbarMonthlyEls.forEach(function (el) { el.style.display = isMonthly ? '' : 'none'; });
+    toolbarDailyEls.forEach(function (el) { el.style.display = isMonthly ? 'none' : ''; });
     // Lazy-load either side: Daily is what opens by default, so Monthly's
     // data isn't fetched until someone actually clicks that tab, and vice
     // versa -- a session that only ever looks at one view never pays for
@@ -1051,7 +1370,7 @@
   function renderNameList(elId, employees, noteClass) {
     var el = document.getElementById(elId);
     el.innerHTML = '';
-    employees.forEach(function (emp) {
+    (employees || []).forEach(function (emp) {
       var chip = document.createElement('div');
       chip.className = noteClass ? 'name-chip ' + noteClass : 'name-chip';
       var noteHtml = emp.shift ? '<span class="chip-note">' + escapeHtml(emp.shift) + '</span>' : '';
@@ -1062,6 +1381,12 @@
       el.appendChild(chip);
     });
   }
+
+  // Kept alongside lastEmployees (Monthly) so setLanguage() can re-render
+  // whichever list is currently on screen after a language switch without
+  // re-fetching from the server.
+  var lastAbsent = [];
+  var lastOnLeave = [];
 
   function loadDaily() {
     var session = loadSession();
@@ -1094,18 +1419,23 @@
           location.reload();
           return;
         }
-        document.getElementById('dailyErrorState').textContent = result.message || 'Something went wrong.';
+        dailyErrorInfo = errorInfoFrom(result, 'errGeneric');
+        document.getElementById('dailyErrorState').textContent = resolveErrorText(dailyErrorInfo);
         document.getElementById('dailyErrorState').style.display = 'block';
         return;
       }
+
+      dailyErrorInfo = null;
+      lastAbsent = result.absent;
+      lastOnLeave = result.onLeave;
 
       document.getElementById('presentCount').textContent = result.presentCount;
       document.getElementById('absentCount').textContent = result.absentCount;
       document.getElementById('onLeaveCount').textContent = result.onLeaveCount;
       document.getElementById('absentEmptyState').style.display = result.absentCount === 0 ? 'block' : 'none';
       document.getElementById('onLeaveEmptyState').style.display = result.onLeaveCount === 0 ? 'block' : 'none';
-      renderNameList('absentList', result.absent);
-      renderNameList('onLeaveList', result.onLeave, 'leave');
+      renderNameList('absentList', lastAbsent);
+      renderNameList('onLeaveList', lastOnLeave, 'leave');
       document.getElementById('dailyContent').style.display = 'block';
     });
   }
@@ -1118,7 +1448,7 @@
     document.getElementById('loginView').style.display = 'none';
     document.getElementById('dashboardView').style.display = 'block';
     document.getElementById('whoami').style.display = 'flex';
-    document.getElementById('whoamiName').textContent = session.name;
+    document.getElementById('whoamiName').textContent = session.isViewer ? t('viewerName') : session.name;
     updateFiscalHint();
     setDashboardView('daily'); // Daily opens by default; Monthly is a click away.
   }
@@ -1134,6 +1464,11 @@
     var dd = String(now.getDate()).padStart(2, '0');
     dailyDateInput.value = now.getFullYear() + '-' + mm + '-' + dd;
   })();
+
+  document.querySelectorAll('.lang-btn').forEach(function (btn) {
+    btn.classList.toggle('active', btn.getAttribute('data-lang') === currentLang);
+  });
+  applyStaticI18n();
 
   if (loadSession()) {
     showDashboard();
