@@ -545,6 +545,17 @@
   }
   #errorState { color: var(--danger-text); display: none; }
 
+  .stale-banner {
+    display: none;
+    font-size: 13px;
+    color: var(--warn-text);
+    background: var(--warn-bg);
+    border: 1px solid var(--warn-border);
+    border-radius: 12px;
+    padding: 10px 16px;
+    margin-bottom: 16px;
+  }
+
   /* The 4 Daily stat tiles (was 3) get cramped before the general mobile
      breakpoint below kicks in -- own threshold, wide enough that a tablet
      or a narrow split-screen window still gets a comfortable 2x2 instead
@@ -670,6 +681,7 @@
     </div>
 
     <div id="monthlyView">
+      <div class="stale-banner" id="monthlyStaleBanner"></div>
       <div class="card">
         <div id="loadingState" data-i18n="loading">Loading…</div>
         <div id="errorState"></div>
@@ -694,6 +706,7 @@
     </div>
 
     <div id="dailyView">
+      <div class="stale-banner" id="dailyStaleBanner"></div>
       <div id="dailyLoadingState" style="text-align:center;padding:60px 20px;color:var(--text-muted);font-size:14px;" data-i18n="loading">Loading…</div>
       <div id="dailyErrorState" style="text-align:center;padding:60px 20px;color:var(--danger-text);font-size:14px;display:none;"></div>
 
@@ -797,6 +810,7 @@
       loading: 'Loading…',
       noEmployees: 'No employees to show for this period.',
       fiscalHint: function (year) { return '"All" covers the fiscal year: April ' + year + ' – March ' + (Number(year) + 1) + '.'; },
+      staleBanner: function (time) { return 'Showing data saved at ' + time + ' — couldn’t refresh just now. Try again in a moment.'; },
       tableEmployee: 'Employee',
       tableBranch: 'Branch',
       tableDepartment: 'Department',
@@ -863,6 +877,7 @@
       loading: '読み込み中…',
       noEmployees: 'この期間に表示する従業員がいません。',
       fiscalHint: function (year) { return '「全期間」は ' + year + '年4月 〜 ' + (Number(year) + 1) + '年3月 の会計年度です。'; },
+      staleBanner: function (time) { return time + ' 時点のデータを表示しています — 現在更新できません。しばらくしてからもう一度お試しください。'; },
       tableEmployee: '従業員',
       tableBranch: '支店',
       tableDepartment: '部署',
@@ -974,6 +989,12 @@
     if (dailyErrorStateEl.style.display === 'block' && dailyErrorInfo) {
       dailyErrorStateEl.textContent = resolveErrorText(dailyErrorInfo);
     }
+    ['monthlyStaleBanner', 'dailyStaleBanner'].forEach(function (elId) {
+      var el = document.getElementById(elId);
+      if (el.style.display === 'block' && el.dataset.cachedAt) {
+        el.textContent = t('staleBanner')(formatCachedAt(Number(el.dataset.cachedAt)));
+      }
+    });
     var session = loadSession();
     if (session) document.getElementById('whoamiName').textContent = session.isViewer ? t('viewerName') : session.name;
   }
@@ -1049,6 +1070,116 @@
   var DASHBOARD_SUMMARY_ALL_TIMEOUT_MS = 45000;
   function dashboardSummaryTimeoutMs(month) {
     return month === 'All' ? DASHBOARD_SUMMARY_ALL_TIMEOUT_MS : undefined;
+  }
+
+  // ---------- Local cache (fallback when a live fetch can't complete) ----------
+  //
+  // Not a general offline mode -- just insurance against the exact failure
+  // this is meant to soften: a request that times out or never reaches the
+  // server leaving the page with nothing to show. Every successful
+  // dashboardSummary/dashboardDaily response is cached per query (per
+  // year+month, or year+month+day) in this browser's localStorage; a
+  // network_error result then tries that same query's cache before falling
+  // back to the plain error message. Never used to mask a real backend
+  // error (bad_request, forbidden, session_expired) -- only "couldn't
+  // complete the request at all", where showing slightly-stale numbers
+  // beats showing nothing.
+  var LOCAL_CACHE_PREFIX = 'attendance_dashboard_cache_v1_';
+  // Bumped whenever the cached shape stops matching what renderSummaryResult
+  // /renderDailyResult expect (a backend field rename, say) -- an entry
+  // written by an older version of this page is then ignored (same as no
+  // cache) instead of being replayed into rendering code that no longer
+  // understands its shape.
+  var CACHE_SCHEMA_VERSION = 1;
+  // Past this age, a cache entry is more likely to mislead than help --
+  // attendance numbers for a specific day/month are expected to be current,
+  // not "whatever was last seen weeks ago" -- so it's treated the same as
+  // no cache at all (falls through to the plain error) rather than shown.
+  var MAX_CACHE_AGE_MS = 3 * 24 * 60 * 60 * 1000; // 3 days
+
+  function saveLocalCache(key, data) {
+    try {
+      localStorage.setItem(LOCAL_CACHE_PREFIX + key, JSON.stringify({ v: CACHE_SCHEMA_VERSION, data: data, cachedAt: Date.now() }));
+    } catch (e) {} // private window, storage disabled, quota full -- fine to just skip caching
+  }
+  // Only writes if `seq` is the newest write attempt seen for this exact
+  // key -- request A can still resolve after request B fired later for the
+  // SAME key (e.g. Month flipped back and forth), and without this an
+  // older-but-later-arriving response would overwrite B's cache entry with
+  // older data stamped with a newer (misleading) cachedAt. Sequence numbers
+  // are drawn from a page-wide counter (see summaryRequestSeq/
+  // dailyRequestSeq), so they order by when each request was FIRED, which
+  // is what "newest for this key" should mean here -- not resolution order.
+  var cacheWriteSeqByKey = {};
+  function saveLocalCacheIfNewest(key, data, seq) {
+    if ((cacheWriteSeqByKey[key] || 0) > seq) return;
+    cacheWriteSeqByKey[key] = seq;
+    saveLocalCache(key, data);
+    pruneOldCacheOnce();
+  }
+  function loadLocalCache(key) {
+    try {
+      var raw = localStorage.getItem(LOCAL_CACHE_PREFIX + key);
+      if (!raw) return null;
+      var entry = JSON.parse(raw);
+      if (entry.v !== CACHE_SCHEMA_VERSION) return null;
+      return (Date.now() - entry.cachedAt) <= MAX_CACHE_AGE_MS ? entry : null;
+    } catch (e) { return null; }
+  }
+  // Every distinct year/month(/day) ever viewed gets its own key with no
+  // natural expiry otherwise -- sweep out anything past MAX_CACHE_AGE_MS (or
+  // from an old schema version) so long-term use doesn't quietly grow this
+  // without bound, or fill this origin's localStorage quota (which would
+  // silently disable caching for everything once full). A full scan is
+  // enough work to do once per page load, not on every single save.
+  var prunedCacheThisSession = false;
+  function pruneOldCacheOnce() {
+    if (prunedCacheThisSession) return;
+    prunedCacheThisSession = true;
+    try {
+      var now = Date.now();
+      for (var i = localStorage.length - 1; i >= 0; i--) {
+        var key = localStorage.key(i);
+        if (!key || key.indexOf(LOCAL_CACHE_PREFIX) !== 0) continue;
+        try {
+          var entry = JSON.parse(localStorage.getItem(key));
+          if (!entry || entry.v !== CACHE_SCHEMA_VERSION || (now - entry.cachedAt) > MAX_CACHE_AGE_MS) localStorage.removeItem(key);
+        } catch (e) { localStorage.removeItem(key); } // unparsable leftover -- also fine to drop
+      }
+    } catch (e) {}
+  }
+  function summaryCacheKey(year, month) { return 'summary_' + year + '_' + month; }
+  function dailyCacheKey(year, month, day) { return 'daily_' + year + '_' + month + '_' + day; }
+
+  // Date AND time, not just time -- MAX_CACHE_AGE_MS allows up to 3 days
+  // old, and "showing data saved at 09:14" would misleadingly read as
+  // "this morning" even when it's really from 2 days ago. Plain numeric
+  // format (no month names) so it needs no per-language translation.
+  function formatCachedAt(ms) {
+    var d = new Date(ms);
+    var pad = function (n) { return String(n).padStart(2, '0'); };
+    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+  }
+  function showStaleBanner(elId, cachedAt) {
+    var el = document.getElementById(elId);
+    el.dataset.cachedAt = cachedAt; // read back by setLanguage() to re-render on a language switch
+    el.textContent = t('staleBanner')(formatCachedAt(cachedAt));
+    el.style.display = 'block';
+  }
+  function hideStaleBanner(elId) {
+    document.getElementById(elId).style.display = 'none';
+  }
+  // Shared by loadSummary()/loadDaily(): on a network_error, look for a
+  // cache entry for that exact query and render it with the stale banner
+  // instead of the plain error. `renderFn` is renderSummaryResult or
+  // renderDailyResult -- both take the raw cached API response shape.
+  // Returns whether a usable cache entry was found.
+  function tryStaleCacheFallback(cacheKey, bannerElId, renderFn) {
+    var cached = loadLocalCache(cacheKey);
+    if (!cached) return false;
+    showStaleBanner(bannerElId, cached.cachedAt);
+    renderFn(cached.data);
+    return true;
   }
 
   // ---------- Login ----------
@@ -1336,15 +1467,39 @@
     });
   });
 
+  function renderSummaryResult(data) {
+    lastEmployees = data.employees;
+    currentSortKey = null;
+    currentSortDir = 'asc';
+
+    if (data.employees.length === 0) {
+      document.getElementById('emptyState').style.display = 'block';
+      return;
+    }
+    applySortAndRender();
+    document.getElementById('summaryTable').style.display = 'table';
+  }
+
+  // Guards against a slow/timed-out request finishing AFTER a newer one
+  // (e.g. Year/Month changed again, or Refresh clicked twice) and clobbering
+  // whatever the newer request already correctly rendered -- fetch() has no
+  // built-in "cancel the old one" here, so this just has each response
+  // check it's still the most recent request before touching the DOM.
+  var summaryRequestSeq = 0;
+
   function loadSummary() {
     var session = loadSession();
     if (!session) return;
+
+    var cacheKey = summaryCacheKey(yearSelect.value, monthSelect.value);
+    var mySeq = ++summaryRequestSeq;
 
     setRefreshing(true);
     document.getElementById('loadingState').style.display = 'block';
     document.getElementById('errorState').style.display = 'none';
     document.getElementById('emptyState').style.display = 'none';
     document.getElementById('summaryTable').style.display = 'none';
+    hideStaleBanner('monthlyStaleBanner');
 
     apiGet('dashboardSummary', {
       // Viewer sessions carry a shared password instead of a personal
@@ -1354,6 +1509,14 @@
       year: yearSelect.value,
       month: monthSelect.value
     }, dashboardSummaryTimeoutMs(monthSelect.value)).then(function (result) {
+      // Cache a good response regardless of staleness below -- it's still
+      // real data for cacheKey, worth having for a future fallback even if
+      // a newer request has since superseded this one on screen. (Ordered
+      // by cacheWriteSeqByKey so an older request resolving late can't
+      // clobber a newer one's cache entry for the same key.)
+      if (result.success) saveLocalCacheIfNewest(cacheKey, result, mySeq);
+      if (mySeq !== summaryRequestSeq) return; // a newer request has already rendered its own result
+
       setRefreshing(false);
       document.getElementById('loadingState').style.display = 'none';
 
@@ -1363,24 +1526,16 @@
           location.reload();
           return;
         }
+        // Only for "couldn't complete the request at all" -- never masks a
+        // real backend error (bad_request etc.) behind stale numbers.
+        if (result.error === 'network_error' && tryStaleCacheFallback(cacheKey, 'monthlyStaleBanner', renderSummaryResult)) return;
         monthlyErrorInfo = errorInfoFrom(result, 'errGeneric');
         document.getElementById('errorState').textContent = resolveErrorText(monthlyErrorInfo);
         document.getElementById('errorState').style.display = 'block';
         return;
       }
       monthlyErrorInfo = null;
-
-      lastEmployees = result.employees;
-      currentSortKey = null;
-      currentSortDir = 'asc';
-
-      if (result.employees.length === 0) {
-        document.getElementById('emptyState').style.display = 'block';
-        return;
-      }
-
-      applySortAndRender();
-      document.getElementById('summaryTable').style.display = 'table';
+      renderSummaryResult(result);
     });
   }
 
@@ -1480,6 +1635,30 @@
   var lastAbsent = [];
   var lastOnLeave = [];
 
+  function renderDailyResult(data) {
+    lastAbsent = data.absent;
+    lastLate = data.late;
+    lastOnLeave = data.onLeave;
+    lastOnTime = data.onTime;
+
+    document.getElementById('absentCount').textContent = data.absentCount;
+    document.getElementById('lateCount').textContent = data.lateCount;
+    document.getElementById('onLeaveCount').textContent = data.onLeaveCount;
+    document.getElementById('onTimeCount').textContent = data.onTimeCount;
+    document.getElementById('absentEmptyState').style.display = data.absentCount === 0 ? 'block' : 'none';
+    document.getElementById('lateEmptyState').style.display = data.lateCount === 0 ? 'block' : 'none';
+    document.getElementById('onLeaveEmptyState').style.display = data.onLeaveCount === 0 ? 'block' : 'none';
+    document.getElementById('onTimeEmptyState').style.display = data.onTimeCount === 0 ? 'block' : 'none';
+    renderNameList('absentList', lastAbsent);
+    renderNameList('lateList', lastLate, 'late');
+    renderNameList('onLeaveList', lastOnLeave, 'leave');
+    renderNameList('onTimeList', lastOnTime, 'present');
+    document.getElementById('dailyContent').style.display = 'block';
+  }
+
+  // Same stale-response guard as loadSummary() -- see summaryRequestSeq.
+  var dailyRequestSeq = 0;
+
   function loadDaily() {
     var session = loadSession();
     if (!session) return;
@@ -1490,10 +1669,14 @@
     var parts = dailyDateInput.value.split('-');
     if (parts.length !== 3) return;
 
+    var cacheKey = dailyCacheKey(parts[0], parts[1], parts[2]);
+    var mySeq = ++dailyRequestSeq;
+
     setDailyRefreshing(true);
     document.getElementById('dailyLoadingState').style.display = 'block';
     document.getElementById('dailyErrorState').style.display = 'none';
     document.getElementById('dailyContent').style.display = 'none';
+    hideStaleBanner('dailyStaleBanner');
 
     apiGet('dashboardDaily', {
       sessionToken: session.isViewer ? '' : session.sessionToken,
@@ -1502,6 +1685,11 @@
       month: parts[1],
       day: parts[2]
     }).then(function (result) {
+      // Cache a good response regardless of staleness below -- see the
+      // identical comment in loadSummary().
+      if (result.success) saveLocalCacheIfNewest(cacheKey, result, mySeq);
+      if (mySeq !== dailyRequestSeq) return; // a newer request has already rendered its own result
+
       setDailyRefreshing(false);
       document.getElementById('dailyLoadingState').style.display = 'none';
 
@@ -1511,6 +1699,9 @@
           location.reload();
           return;
         }
+        // Only for "couldn't complete the request at all" -- never masks a
+        // real backend error (bad_request etc.) behind stale numbers.
+        if (result.error === 'network_error' && tryStaleCacheFallback(cacheKey, 'dailyStaleBanner', renderDailyResult)) return;
         dailyErrorInfo = errorInfoFrom(result, 'errGeneric');
         document.getElementById('dailyErrorState').textContent = resolveErrorText(dailyErrorInfo);
         document.getElementById('dailyErrorState').style.display = 'block';
@@ -1518,24 +1709,7 @@
       }
 
       dailyErrorInfo = null;
-      lastAbsent = result.absent;
-      lastLate = result.late;
-      lastOnLeave = result.onLeave;
-      lastOnTime = result.onTime;
-
-      document.getElementById('absentCount').textContent = result.absentCount;
-      document.getElementById('lateCount').textContent = result.lateCount;
-      document.getElementById('onLeaveCount').textContent = result.onLeaveCount;
-      document.getElementById('onTimeCount').textContent = result.onTimeCount;
-      document.getElementById('absentEmptyState').style.display = result.absentCount === 0 ? 'block' : 'none';
-      document.getElementById('lateEmptyState').style.display = result.lateCount === 0 ? 'block' : 'none';
-      document.getElementById('onLeaveEmptyState').style.display = result.onLeaveCount === 0 ? 'block' : 'none';
-      document.getElementById('onTimeEmptyState').style.display = result.onTimeCount === 0 ? 'block' : 'none';
-      renderNameList('absentList', lastAbsent);
-      renderNameList('lateList', lastLate, 'late');
-      renderNameList('onLeaveList', lastOnLeave, 'leave');
-      renderNameList('onTimeList', lastOnTime, 'present');
-      document.getElementById('dailyContent').style.display = 'block';
+      renderDailyResult(result);
     });
   }
 
