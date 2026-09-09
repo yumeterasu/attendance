@@ -711,28 +711,30 @@
       <div id="dailyErrorState" style="text-align:center;padding:60px 20px;color:var(--danger-text);font-size:14px;display:none;"></div>
 
       <div id="dailyContent" style="display:none;">
-        <!-- Problems-first, good-news-last: same order top to bottom as the
-             cards below, so what needs a look is never below the fold. -->
+        <!-- Headline numbers first (On Time, Late), then the two "not
+             here" categories -- deliberately its own order, independent of
+             the cards below (which stay problems-first for quick scanning
+             of who needs a look). -->
         <div class="stat-row">
-          <div class="stat-tile absent">
-            <div class="stat-label" data-i18n="absentLabel">Absent</div>
-            <div class="stat-value" id="absentCount">0</div>
-            <div class="stat-hint" data-i18n="absentHint">Had a real shift today, never tapped in.</div>
+          <div class="stat-tile present">
+            <div class="stat-label" data-i18n="onTimeLabel">On Time</div>
+            <div class="stat-value" id="onTimeCount">0</div>
+            <div class="stat-hint" data-i18n="onTimeHint">Punched in on time.</div>
           </div>
           <div class="stat-tile late">
             <div class="stat-label" data-i18n="lateLabel">Late</div>
             <div class="stat-value" id="lateCount">0</div>
             <div class="stat-hint" data-i18n="lateHint">Punched in after shift start.</div>
           </div>
+          <div class="stat-tile absent">
+            <div class="stat-label" data-i18n="absentLabel">Absent</div>
+            <div class="stat-value" id="absentCount">0</div>
+            <div class="stat-hint" data-i18n="absentHint">Had a real shift today, never tapped in.</div>
+          </div>
           <div class="stat-tile leave">
             <div class="stat-label" data-i18n="onLeaveLabel">On Leave</div>
             <div class="stat-value" id="onLeaveCount">0</div>
             <div class="stat-hint" data-i18n="onLeaveHint">Shift marked Leave/Holiday, never tapped in.</div>
-          </div>
-          <div class="stat-tile present">
-            <div class="stat-label" data-i18n="onTimeLabel">On Time</div>
-            <div class="stat-value" id="onTimeCount">0</div>
-            <div class="stat-hint" data-i18n="onTimeHint">Punched in on time.</div>
           </div>
         </div>
 
