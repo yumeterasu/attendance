@@ -25,6 +25,13 @@
     --warn-bg: #FFF3E0;
     --warn-text: #B8631A;
     --warn-border: #F0C892;
+    /* Distinct from --warn (used for On Leave, an expected/informational
+       absence) -- a more saturated orange-red so Late reads as needing
+       attention, between --danger (Absent) and --warn on the page's own
+       severity scale. */
+    --late-bg: #FFE7D6;
+    --late-text: #C1470C;
+    --late-border: #F0B48A;
   }
 
   * { box-sizing: border-box; }
@@ -282,6 +289,10 @@
   }
 
   .controls .field { margin-bottom: 0; flex: 0 0 140px; }
+  /* Wider than the other fields -- its longest option, "All (fiscal
+     year)" / "全期間(会計年度)", was clipped (no ellipsis, native <select>
+     just cuts it off) at the standard 140px. */
+  #monthField { flex-basis: 178px; }
   .controls .field select { cursor: pointer; }
 
   .refresh-btn {
@@ -380,6 +391,7 @@
   }
   .stat-tile.present { background: var(--success-bg); border-color: var(--success-border); }
   .stat-tile.absent { background: var(--danger-bg); border-color: var(--danger-border); }
+  .stat-tile.late { background: var(--late-bg); border-color: var(--late-border); }
   .stat-tile.leave { background: var(--warn-bg); border-color: var(--warn-border); }
   .stat-tile .stat-label {
     font-size: 12px;
@@ -389,6 +401,7 @@
   }
   .stat-tile.present .stat-label { color: var(--success-text); }
   .stat-tile.absent .stat-label { color: var(--danger-text); }
+  .stat-tile.late .stat-label { color: var(--late-text); }
   .stat-tile.leave .stat-label { color: var(--warn-text); }
   .stat-tile .stat-value {
     font-size: 36px;
@@ -399,6 +412,7 @@
   }
   .stat-tile.present .stat-value { color: var(--success-text); }
   .stat-tile.absent .stat-value { color: var(--danger-text); }
+  .stat-tile.late .stat-value { color: var(--late-text); }
   .stat-tile.leave .stat-value { color: var(--warn-text); }
 
   .stat-tile .stat-hint {
@@ -435,6 +449,7 @@
   .name-chip .chip-note { font-size: 11px; font-weight: 700; margin-top: 3px; }
   .name-chip.leave .chip-note { color: var(--warn-text); }
   .name-chip.present .chip-note { color: var(--success-text); }
+  .name-chip.late .chip-note { color: var(--late-text); }
 
   .card {
     background: var(--card);
@@ -530,14 +545,21 @@
   }
   #errorState { color: var(--danger-text); display: none; }
 
+  /* The 4 Daily stat tiles (was 3) get cramped before the general mobile
+     breakpoint below kicks in -- own threshold, wide enough that a tablet
+     or a narrow split-screen window still gets a comfortable 2x2 instead
+     of 4 squeezed tiles. */
+  @media (max-width: 860px) {
+    .stat-row { flex-wrap: wrap; }
+    .stat-tile { flex: 1 1 calc(50% - 8px); }
+  }
+
   @media (max-width: 720px) {
     main { padding: 24px 12px 60px; }
     header { padding: 16px 18px; flex-wrap: wrap; row-gap: 10px; }
     .header-right { flex-wrap: wrap; justify-content: flex-end; }
     .controls { flex-wrap: wrap; }
     table { font-size: 12px; }
-    .stat-row { flex-wrap: wrap; }
-    .stat-tile { flex: 1 1 calc(50% - 8px); }
   }
 </style>
 </head>
@@ -676,28 +698,29 @@
       <div id="dailyErrorState" style="text-align:center;padding:60px 20px;color:var(--danger-text);font-size:14px;display:none;"></div>
 
       <div id="dailyContent" style="display:none;">
+        <!-- Problems-first, good-news-last: same order top to bottom as the
+             cards below, so what needs a look is never below the fold. -->
         <div class="stat-row">
-          <div class="stat-tile present">
-            <div class="stat-label" data-i18n="punchedIn">Punched In</div>
-            <div class="stat-value" id="presentCount">0</div>
-            <div class="stat-hint" data-i18n="punchedInHint">Everyone who tapped in today, scheduled or not.</div>
-          </div>
           <div class="stat-tile absent">
             <div class="stat-label" data-i18n="absentLabel">Absent</div>
             <div class="stat-value" id="absentCount">0</div>
             <div class="stat-hint" data-i18n="absentHint">Had a real shift today, never tapped in.</div>
+          </div>
+          <div class="stat-tile late">
+            <div class="stat-label" data-i18n="lateLabel">Late</div>
+            <div class="stat-value" id="lateCount">0</div>
+            <div class="stat-hint" data-i18n="lateHint">Punched in after shift start.</div>
           </div>
           <div class="stat-tile leave">
             <div class="stat-label" data-i18n="onLeaveLabel">On Leave</div>
             <div class="stat-value" id="onLeaveCount">0</div>
             <div class="stat-hint" data-i18n="onLeaveHint">Shift marked Leave/Holiday, never tapped in.</div>
           </div>
-        </div>
-
-        <div class="card">
-          <div class="section-label" data-i18n="presentSectionTitle">Present today — punched in</div>
-          <div id="presentEmptyState" style="display:none;padding:4px 20px 20px;color:var(--text-muted);font-size:13px;" data-i18n="presentEmpty">Nobody has punched in yet today.</div>
-          <div class="name-list" id="presentList"></div>
+          <div class="stat-tile present">
+            <div class="stat-label" data-i18n="onTimeLabel">On Time</div>
+            <div class="stat-value" id="onTimeCount">0</div>
+            <div class="stat-hint" data-i18n="onTimeHint">Punched in on time.</div>
+          </div>
         </div>
 
         <div class="card">
@@ -707,9 +730,21 @@
         </div>
 
         <div class="card">
+          <div class="section-label" data-i18n="lateSectionTitle">Late today — punched in after shift start</div>
+          <div id="lateEmptyState" style="display:none;padding:4px 20px 20px;color:var(--text-muted);font-size:13px;" data-i18n="lateEmpty">Nobody was late today.</div>
+          <div class="name-list" id="lateList"></div>
+        </div>
+
+        <div class="card">
           <div class="section-label" data-i18n="onLeaveSectionTitle">On leave today</div>
           <div id="onLeaveEmptyState" style="display:none;padding:4px 20px 20px;color:var(--text-muted);font-size:13px;" data-i18n="onLeaveEmpty">Nobody on leave today.</div>
           <div class="name-list" id="onLeaveList"></div>
+        </div>
+
+        <div class="card">
+          <div class="section-label" data-i18n="onTimeSectionTitle">On time today — punched in</div>
+          <div id="onTimeEmptyState" style="display:none;padding:4px 20px 20px;color:var(--text-muted);font-size:13px;" data-i18n="onTimeEmpty">Nobody has punched in on time yet today.</div>
+          <div class="name-list" id="onTimeList"></div>
         </div>
       </div>
     </div>
@@ -750,6 +785,7 @@
       errSignInFailed: 'Sign in failed.',
       errGeneric: 'Something went wrong.',
       errNetwork: 'Could not reach the server. Check your connection.',
+      errTimeout: 'The server is taking too long to respond. Please try again in a moment.',
       tabMonthly: 'Monthly',
       tabDaily: 'Daily',
       yearLabel: 'Year',
@@ -772,18 +808,22 @@
       tableLeave: 'Leave',
       dateLabel: 'Date',
       dailyHint: 'A blank/unscheduled day with no punch counts toward nothing below — can’t tell "not scheduled yet" apart from "day off".',
-      punchedIn: 'Punched In',
-      punchedInHint: 'Everyone who tapped in today, scheduled or not.',
       absentLabel: 'Absent',
       absentHint: 'Had a real shift today, never tapped in.',
+      lateLabel: 'Late',
+      lateHint: 'Punched in after shift start.',
       onLeaveLabel: 'On Leave',
       onLeaveHint: 'Shift marked Leave/Holiday, never tapped in.',
-      presentSectionTitle: 'Present today — punched in',
-      presentEmpty: 'Nobody has punched in yet today.',
+      onTimeLabel: 'On Time',
+      onTimeHint: 'Punched in on time.',
       absentSectionTitle: 'Absent today — scheduled, didn’t punch in',
       absentEmpty: 'Nobody — everyone scheduled today showed up.',
+      lateSectionTitle: 'Late today — punched in after shift start',
+      lateEmpty: 'Nobody was late today.',
       onLeaveSectionTitle: 'On leave today',
       onLeaveEmpty: 'Nobody on leave today.',
+      onTimeSectionTitle: 'On time today — punched in',
+      onTimeEmpty: 'Nobody has punched in on time yet today.',
       leaveAnnual: 'Annual',
       leaveSick: 'Sick',
       leavePaidSpecial: 'Paid Special',
@@ -811,6 +851,7 @@
       errSignInFailed: 'サインインに失敗しました。',
       errGeneric: 'エラーが発生しました。',
       errNetwork: 'サーバーに接続できません。接続を確認してください。',
+      errTimeout: 'サーバーの応答に時間がかかっています。少し待ってからもう一度お試しください。',
       tabMonthly: '月次',
       tabDaily: '日次',
       yearLabel: '年',
@@ -833,15 +874,19 @@
       tableLeave: '休暇',
       dateLabel: '日付',
       dailyHint: '予定なし・未打刻の日はどちらにも含まれません — 「まだ予定されていない」のか「休みの日」なのか区別できないためです。',
-      punchedIn: '出勤',
-      punchedInHint: '本日打刻した全員(シフトの有無を問わない)。',
       absentLabel: '欠勤',
       absentHint: '本日シフトがあったが、打刻していない。',
+      lateLabel: '遅刻',
+      lateHint: 'シフト開始後に打刻した。',
       onLeaveLabel: '休暇中',
       onLeaveHint: 'シフトが休暇/休日で、打刻していない。',
-      presentSectionTitle: '本日の出勤者 — 打刻済み',
-      presentEmpty: '本日、まだ誰も打刻していません。',
+      onTimeLabel: '定刻',
+      onTimeHint: '定刻に打刻した。',
       absentSectionTitle: '本日の欠勤者 — シフトありで未打刻',
+      lateSectionTitle: '本日の遅刻者 — シフト開始後に打刻',
+      lateEmpty: '本日、遅刻者はいません。',
+      onTimeSectionTitle: '本日の定刻出勤者 — 打刻済み',
+      onTimeEmpty: '本日、まだ定刻に打刻した人はいません。',
       absentEmpty: '該当者なし — 本日予定の全員が出勤しました。',
       onLeaveSectionTitle: '本日の休暇者',
       onLeaveEmpty: '本日、休暇者はいません。',
@@ -964,19 +1009,46 @@
   // Access-Control-Allow-Origin header, so a browser blocks any POST with a
   // JSON body before it's even sent. Plain GET with query-string params
   // avoids the preflight requirement entirely.
-  function apiGet(action, params) {
+  // Without this, a slow/cold-starting Apps Script backend (or a request
+  // that never comes back at all) just leaves fetch() pending forever --
+  // "Loading…"/"Signing in…" stays on screen indefinitely with no error and
+  // nothing to act on. 20s is generous enough not to trip on an ordinary
+  // request, short enough that a stuck one turns into a clear, recoverable
+  // error message instead of a silent hang. dashboardSummary's "All (fiscal
+  // year)" request does a full-sheet read + a whole year's aggregation
+  // server-side -- genuinely heavier -- so callers can pass a longer
+  // timeoutMs for that one instead of this being tuned down to fit it.
+  var API_TIMEOUT_MS = 20000;
+
+  function apiGet(action, params, timeoutMs) {
     var url = new URL(API_URL);
     url.searchParams.set('action', action);
     url.searchParams.set('apiKey', API_KEY);
     Object.keys(params || {}).forEach(function (k) { url.searchParams.set(k, params[k]); });
-    return fetch(url.toString())
+
+    var controller = new AbortController();
+    var timedOut = false;
+    var timer = setTimeout(function () { timedOut = true; controller.abort(); }, timeoutMs || API_TIMEOUT_MS);
+
+    return fetch(url.toString(), { signal: controller.signal })
       .then(function (res) { return res.json(); })
       .catch(function () {
         // messageKey (not a baked-in message string) so this stays
         // translatable if the language changes after this error is shown --
-        // see errorInfoFrom().
-        return { success: false, error: 'network_error', messageKey: 'errNetwork' };
-      });
+        // see errorInfoFrom(). Distinguish "gave up waiting" from "never
+        // even reached the server" -- same underlying fetch() rejection,
+        // but a different, more actionable message for each.
+        return { success: false, error: 'network_error', messageKey: timedOut ? 'errTimeout' : 'errNetwork' };
+      })
+      .finally(function () { clearTimeout(timer); });
+  }
+
+  // dashboardSummary with month="All" reads the whole AttendanceLog sheet
+  // and aggregates a full fiscal year server-side -- meaningfully heavier
+  // than one month, so it gets a longer budget before apiGet gives up.
+  var DASHBOARD_SUMMARY_ALL_TIMEOUT_MS = 45000;
+  function dashboardSummaryTimeoutMs(month) {
+    return month === 'All' ? DASHBOARD_SUMMARY_ALL_TIMEOUT_MS : undefined;
   }
 
   // ---------- Login ----------
@@ -1074,7 +1146,7 @@
       viewerPassword: password,
       year: yearSelect.value,
       month: monthSelect.value
-    }).then(function (result) {
+    }, dashboardSummaryTimeoutMs(monthSelect.value)).then(function (result) {
       viewerBtn.disabled = false;
       viewerBtn.textContent = t('viewDashboard');
 
@@ -1281,7 +1353,7 @@
       viewerPassword: session.isViewer ? session.viewerPassword : '',
       year: yearSelect.value,
       month: monthSelect.value
-    }).then(function (result) {
+    }, dashboardSummaryTimeoutMs(monthSelect.value)).then(function (result) {
       setRefreshing(false);
       document.getElementById('loadingState').style.display = 'none';
 
@@ -1374,10 +1446,13 @@
     btn.classList.toggle('spinning', isRefreshing);
   }
 
-  // Both lists show the day's shift value as a note (which shift the Absent
-  // group missed, which Leave type the On Leave group is on). `noteClass`
-  // (e.g. "leave") just tints that line amber for the On Leave list so it
-  // reads as a status, not a plain label like the Absent list's shift name.
+  // Every list shows a note per person: Absent/Late/On Leave show the day's
+  // shift or leave-type value, On Time/Late show the check-in time instead
+  // (see the `note` fallback below). `noteClass` ("late"/"leave"/"present")
+  // tints that line to match its stat tile's color -- amber for On Leave,
+  // orange-red for Late, green for On Time -- so it reads as a status, not
+  // a plain label. Absent gets no noteClass (default text color): its note
+  // is just the shift they missed, not a status of its own.
   function renderNameList(elId, employees, noteClass) {
     var el = document.getElementById(elId);
     el.innerHTML = '';
@@ -1400,7 +1475,8 @@
   // setLanguage() -- unlike lastEmployees (Monthly), these chips only ever
   // show raw data (name/branch/department/shift/check-in time), nothing
   // translated, so a language switch has nothing here to update.
-  var lastPresent = [];
+  var lastOnTime = [];
+  var lastLate = [];
   var lastAbsent = [];
   var lastOnLeave = [];
 
@@ -1442,19 +1518,23 @@
       }
 
       dailyErrorInfo = null;
-      lastPresent = result.present;
       lastAbsent = result.absent;
+      lastLate = result.late;
       lastOnLeave = result.onLeave;
+      lastOnTime = result.onTime;
 
-      document.getElementById('presentCount').textContent = result.presentCount;
       document.getElementById('absentCount').textContent = result.absentCount;
+      document.getElementById('lateCount').textContent = result.lateCount;
       document.getElementById('onLeaveCount').textContent = result.onLeaveCount;
-      document.getElementById('presentEmptyState').style.display = result.presentCount === 0 ? 'block' : 'none';
+      document.getElementById('onTimeCount').textContent = result.onTimeCount;
       document.getElementById('absentEmptyState').style.display = result.absentCount === 0 ? 'block' : 'none';
+      document.getElementById('lateEmptyState').style.display = result.lateCount === 0 ? 'block' : 'none';
       document.getElementById('onLeaveEmptyState').style.display = result.onLeaveCount === 0 ? 'block' : 'none';
-      renderNameList('presentList', lastPresent, 'present');
+      document.getElementById('onTimeEmptyState').style.display = result.onTimeCount === 0 ? 'block' : 'none';
       renderNameList('absentList', lastAbsent);
+      renderNameList('lateList', lastLate, 'late');
       renderNameList('onLeaveList', lastOnLeave, 'leave');
+      renderNameList('onTimeList', lastOnTime, 'present');
       document.getElementById('dailyContent').style.display = 'block';
     });
   }

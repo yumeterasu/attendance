@@ -1375,21 +1375,24 @@ function handleDashboardSummary_(params) {
  * showed up and who didn't on one specific day, for the executive-facing
  * "today at a glance" view. Same auth as handleDashboardSummary_.
  *
- * Splits every active employee into (at most) one of three buckets, so an
- * admin can tell "didn't come because already on leave" apart from
- * "didn't come despite a real shift" at a glance instead of both reading as
- * one undifferentiated "absent":
- *   - present: tapped IN today, regardless of what (if anything) was
+ * Splits every active employee into (at most) one of four buckets, so an
+ * admin can tell apart, at a glance: didn't come at all vs. came late vs.
+ * already on leave vs. came on time -- instead of everyone who tapped in
+ * reading as one undifferentiated "present":
+ *   - onTime / late: tapped IN today, regardless of what (if anything) was
  *     scheduled -- a real IN is never excluded just because nothing was
- *     scheduled, being present is unambiguous evidence either way. Listed
- *     with each person's check-in time (earliest IN of the day, if more
- *     than one).
+ *     scheduled, being present is unambiguous evidence either way. Which
+ *     of the two comes straight from that IN row's own Late column
+ *     (already computed at check-in time / by recomputeLateAndOt_ -- see
+ *     isLate_), not recomputed here, so it can never quietly drift from
+ *     the Monthly Late count for the same day. Both listed with the
+ *     person's check-in time (earliest IN of the day, if more than one).
  *   - absent: a genuine scheduled shift (not blank, not a full day off --
  *     see FULL_DAY_OFF_SHIFTS) but never tapped in.
  *   - onLeave: no tap in, and the day's shift IS one of FULL_DAY_OFF_SHIFTS
  *     (Annual/Sick/Unpaid/Paid Special Leave, or Holiday).
  * An employee with a blank schedule who never tapped in falls into none of
- * the three: there's no way to tell "not scheduled yet" apart from "day
+ * the four: there's no way to tell "not scheduled yet" apart from "day
  * off" from here, so this can't responsibly call it a no-show. This mirrors
  * the exact same rule menuFillMissedPunches_ (Menu.gs) uses for the same
  * reason.
@@ -1413,35 +1416,45 @@ function handleDashboardDaily_(params) {
   var activeEmployees = getAllEmployees_().filter(function (emp) { return isTrue_(emp.Active); });
 
   // Earliest IN of the day wins if there's more than one (offline sync
-  // duplicate, etc.) -- same convention getMonthLogsByEmployee_ uses --
-  // since it's also shown as the present list's check-in time now, not
-  // just a yes/no flag.
+  // duplicate, etc.) -- same convention getMonthLogsByEmployee_ uses. Late
+  // comes straight from that same row's own Late column (already computed
+  // at check-in time / by recomputeLateAndOt_ -- see isLate_), not
+  // recomputed here, so this can never quietly drift from the Monthly
+  // Late count for the exact same day.
   var logValues = getSheet_('AttendanceLog').getDataRange().getValues();
   var logHeaders = logValues[0];
   var idCol = logHeaders.indexOf('EmployeeID');
   var tsCol = logHeaders.indexOf('Timestamp');
   var typeCol = logHeaders.indexOf('Type');
-  var inTimeByEmployee = {};
+  var lateCol = logHeaders.indexOf('Late');
+  var inRowByEmployee = {};
   for (var i = 1; i < logValues.length; i++) {
     if (logValues[i][typeCol] !== 'IN') continue;
     var ts = new Date(logValues[i][tsCol]);
     if (!isSameDay_(ts, targetDate)) continue;
     var empId = String(logValues[i][idCol]);
-    if (!inTimeByEmployee[empId] || ts < inTimeByEmployee[empId]) inTimeByEmployee[empId] = ts;
+    if (!inRowByEmployee[empId] || ts < inRowByEmployee[empId].ts) {
+      // Same -1 guard as aggregateYearSummary_/getMonthLogsByEmployee_'s
+      // identical Late-column reads -- if the column's ever missing/renamed,
+      // fail safe to "not late" rather than reading logValues[i][-1].
+      inRowByEmployee[empId] = { ts: ts, late: lateCol !== -1 ? isTrue_(logValues[i][lateCol]) : false };
+    }
   }
 
-  var present = [];
+  var onTime = [];
+  var late = [];
   var absent = [];
   var onLeave = [];
   activeEmployees.forEach(function (emp) {
     var shift = (scheduledShiftsForMonth[emp.EmployeeID] && scheduledShiftsForMonth[emp.EmployeeID][day]) || '';
-    var inTime = inTimeByEmployee[emp.EmployeeID];
+    var inRow = inRowByEmployee[emp.EmployeeID];
 
-    if (inTime) {
-      present.push({
+    if (inRow) {
+      var punchEntry = {
         employeeId: emp.EmployeeID, name: emp.Name, department: emp.Department, branch: emp.Branch || '',
-        inTime: Utilities.formatDate(inTime, tz, 'HH:mm')
-      });
+        inTime: Utilities.formatDate(inRow.ts, tz, 'HH:mm')
+      };
+      (inRow.late ? late : onTime).push(punchEntry);
       return;
     }
     var entry = { employeeId: emp.EmployeeID, name: emp.Name, department: emp.Department, branch: emp.Branch || '', shift: shift };
@@ -1456,10 +1469,12 @@ function handleDashboardDaily_(params) {
     year: year,
     month: month,
     day: day,
-    presentCount: present.length,
+    onTimeCount: onTime.length,
+    lateCount: late.length,
     absentCount: absent.length,
     onLeaveCount: onLeave.length,
-    present: present,
+    onTime: onTime,
+    late: late,
     absent: absent,
     onLeave: onLeave
   });
