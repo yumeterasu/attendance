@@ -11,6 +11,7 @@ import { useOfflineSync } from '../hooks/useOfflineSync';
 import { useSession } from '../context/SessionContext';
 import { lookupPinLocally } from '../utils/employeeDirectory';
 import { enqueueCheckin } from '../utils/offlineQueue';
+import { getDeviceBranch } from '../utils/deviceBranch';
 import { cacheScheduleMonth, getCachedScheduleMonth, CachedMonth } from '../utils/scheduleCache';
 import { configureCheckinAudio, playCheckinSound, playCheckoutSound } from '../utils/sound';
 
@@ -346,9 +347,13 @@ export default function KioskScreen({ navigation }: Props) {
   // Saves locally and treats it as a success from the employee's point of
   // view -- useOfflineSync drains this queue automatically once the
   // connection comes back, no separate "sync now" step for anyone to remember.
-  const queueOffline = async (type: 'IN' | 'OUT', ot: boolean) => {
+  // branch is passed in rather than re-read here -- both call sites below
+  // already have it in hand (onConfirm reads it once up front), so a second
+  // AsyncStorage round trip on every network-failure fallback would be
+  // pure waste.
+  const queueOffline = async (type: 'IN' | 'OUT', ot: boolean, branch: string | null) => {
     const name = lookupName ?? '';
-    await enqueueCheckin(pin, type, ot);
+    await enqueueCheckin(pin, type, ot, branch);
     resetCheckin();
     if (type === 'IN') playCheckinSound(); else playCheckoutSound();
     await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -359,16 +364,17 @@ export default function KioskScreen({ navigation }: Props) {
     if (!selection) return;
     const type = selection === 'IN' ? 'IN' : 'OUT';
     const ot = selection === 'OUT_OT';
+    const branch = await getDeviceBranch();
 
     if (!isConnected || forcedOffline) {
       setIsProcessing(true);
-      await queueOffline(type, ot);
+      await queueOffline(type, ot, branch);
       setIsProcessing(false);
       return;
     }
 
     setIsProcessing(true);
-    const res = await kioskCheckin(pin, type, ot);
+    const res = await kioskCheckin(pin, type, ot, branch);
 
     if (res.success) {
       setIsProcessing(false);
@@ -378,7 +384,7 @@ export default function KioskScreen({ navigation }: Props) {
       showFeedback({ kind: 'success', type: res.type, name: res.name, timestamp: res.timestamp, late: res.late, ot: res.ot });
     } else if (res.error === 'timeout' || res.error === 'network_error') {
       // Connection dropped mid-request -- queue it rather than making them retry manually.
-      await queueOffline(type, ot);
+      await queueOffline(type, ot, branch);
       setIsProcessing(false);
     } else {
       setIsProcessing(false);

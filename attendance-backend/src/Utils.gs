@@ -277,16 +277,43 @@ function markSetupCodeUsed_(employeeId) {
   updateEmployeeFields_(found.rowNumber, { SetupCodeUsed: true });
 }
 
-/** Appends any of columnNames that don't already exist as headers on the sheet. */
+/**
+ * Appends any of columnNames that don't already exist as headers on the
+ * sheet. Locked (best-effort) because this is a read-then-write on the
+ * header row called from live request paths -- without a lock, two
+ * concurrent calls (e.g. two kiosk tablets' first check-ins after this
+ * column was introduced) could both read "column missing" before either
+ * writes it, and both append their own copy, leaving two header cells with
+ * the same name. tryLock rather than waitLock, and a SHORT (1s) timeout --
+ * this can run on a latency-sensitive live check-in path (KIOSK_TIMEOUT_MS
+ * is only 3000ms total), so this is capped well below that budget rather
+ * than left unbounded. Not zero added latency in the contended case, but
+ * bounded to a small fraction of the budget, for a race this narrow: only
+ * possible in the brief window before a given column has ever been created
+ * at all, never again after. A missed lock in that rare case is a
+ * self-limiting, cosmetic risk (a stray duplicate header cell) -- refusing
+ * to record someone's attendance, or forcing it to fall back to the
+ * offline queue, over that would be a worse trade.
+ */
 function ensureColumns_(sheetName, columnNames) {
-  var sheet = getSheet_(sheetName);
-  var lastCol = sheet.getLastColumn();
-  var headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
-  columnNames.forEach(function (name) {
-    if (headers.indexOf(name) === -1) {
-      lastCol++;
-      sheet.getRange(1, lastCol).setValue(name);
-      headers.push(name);
-    }
-  });
+  var lock = LockService.getScriptLock();
+  var haveLock = false;
+  try {
+    haveLock = lock.tryLock(1000);
+  } catch (e) {}
+
+  try {
+    var sheet = getSheet_(sheetName);
+    var lastCol = sheet.getLastColumn();
+    var headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+    columnNames.forEach(function (name) {
+      if (headers.indexOf(name) === -1) {
+        lastCol++;
+        sheet.getRange(1, lastCol).setValue(name);
+        headers.push(name);
+      }
+    });
+  } finally {
+    if (haveLock) lock.releaseLock();
+  }
 }

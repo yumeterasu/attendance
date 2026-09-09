@@ -54,10 +54,10 @@ export function adminResetCode(sessionToken: string, employeeId: string) {
   return postAction<{ employeeId: string; setupCode: string }>('adminResetCode', { sessionToken, employeeId });
 }
 
-export function kioskCheckin(pin: string, type: 'IN' | 'OUT', ot?: boolean) {
+export function kioskCheckin(pin: string, type: 'IN' | 'OUT', ot: boolean | undefined, branch: string | null) {
   return postAction<{ type: 'IN' | 'OUT'; timestamp: string; name: string; late?: boolean; ot?: boolean }>(
     'kioskCheckin',
-    { pin, type, ot: ot ? 'true' : undefined },
+    { pin, type, ot: ot ? 'true' : undefined, branch: branch ?? undefined },
     KIOSK_TIMEOUT_MS
   );
 }
@@ -106,13 +106,14 @@ export function kioskDirectory() {
   return postAction<{ employees: { pin: string; name: string }[] }>('kioskDirectory', {});
 }
 
-export function kioskSyncOffline(pin: string, type: 'IN' | 'OUT', ot: boolean, timestamp: string, clientId: string) {
+export function kioskSyncOffline(pin: string, type: 'IN' | 'OUT', ot: boolean, timestamp: string, clientId: string, branch: string | null | undefined) {
   return postAction<{ alreadySynced: boolean; name: string }>('kioskSyncOffline', {
     pin,
     type,
     ot: ot ? 'true' : undefined,
     timestamp,
-    clientId
+    clientId,
+    branch: branch ?? undefined
   });
 }
 

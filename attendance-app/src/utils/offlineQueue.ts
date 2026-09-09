@@ -9,6 +9,7 @@ export type QueuedCheckin = {
   type: 'IN' | 'OUT';
   ot: boolean;
   timestamp: string; // ISO -- the real moment the employee tapped, not whenever this eventually syncs
+  branch: string | null; // this device's configured branch (see deviceBranch.ts) AT THE TIME OF THE TAP -- captured here, not re-read at sync time, in case the device's branch setting changes in between
 };
 
 function makeClientId(): string {
@@ -33,8 +34,8 @@ async function writeQueue(queue: QueuedCheckin[]): Promise<void> {
 }
 
 /** Records a check-in locally right away and queues it for background sync. Returns the generated clientId. */
-export async function enqueueCheckin(pin: string, type: 'IN' | 'OUT', ot: boolean): Promise<string> {
-  const entry: QueuedCheckin = { clientId: makeClientId(), pin, type, ot, timestamp: new Date().toISOString() };
+export async function enqueueCheckin(pin: string, type: 'IN' | 'OUT', ot: boolean, branch: string | null): Promise<string> {
+  const entry: QueuedCheckin = { clientId: makeClientId(), pin, type, ot, timestamp: new Date().toISOString(), branch };
   const queue = await readQueue();
   queue.push(entry);
   await writeQueue(queue);
@@ -57,7 +58,7 @@ export async function flushQueue(): Promise<{ synced: number; remaining: number 
 
   while (queue.length > 0) {
     const next = queue[0];
-    const res = await kioskSyncOffline(next.pin, next.type, next.ot, next.timestamp, next.clientId);
+    const res = await kioskSyncOffline(next.pin, next.type, next.ot, next.timestamp, next.clientId, next.branch);
 
     if (!res.success) {
       if (res.error === 'network_error' || res.error === 'timeout') break; // still offline or server issue -- stop, keep the rest queued in order

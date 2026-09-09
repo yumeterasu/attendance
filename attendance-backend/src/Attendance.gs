@@ -14,6 +14,20 @@ var SHIFTS = ['7:00-16:00', '7:30-16:30', '8:00-17:00', '8:30-17:30', '7:00-17:0
 // "Holiday" is the whole company closed.
 var FULL_DAY_OFF_SHIFTS = ['Annual Leave', 'Sick Leave', 'Unpaid Leave', 'Paid Special Leave', 'Holiday'];
 var BRANCHES = ['PP', 'TL']; // Phrom Phong, Thonglor -- Schedule sheet row order: this branch order first, then Japanese before Thai within each branch
+
+/**
+ * Validates a kiosk device's reported branch (see attendance-app's
+ * deviceBranch.ts) for the AttendanceLog's PunchBranch column. Blank rather
+ * than a rejection for anything unrecognized -- an older app build that
+ * never sends this, or a device that's never had its branch configured
+ * yet, should still record the check-in normally; this is supplementary
+ * metadata, not a requirement. Shared by recordAttendance_ (live) and
+ * recordOfflineSyncedAttendance_ (queued sync) so both apply the exact
+ * same rule.
+ */
+function normalizePunchBranch_(branch) {
+  return BRANCHES.indexOf(branch) !== -1 ? branch : '';
+}
 var OT_GRACE_MINUTES = 15; // first 15 min after shift end never counts as Japanese OT (see computeJapaneseOtMinutes_). Thai OT's free period is governed by OT_QUARTER_MINUTES instead (see computeThaiOtQuarters_) -- the two happen to be the same value today, but changing one no longer changes the other.
 var JP_OT_CAP_MINUTES = 75; // default Japanese OT cap, in minutes/day -- overridden per employee by Employees.OTMaxMinutes when set
 var OT_QUARTER_MINUTES = 15; // Thai OT is counted in whole 15-min blocks, no cap
@@ -162,7 +176,7 @@ function handleKioskCheckin_(params) {
   var found = findEmployeeByKioskPin_(params.pin);
   if (!found) return fail_('not_found', 'Code not recognized');
 
-  return recordAttendance_(found.row.EmployeeID, 'KioskPIN', params.pin, params.type, params.ot === 'true');
+  return recordAttendance_(found.row.EmployeeID, 'KioskPIN', params.pin, params.type, params.ot === 'true', params.branch);
 }
 
 /**
@@ -223,7 +237,7 @@ function handleKioskSyncOffline_(params) {
   if (isNaN(timestamp.getTime())) return fail_('bad_request', 'timestamp did not parse');
 
   var result = recordOfflineSyncedAttendance_(
-    found.row.EmployeeID, params.type, timestamp, params.ot === 'true', params.clientId
+    found.row.EmployeeID, params.type, timestamp, params.ot === 'true', params.clientId, params.branch
   );
   if (result.duplicate) return fail_('duplicate', 'Already recorded around this time, skipped as a duplicate');
   return ok_(result);
@@ -791,8 +805,16 @@ function findLogEntryByClientId_(clientId) {
  * second row -- this function just returns the already-recorded result
  * instead of writing again.
  */
-function recordOfflineSyncedAttendance_(employeeId, type, timestamp, ot, clientId) {
-  ensureColumns_('AttendanceLog', ['ClientId']);
+function recordOfflineSyncedAttendance_(employeeId, type, timestamp, ot, clientId, punchBranch) {
+  // Unconditional (unlike recordAttendance_'s conditional check against
+  // log.headers -- that one's on the tight-timeout live path, this one
+  // isn't) -- ClientId already needed this same unconditional call before
+  // PunchBranch existed, so no extra cost is introduced by adding it here
+  // too. Must run before findLogEntryByClientId_/getRecentAttendanceLog_
+  // below, since appendRow_ further down (no explicit headers arg) re-reads
+  // the header row fresh at write time, but findLogEntryByClientId_ needs
+  // the ClientId column to already exist to find anything by it.
+  ensureColumns_('AttendanceLog', ['ClientId', 'PunchBranch']);
 
   var existing = findLogEntryByClientId_(clientId);
   if (existing) {
@@ -820,6 +842,8 @@ function recordOfflineSyncedAttendance_(employeeId, type, timestamp, ot, clientI
   if (lastTimestamp && timestamp.getTime() > lastTimestamp.getTime() && timestamp.getTime() - lastTimestamp.getTime() < DUPLICATE_GUARD_MS) {
     return { duplicate: true, name: emp.Name };
   }
+
+  var punchBranchForRow = normalizePunchBranch_(punchBranch);
 
   var shiftForRow = '';
   var late = '';
@@ -869,7 +893,8 @@ function recordOfflineSyncedAttendance_(employeeId, type, timestamp, ot, clientI
     Late: late,
     OT: otForRow,
     OTMinutes: otMinutesForRow,
-    OTQuarters: otQuartersForRow
+    OTQuarters: otQuartersForRow,
+    PunchBranch: punchBranchForRow
   });
 
   return {
@@ -884,7 +909,7 @@ function recordOfflineSyncedAttendance_(employeeId, type, timestamp, ot, clientI
   };
 }
 
-function recordAttendance_(employeeId, method, rawScanValue, type, ot) {
+function recordAttendance_(employeeId, method, rawScanValue, type, ot, punchBranch) {
   var found = findEmployeeRow_(employeeId);
   if (!found) return fail_('not_found', 'Employee not found');
   var emp = found.row;
@@ -893,6 +918,23 @@ function recordAttendance_(employeeId, method, rawScanValue, type, ot) {
   }
 
   var log = getRecentAttendanceLog_(); // one bounded read, shared below, instead of re-scanning the whole sheet twice
+  // getRecentAttendanceLog_ already reads the header row -- check that
+  // instead of unconditionally calling ensureColumns_ on every single live
+  // check-in (this path is latency-sensitive, see KIOSK_TIMEOUT_MS). Only
+  // pays for the extra write the first time this sheet has ever seen a
+  // PunchBranch value; after that it's a free array scan on data already
+  // fetched. appendHeaders (not log.headers -- see below) is what
+  // appendRow_ further down actually gets.
+  var appendHeaders = log.headers;
+  if (log.headers.indexOf('PunchBranch') === -1) {
+    ensureColumns_('AttendanceLog', ['PunchBranch']);
+    // Deliberately NOT log.headers.push(...) -- log.rows was already read
+    // with the OLD column count, so every row is one shorter than headers
+    // would then claim; appendHeaders = null instead, so appendRow_ falls
+    // back to its own fresh header read for this one call.
+    appendHeaders = null;
+  }
+
   var lastLog = findLastLogForEmployee_(employeeId, log);
   var now = new Date();
   var lastTimestamp = lastLog && lastLog.Timestamp ? new Date(lastLog.Timestamp) : null;
@@ -900,6 +942,8 @@ function recordAttendance_(employeeId, method, rawScanValue, type, ot) {
   if (lastTimestamp && now.getTime() - lastTimestamp.getTime() < DUPLICATE_GUARD_MS) {
     return fail_('duplicate', 'Already recorded, please wait a moment before scanning again');
   }
+
+  var punchBranchForRow = normalizePunchBranch_(punchBranch);
 
   var shiftForRow = '';
   var late = '';
@@ -955,8 +999,9 @@ function recordAttendance_(employeeId, method, rawScanValue, type, ot) {
     Late: late,
     OT: otForRow,
     OTMinutes: otMinutesForRow,
-    OTQuarters: otQuartersForRow
-  }, log.headers);
+    OTQuarters: otQuartersForRow,
+    PunchBranch: punchBranchForRow
+  }, appendHeaders);
 
   return ok_({
     type: type,

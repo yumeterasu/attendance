@@ -113,7 +113,7 @@ function removeDailyHealthCheckTrigger() {
 // Check on every run -- see checkAndFixCriticalSheets_.
 var CANONICAL_HEADERS = {
   Employees: ['EmployeeID', 'Name', 'Department', 'Active', 'CreatedAt', 'SetupCodeHash', 'SetupCodeSalt', 'SetupCodeUsed', 'IsAdmin', 'Branch', 'KioskPIN', 'OTMaxMinutes', 'Salary', 'LastWorkingDay', 'OTEligible'],
-  AttendanceLog: ['Timestamp', 'EmployeeID', 'Name', 'Department', 'Type', 'Method', 'RawScanValue', 'DurationMinutes', 'Shift', 'Late', 'OT', 'OTMinutes', 'OTQuarters', 'ClientId']
+  AttendanceLog: ['Timestamp', 'EmployeeID', 'Name', 'Department', 'Type', 'Method', 'RawScanValue', 'DurationMinutes', 'Shift', 'Late', 'OT', 'OTMinutes', 'OTQuarters', 'ClientId', 'PunchBranch']
 };
 
 /**
