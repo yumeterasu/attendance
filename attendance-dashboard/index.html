@@ -8,7 +8,7 @@
      the live page for this tag and shows a "new version available" banner
      when it no longer matches what's running in memory. A tab left open for
      days otherwise has no way to know a newer version was ever shipped. -->
-<meta name="app-version" content="2026-09-09.1" />
+<meta name="app-version" content="2026-09-09.2" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap" rel="stylesheet" />
@@ -719,7 +719,6 @@
 
       <div class="spacer"></div>
       <p class="fiscal-hint" id="fiscalHint" style="display:none;"></p>
-      <p class="fiscal-hint" id="dailyHint" data-i18n="dailyHint">A blank/unscheduled day with no punch counts toward nothing below — can't tell "not scheduled yet" apart from "day off".</p>
     </div>
 
     <div id="monthlyView">
@@ -865,7 +864,6 @@
       tableOtPay: 'OT Pay',
       tableLeave: 'Leave',
       dateLabel: 'Date',
-      dailyHint: 'A blank/unscheduled day with no punch counts toward nothing below — can’t tell "not scheduled yet" apart from "day off".',
       absentLabel: 'Absent',
       absentHint: 'Had a real shift today, never tapped in.',
       lateLabel: 'Late',
@@ -934,7 +932,6 @@
       tableOtPay: '残業代',
       tableLeave: '休暇',
       dateLabel: '日付',
-      dailyHint: '予定なし・未打刻の日はどちらにも含まれません — 「まだ予定されていない」のか「休みの日」なのか区別できないためです。',
       absentLabel: '欠勤',
       absentHint: '本日シフトがあったが、打刻していない。',
       lateLabel: '遅刻',
@@ -1617,8 +1614,7 @@
   ];
   var toolbarDailyEls = [
     document.getElementById('dateField'),
-    document.getElementById('dailyRefreshBtn'),
-    document.getElementById('dailyHint')
+    document.getElementById('dailyRefreshBtn')
   ];
 
   function setDashboardView(view) {
