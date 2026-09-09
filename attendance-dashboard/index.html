@@ -4,6 +4,11 @@
 <meta charset="utf-8" />
 <title>Yume Terasu — Attendance Dashboard</title>
 <meta name="viewport" content="width=device-width, initial-scale=1" />
+<!-- Bump this string on every deploy to this file -- checkForUpdate() polls
+     the live page for this tag and shows a "new version available" banner
+     when it no longer matches what's running in memory. A tab left open for
+     days otherwise has no way to know a newer version was ever shipped. -->
+<meta name="app-version" content="2026-09-09.1" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap" rel="stylesheet" />
@@ -556,6 +561,38 @@
     margin-bottom: 16px;
   }
 
+  /* A tab left open for days has no way to know a newer version was
+     shipped -- checkForUpdate() polls for this and shows it, sticky so it
+     stays visible while scrolled. Deliberately louder (solid accent, full
+     width) than .stale-banner -- this isn't "the data might be a bit old",
+     it's "the page itself is out of date". */
+  #updateBanner {
+    display: none;
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    background: var(--accent-dark);
+    color: #ffffff;
+    font-size: 13px;
+    font-weight: 600;
+    padding: 10px 20px;
+  }
+  #updateReloadBtn {
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--accent-dark);
+    background: #ffffff;
+    border: none;
+    border-radius: 8px;
+    padding: 6px 14px;
+    cursor: pointer;
+  }
+  #updateReloadBtn:hover { background: #EEF3FC; }
+
   /* The 4 Daily stat tiles (was 3) get cramped before the general mobile
      breakpoint below kicks in -- own threshold, wide enough that a tablet
      or a narrow split-screen window still gets a comfortable 2x2 instead
@@ -575,6 +612,11 @@
 </style>
 </head>
 <body>
+
+<div id="updateBanner">
+  <span data-i18n="updateAvailable">A new version of this page is available.</span>
+  <button type="button" id="updateReloadBtn" data-i18n="updateReload">Reload</button>
+</div>
 
 <header>
   <div class="brand">
@@ -844,7 +886,9 @@
       leaveSick: 'Sick',
       leavePaidSpecial: 'Paid Special',
       leaveUnpaid: 'Unpaid',
-      viewerName: 'Viewer'
+      viewerName: 'Viewer',
+      updateAvailable: 'A new version of this page is available.',
+      updateReload: 'Reload'
     },
     ja: {
       brandTitle: '勤怠ダッシュボード',
@@ -911,7 +955,9 @@
       leaveSick: '病気休暇',
       leavePaidSpecial: '特別有給',
       leaveUnpaid: '無給休暇',
-      viewerName: 'ビューアー'
+      viewerName: 'ビューアー',
+      updateAvailable: 'このページの新しいバージョンが利用可能です。',
+      updateReload: '再読み込み'
     }
   };
 
@@ -1732,6 +1778,41 @@
     updateFiscalHint();
     setDashboardView('daily'); // Daily opens by default; Monthly is a click away.
   }
+
+  // ---------- Update check ----------
+  //
+  // This page runs entirely from whatever was in memory when the tab was
+  // opened -- the in-app Refresh button only re-fetches data, never the
+  // page's own code, so a tab left open across a deploy has no way to
+  // notice on its own. Polls the live page's own HTML periodically (and
+  // whenever the tab becomes visible again) for its <meta name="app-version">
+  // tag; a mismatch means a newer version has been deployed since this tab
+  // loaded, so show a banner rather than silently reloading out from under
+  // whoever's looking at it.
+  var APP_VERSION = document.querySelector('meta[name="app-version"]').content;
+  var UPDATE_CHECK_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+  var updateAvailable = false;
+
+  function checkForUpdate() {
+    if (updateAvailable) return; // already showing the banner, nothing more to do
+    fetch(location.pathname + location.search, { cache: 'no-store' })
+      .then(function (res) { return res.text(); })
+      .then(function (html) {
+        var m = html.match(/<meta name="app-version" content="([^"]+)"/);
+        if (m && m[1] !== APP_VERSION) {
+          updateAvailable = true;
+          document.getElementById('updateBanner').style.display = 'flex';
+        }
+      })
+      .catch(function () {}); // not critical -- just try again next interval
+  }
+  setInterval(checkForUpdate, UPDATE_CHECK_INTERVAL_MS);
+  document.addEventListener('visibilitychange', function () {
+    if (!document.hidden) checkForUpdate();
+  });
+  document.getElementById('updateReloadBtn').addEventListener('click', function () {
+    location.reload();
+  });
 
   // ---------- Boot ----------
 
