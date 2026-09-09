@@ -1627,7 +1627,7 @@
       var noteHtml = note ? '<span class="chip-note">' + escapeHtml(note) + '</span>' : '';
       chip.innerHTML =
         '<span class="chip-name">' + escapeHtml(emp.name) + '</span>' +
-        '<span class="chip-meta">' + escapeHtml(branchLabel(emp.branch)) + ' · ' + escapeHtml(emp.department || '') + '</span>' +
+        '<span class="chip-meta">' + escapeHtml(branchLabel(emp.branch)) + '</span>' +
         noteHtml;
       el.appendChild(chip);
     });
