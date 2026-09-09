@@ -1053,7 +1053,12 @@
     var timedOut = false;
     var timer = setTimeout(function () { timedOut = true; controller.abort(); }, timeoutMs || API_TIMEOUT_MS);
 
-    return fetch(url.toString(), { signal: controller.signal })
+    // no-store: this is a GET with the exact same URL+query every time
+    // (e.g. clicking Refresh without changing Year/Month/Date), which the
+    // browser's own HTTP cache would otherwise be free to serve without
+    // ever asking the server again -- exactly what Refresh is supposed to
+    // defeat.
+    return fetch(url.toString(), { signal: controller.signal, cache: 'no-store' })
       .then(function (res) { return res.json(); })
       .catch(function () {
         // messageKey (not a baked-in message string) so this stays
