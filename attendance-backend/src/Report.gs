@@ -1427,6 +1427,11 @@ function handleDashboardDaily_(params) {
   var tsCol = logHeaders.indexOf('Timestamp');
   var typeCol = logHeaders.indexOf('Type');
   var lateCol = logHeaders.indexOf('Late');
+  // -1 until every kiosk tablet is running a build that sends this (see
+  // deviceBranch.ts) -- older builds simply never wrote this column's
+  // value for their taps, so it reads back blank for those rows, same as
+  // -1 guard below handles the column not existing at all yet.
+  var punchBranchCol = logHeaders.indexOf('PunchBranch');
   var inRowByEmployee = {};
   for (var i = 1; i < logValues.length; i++) {
     if (logValues[i][typeCol] !== 'IN') continue;
@@ -1437,7 +1442,11 @@ function handleDashboardDaily_(params) {
       // Same -1 guard as aggregateYearSummary_/getMonthLogsByEmployee_'s
       // identical Late-column reads -- if the column's ever missing/renamed,
       // fail safe to "not late" rather than reading logValues[i][-1].
-      inRowByEmployee[empId] = { ts: ts, late: lateCol !== -1 ? isTrue_(logValues[i][lateCol]) : false };
+      inRowByEmployee[empId] = {
+        ts: ts,
+        late: lateCol !== -1 ? isTrue_(logValues[i][lateCol]) : false,
+        punchBranch: punchBranchCol !== -1 ? String(logValues[i][punchBranchCol] || '') : ''
+      };
     }
   }
 
@@ -1452,7 +1461,13 @@ function handleDashboardDaily_(params) {
     if (inRow) {
       var punchEntry = {
         employeeId: emp.EmployeeID, name: emp.Name, department: emp.Department, branch: emp.Branch || '',
-        inTime: Utilities.formatDate(inRow.ts, tz, 'HH:mm')
+        inTime: Utilities.formatDate(inRow.ts, tz, 'HH:mm'),
+        // Where they actually tapped -- separate from `branch` above (their
+        // assigned home branch in Employees), which stays what it always
+        // was. Blank for a tablet still running a pre-PunchBranch build,
+        // not "unassigned"; the frontend shows that as "Unknown", never a
+        // blank/missing-looking value that could read as an error.
+        punchBranch: inRow.punchBranch
       };
       (inRow.late ? late : onTime).push(punchEntry);
       return;

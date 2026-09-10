@@ -8,7 +8,7 @@
      the live page for this tag and shows a "new version available" banner
      when it no longer matches what's running in memory. A tab left open for
      days otherwise has no way to know a newer version was ever shipped. -->
-<meta name="app-version" content="2026-09-09.2" />
+<meta name="app-version" content="2026-09-10.1" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap" rel="stylesheet" />
@@ -886,7 +886,8 @@
       leaveUnpaid: 'Unpaid',
       viewerName: 'Viewer',
       updateAvailable: 'A new version of this page is available.',
-      updateReload: 'Reload'
+      updateReload: 'Reload',
+      branchUnknown: 'Unknown'
     },
     ja: {
       brandTitle: '勤怠ダッシュボード',
@@ -954,7 +955,8 @@
       leaveUnpaid: '無給休暇',
       viewerName: 'ビューアー',
       updateAvailable: 'このページの新しいバージョンが利用可能です。',
-      updateReload: '再読み込み'
+      updateReload: '再読み込み',
+      branchUnknown: '不明'
     }
   };
 
@@ -1027,9 +1029,17 @@
     if (errorStateEl.style.display === 'block' && monthlyErrorInfo) {
       errorStateEl.textContent = resolveErrorText(monthlyErrorInfo);
     }
-    // (Absent/On Leave name chips aren't re-rendered here -- they only ever
-    // show raw data: name, branch, department, shift. None of it is looked
-    // up in TRANSLATIONS, so a language switch has nothing there to update.)
+    // Absent/On Leave chips show only raw data (name, assigned branch,
+    // shift) -- nothing there is looked up in TRANSLATIONS, so those two
+    // lists genuinely have nothing to update on a language switch. On
+    // Time/Late are different: an unattributed punch (a tablet still on a
+    // pre-PunchBranch build) renders as t('branchUnknown') via
+    // punchBranchLabel(), so those two DO need re-rendering here, same as
+    // any other on-screen translated text.
+    if (document.getElementById('dailyContent').style.display !== 'none') {
+      renderNameList('onTimeList', lastOnTime, 'present');
+      renderNameList('lateList', lastLate, 'late');
+    }
     var dailyErrorStateEl = document.getElementById('dailyErrorState');
     if (dailyErrorStateEl.style.display === 'block' && dailyErrorInfo) {
       dailyErrorStateEl.textContent = resolveErrorText(dailyErrorInfo);
@@ -1390,6 +1400,16 @@
     return BRANCH_LABELS[code] || code || '—';
   }
 
+  // Distinct from branchLabel() -- this is specifically for a PUNCH's
+  // recorded branch (see PunchBranch in AttendanceLog), not an employee's
+  // assigned one. Blank here means the tablet that recorded this tap was
+  // still on a pre-branch-tracking build, not "no branch assigned" (every
+  // active employee has one of those) -- so it reads as "Unknown", never as
+  // the same bare "—" branchLabel() falls back to elsewhere on the page.
+  function punchBranchLabel(code) {
+    return code ? branchLabel(code) : t('branchUnknown');
+  }
+
   function renderRows(employees) {
     var body = document.getElementById('summaryBody');
     body.innerHTML = '';
@@ -1657,6 +1677,15 @@
   // orange-red for Late, green for On Time -- so it reads as a status, not
   // a plain label. Absent gets no noteClass (default text color): its note
   // is just the shift they missed, not a status of its own.
+  //
+  // The meta line (under the name) shows a different branch depending on
+  // the list: On Time/Late carry emp.punchBranch (where they actually
+  // tapped -- what was asked for, and the more useful of the two for a
+  // list of people who did show up); Absent/On Leave have no punch to
+  // report a location for, so they keep showing the employee's assigned
+  // branch (emp.branch) instead. `'punchBranch' in emp` (not a truthiness
+  // check) tells the two cases apart -- an empty string is a real, valid
+  // "recorded, but unknown" punchBranch value, not "field absent".
   function renderNameList(elId, employees, noteClass) {
     var el = document.getElementById(elId);
     el.innerHTML = '';
@@ -1667,18 +1696,21 @@
       // entries carry the day's shift value (emp.shift) -- never both.
       var note = emp.shift || emp.inTime;
       var noteHtml = note ? '<span class="chip-note">' + escapeHtml(note) + '</span>' : '';
+      var branchText = ('punchBranch' in emp) ? punchBranchLabel(emp.punchBranch) : branchLabel(emp.branch);
       chip.innerHTML =
         '<span class="chip-name">' + escapeHtml(emp.name) + '</span>' +
-        '<span class="chip-meta">' + escapeHtml(branchLabel(emp.branch)) + '</span>' +
+        '<span class="chip-meta">' + escapeHtml(branchText) + '</span>' +
         noteHtml;
       el.appendChild(chip);
     });
   }
 
-  // Holds the Daily view's last-fetched lists. NOT re-rendered by
-  // setLanguage() -- unlike lastEmployees (Monthly), these chips only ever
-  // show raw data (name/branch/department/shift/check-in time), nothing
-  // translated, so a language switch has nothing here to update.
+  // Holds the Daily view's last-fetched lists. lastAbsent/lastOnLeave are
+  // NOT re-rendered by setLanguage() -- those chips only ever show raw data
+  // (name/assigned branch/shift), nothing translated. lastOnTime/lastLate
+  // ARE re-rendered there (see setLanguage()): an unattributed punch shows
+  // punchBranchLabel()'s translated "Unknown"/"不明" fallback, so those two
+  // do need to pick up a language switch like any other on-screen text.
   var lastOnTime = [];
   var lastLate = [];
   var lastAbsent = [];
