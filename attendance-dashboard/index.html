@@ -8,7 +8,7 @@
      the live page for this tag and shows a "new version available" banner
      when it no longer matches what's running in memory. A tab left open for
      days otherwise has no way to know a newer version was ever shipped. -->
-<meta name="app-version" content="2026-09-10.2" />
+<meta name="app-version" content="2026-09-10.3" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap" rel="stylesheet" />
@@ -1732,10 +1732,24 @@
   // the label text stays just the IN branch's name (no need to spell out
   // both). Never flagged when OUT hasn't happened yet (outPunchBranch is
   // null, not a real disagreement) or either side is unknown.
+  // Phrom Phong first, then Thonglor, Unknown always last (it's meant to
+  // disappear as tablets get updated, so it shouldn't be first no matter
+  // where it'd otherwise sort). A mismatch entry sorts by its IN branch --
+  // the same one its pill label shows. Array.prototype.sort is a STABLE
+  // sort (guaranteed since ES2019), so within each branch group the
+  // server's own order (whatever that is) is preserved rather than
+  // scrambled.
+  var BRANCH_SORT_ORDER = { PP: 0, TL: 1 };
+  function branchSortKey(emp) {
+    var code = ('punchBranch' in emp) ? emp.punchBranch : emp.branch;
+    return BRANCH_SORT_ORDER.hasOwnProperty(code) ? BRANCH_SORT_ORDER[code] : 2;
+  }
+
   function renderNameList(elId, employees, noteClass) {
     var el = document.getElementById(elId);
     el.innerHTML = '';
-    (employees || []).forEach(function (emp) {
+    var sorted = (employees || []).slice().sort(function (a, b) { return branchSortKey(a) - branchSortKey(b); });
+    sorted.forEach(function (emp) {
       var chip = document.createElement('div');
       chip.className = noteClass ? 'name-chip ' + noteClass : 'name-chip';
       // Present entries carry a check-in time (emp.inTime), Absent/On Leave
