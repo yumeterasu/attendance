@@ -1433,20 +1433,34 @@ function handleDashboardDaily_(params) {
   // -1 guard below handles the column not existing at all yet.
   var punchBranchCol = logHeaders.indexOf('PunchBranch');
   var inRowByEmployee = {};
+  // Latest OUT of the day wins (opposite of IN's earliest-wins) -- if
+  // there's more than one, the last one is the real end-of-day departure;
+  // an earlier one is more likely a correction tap. Only used to compare
+  // against the IN branch below (see onTime/late entries' outPunchBranch)
+  // -- never affects the onTime/late/absent/onLeave classification itself,
+  // which stays IN-only as it already was.
+  var outRowByEmployee = {};
   for (var i = 1; i < logValues.length; i++) {
-    if (logValues[i][typeCol] !== 'IN') continue;
+    var rowType = logValues[i][typeCol];
+    if (rowType !== 'IN' && rowType !== 'OUT') continue;
     var ts = new Date(logValues[i][tsCol]);
     if (!isSameDay_(ts, targetDate)) continue;
     var empId = String(logValues[i][idCol]);
-    if (!inRowByEmployee[empId] || ts < inRowByEmployee[empId].ts) {
-      // Same -1 guard as aggregateYearSummary_/getMonthLogsByEmployee_'s
-      // identical Late-column reads -- if the column's ever missing/renamed,
-      // fail safe to "not late" rather than reading logValues[i][-1].
-      inRowByEmployee[empId] = {
-        ts: ts,
-        late: lateCol !== -1 ? isTrue_(logValues[i][lateCol]) : false,
-        punchBranch: punchBranchCol !== -1 ? String(logValues[i][punchBranchCol] || '') : ''
-      };
+    var rowPunchBranch = punchBranchCol !== -1 ? String(logValues[i][punchBranchCol] || '') : '';
+    if (rowType === 'IN') {
+      if (!inRowByEmployee[empId] || ts < inRowByEmployee[empId].ts) {
+        // Same -1 guard as aggregateYearSummary_/getMonthLogsByEmployee_'s
+        // identical Late-column reads -- if the column's ever missing/
+        // renamed, fail safe to "not late" rather than reading
+        // logValues[i][-1].
+        inRowByEmployee[empId] = {
+          ts: ts,
+          late: lateCol !== -1 ? isTrue_(logValues[i][lateCol]) : false,
+          punchBranch: rowPunchBranch
+        };
+      }
+    } else if (!outRowByEmployee[empId] || ts > outRowByEmployee[empId].ts) {
+      outRowByEmployee[empId] = { ts: ts, punchBranch: rowPunchBranch };
     }
   }
 
@@ -1459,6 +1473,7 @@ function handleDashboardDaily_(params) {
     var inRow = inRowByEmployee[emp.EmployeeID];
 
     if (inRow) {
+      var outRow = outRowByEmployee[emp.EmployeeID];
       var punchEntry = {
         employeeId: emp.EmployeeID, name: emp.Name, department: emp.Department, branch: emp.Branch || '',
         inTime: Utilities.formatDate(inRow.ts, tz, 'HH:mm'),
@@ -1467,7 +1482,12 @@ function handleDashboardDaily_(params) {
         // was. Blank for a tablet still running a pre-PunchBranch build,
         // not "unassigned"; the frontend shows that as "Unknown", never a
         // blank/missing-looking value that could read as an error.
-        punchBranch: inRow.punchBranch
+        punchBranch: inRow.punchBranch,
+        // null (not '') specifically means "hasn't tapped OUT yet today" --
+        // the frontend only treats a genuine PP/TL-vs-PP/TL disagreement as
+        // a real mismatch worth flagging, never "still clocked in" or
+        // "OUT tap exists but its own branch is unknown".
+        outPunchBranch: outRow ? outRow.punchBranch : null
       };
       (inRow.late ? late : onTime).push(punchEntry);
       return;

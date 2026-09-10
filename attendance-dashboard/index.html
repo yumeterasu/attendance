@@ -8,7 +8,7 @@
      the live page for this tag and shows a "new version available" banner
      when it no longer matches what's running in memory. A tab left open for
      days otherwise has no way to know a newer version was ever shipped. -->
-<meta name="app-version" content="2026-09-10.1" />
+<meta name="app-version" content="2026-09-10.2" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap" rel="stylesheet" />
@@ -37,6 +37,15 @@
     --late-bg: #FFE7D6;
     --late-text: #C1470C;
     --late-border: #F0B48A;
+    /* Branch identity, not status -- a different dimension from the
+       success/warn/danger/late tokens above, so deliberately not sharing
+       their hues. --branch-pp reuses the page's own accent blue (it's the
+       first/primary branch); --branch-tl is a violet, clearly distinct at
+       a glance and pairs cleanly with blue for the mismatch gradient. */
+    --branch-pp-bg: #EEF3FC;
+    --branch-pp-text: #2E63D6;
+    --branch-tl-bg: #F3EEFE;
+    --branch-tl-text: #7C3AED;
   }
 
   * { box-sizing: border-box; }
@@ -451,6 +460,25 @@
   }
   .name-chip .chip-name { font-size: 13px; font-weight: 700; }
   .name-chip .chip-meta { font-size: 11px; color: var(--text-muted); margin-top: 1px; }
+  /* Branch pill (replaces plain chip-meta text when the branch is known) --
+     see punchBranchLabel()/branchPillClass() in the script below. Composes
+     with the existing .pill (shared shape: display/weight/padding/radius,
+     same one the Monthly table's Late/OT Pay pills already use) rather
+     than redeclaring that shape here -- only the branch-specific colors
+     and spacing are new. Unknown is deliberately NOT a colored pill --
+     plain muted text, same look chip-meta already had, since this is
+     meant to disappear entirely once every tablet is on a
+     PunchBranch-aware build. */
+  .chip-meta.pill { margin-top: 2px; }
+  .chip-meta.branch-pp { background: var(--branch-pp-bg); color: var(--branch-pp-text); }
+  .chip-meta.branch-tl { background: var(--branch-tl-bg); color: var(--branch-tl-text); }
+  /* Tapped IN at one branch, OUT at the other -- the gradient itself is the
+     signal (blue -> violet spans both brand colors above), so the label
+     text stays just the IN branch's name rather than spelling out both. */
+  .chip-meta.branch-mismatch {
+    background: linear-gradient(90deg, var(--branch-pp-text), var(--branch-tl-text));
+    color: #ffffff;
+  }
   .name-chip .chip-note { font-size: 11px; font-weight: 700; margin-top: 3px; }
   .name-chip.leave .chip-note { color: var(--warn-text); }
   .name-chip.present .chip-note { color: var(--success-text); }
@@ -887,7 +915,8 @@
       viewerName: 'Viewer',
       updateAvailable: 'A new version of this page is available.',
       updateReload: 'Reload',
-      branchUnknown: 'Unknown'
+      branchUnknown: 'Unknown',
+      punchMismatchTitle: function (inLabel, outLabel) { return 'Punched IN at ' + inLabel + ', OUT at ' + outLabel + '.'; }
     },
     ja: {
       brandTitle: '勤怠ダッシュボード',
@@ -956,7 +985,8 @@
       viewerName: 'ビューアー',
       updateAvailable: 'このページの新しいバージョンが利用可能です。',
       updateReload: '再読み込み',
-      branchUnknown: '不明'
+      branchUnknown: '不明',
+      punchMismatchTitle: function (inLabel, outLabel) { return inLabel + 'で出勤、' + outLabel + 'で退勤しました。'; }
     }
   };
 
@@ -1678,6 +1708,14 @@
   // a plain label. Absent gets no noteClass (default text color): its note
   // is just the shift they missed, not a status of its own.
   //
+  // 'PP'/'TL' -> which colored pill to use; unrecognized/blank ('Unknown')
+  // deliberately gets no pill class at all -- see .chip-meta.branch-pill in
+  // the stylesheet. Meant to fade out entirely once every tablet is on a
+  // PunchBranch-aware build, so it stays plain, uncolored text on purpose.
+  function branchPillClass(code) {
+    return code === 'PP' ? 'branch-pp' : code === 'TL' ? 'branch-tl' : '';
+  }
+
   // The meta line (under the name) shows a different branch depending on
   // the list: On Time/Late carry emp.punchBranch (where they actually
   // tapped -- what was asked for, and the more useful of the two for a
@@ -1686,6 +1724,14 @@
   // branch (emp.branch) instead. `'punchBranch' in emp` (not a truthiness
   // check) tells the two cases apart -- an empty string is a real, valid
   // "recorded, but unknown" punchBranch value, not "field absent".
+  //
+  // For On Time/Late specifically: if the day's OUT tap (emp.outPunchBranch)
+  // is a DIFFERENT known branch than the IN tap, the pill switches to the
+  // blue->violet gradient instead of a single flat color -- the gradient
+  // itself is the "tapped in at one branch, out at the other" signal, so
+  // the label text stays just the IN branch's name (no need to spell out
+  // both). Never flagged when OUT hasn't happened yet (outPunchBranch is
+  // null, not a real disagreement) or either side is unknown.
   function renderNameList(elId, employees, noteClass) {
     var el = document.getElementById(elId);
     el.innerHTML = '';
@@ -1696,11 +1742,34 @@
       // entries carry the day's shift value (emp.shift) -- never both.
       var note = emp.shift || emp.inTime;
       var noteHtml = note ? '<span class="chip-note">' + escapeHtml(note) + '</span>' : '';
-      var branchText = ('punchBranch' in emp) ? punchBranchLabel(emp.punchBranch) : branchLabel(emp.branch);
+
+      var branchText, pillClass, branchTitle = '';
+      if ('punchBranch' in emp) {
+        branchText = punchBranchLabel(emp.punchBranch);
+        var mismatch = emp.punchBranch && emp.outPunchBranch && emp.punchBranch !== emp.outPunchBranch;
+        pillClass = mismatch ? 'branch-mismatch' : branchPillClass(emp.punchBranch);
+        // The gradient is the only visual cue a mismatch happened at all --
+        // a hover/long-press title spells it out in words too, for anyone
+        // who can't rely on distinguishing it from a flat color pill (or
+        // is on a screen reader, which reads title text but not a
+        // background gradient).
+        if (mismatch) branchTitle = t('punchMismatchTitle')(branchLabel(emp.punchBranch), branchLabel(emp.outPunchBranch));
+      } else {
+        branchText = branchLabel(emp.branch);
+        pillClass = branchPillClass(emp.branch);
+      }
+      var branchClass = pillClass ? 'chip-meta pill ' + pillClass : 'chip-meta';
+
       chip.innerHTML =
         '<span class="chip-name">' + escapeHtml(emp.name) + '</span>' +
-        '<span class="chip-meta">' + escapeHtml(branchText) + '</span>' +
+        '<span class="' + branchClass + '">' + escapeHtml(branchText) + '</span>' +
         noteHtml;
+      // Set as a DOM property, not string-concatenated into the innerHTML
+      // above -- escapeHtml() only escapes &/</> (safe for text content),
+      // not quotes, so building `title="..."` as a string could let a
+      // stray " in branchTitle break out of the attribute. .title = text
+      // never gets parsed as markup, so this is safe regardless of content.
+      if (branchTitle) chip.querySelector('.chip-meta').title = branchTitle;
       el.appendChild(chip);
     });
   }
