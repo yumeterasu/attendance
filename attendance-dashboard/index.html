@@ -8,7 +8,7 @@
      the live page for this tag and shows a "new version available" banner
      when it no longer matches what's running in memory. A tab left open for
      days otherwise has no way to know a newer version was ever shipped. -->
-<meta name="app-version" content="2026-09-11.2" />
+<meta name="app-version" content="2026-09-11.3" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap" rel="stylesheet" />
@@ -827,31 +827,14 @@
         </div>
 
         <div class="card">
-          <div class="section-label" data-i18n="lateSectionTitle">Late today — punched in after shift start</div>
-          <div id="lateEmptyState" style="display:none;padding:4px 20px 20px;color:var(--text-muted);font-size:13px;" data-i18n="lateEmpty">Nobody was late today.</div>
-          <div class="branch-group" id="lateGroupPP" style="display:none;">
-            <div class="branch-group-label branch-pp" data-branch-label="PP">Phrom Phong</div>
-            <div class="name-list" id="lateListPP"></div>
-          </div>
-          <div class="branch-group" id="lateGroupTL" style="display:none;">
-            <div class="branch-group-label branch-tl" data-branch-label="TL">Thonglor</div>
-            <div class="name-list" id="lateListTL"></div>
-          </div>
-          <div class="branch-group" id="lateGroupUnknown" style="display:none;">
-            <div class="branch-group-label">Unknown</div>
-            <div class="name-list" id="lateListUnknown"></div>
-          </div>
-        </div>
-
-        <div class="card">
           <div class="section-label" data-i18n="onLeaveSectionTitle">On leave today</div>
           <div id="onLeaveEmptyState" style="display:none;padding:4px 20px 20px;color:var(--text-muted);font-size:13px;" data-i18n="onLeaveEmpty">Nobody on leave today.</div>
           <div class="name-list" id="onLeaveList"></div>
         </div>
 
         <div class="card">
-          <div class="section-label" data-i18n="onTimeSectionTitle">On time today — punched in</div>
-          <div id="onTimeEmptyState" style="display:none;padding:4px 20px 20px;color:var(--text-muted);font-size:13px;" data-i18n="onTimeEmpty">Nobody has punched in on time yet today.</div>
+          <div class="section-label" data-i18n="checkedInSectionTitle">Checked in today</div>
+          <div id="onTimeEmptyState" style="display:none;padding:4px 20px 20px;color:var(--text-muted);font-size:13px;" data-i18n="checkedInEmpty">Nobody has punched in yet today.</div>
           <div class="branch-group" id="onTimeGroupPP" style="display:none;">
             <div class="branch-group-label branch-pp" data-branch-label="PP">Phrom Phong</div>
             <div class="name-list" id="onTimeListPP"></div>
@@ -937,12 +920,11 @@
       onTimeHint: 'Punched in on time.',
       absentSectionTitle: 'Absent today — scheduled, didn’t punch in',
       absentEmpty: 'Nobody — everyone scheduled today showed up.',
-      lateSectionTitle: 'Late today — punched in after shift start',
-      lateEmpty: 'Nobody was late today.',
       onLeaveSectionTitle: 'On leave today',
       onLeaveEmpty: 'Nobody on leave today.',
-      onTimeSectionTitle: 'On time today — punched in',
-      onTimeEmpty: 'Nobody has punched in on time yet today.',
+      checkedInSectionTitle: 'Checked in today',
+      checkedInEmpty: 'Nobody has punched in yet today.',
+      lateBadge: 'Late',
       leaveAnnual: 'Annual',
       leaveSick: 'Sick',
       leavePaidSpecial: 'Paid Special',
@@ -1006,13 +988,12 @@
       onTimeLabel: '定刻',
       onTimeHint: '定刻に打刻した。',
       absentSectionTitle: '本日の欠勤者 — シフトありで未打刻',
-      lateSectionTitle: '本日の遅刻者 — シフト開始後に打刻',
-      lateEmpty: '本日、遅刻者はいません。',
-      onTimeSectionTitle: '本日の定刻出勤者 — 打刻済み',
-      onTimeEmpty: '本日、まだ定刻に打刻した人はいません。',
       absentEmpty: '該当者なし — 本日予定の全員が出勤しました。',
       onLeaveSectionTitle: '本日の休暇者',
       onLeaveEmpty: '本日、休暇者はいません。',
+      checkedInSectionTitle: '本日の出勤者',
+      checkedInEmpty: '本日、まだ打刻した人はいません。',
+      lateBadge: '遅刻',
       leaveAnnual: '年次有給',
       leaveSick: '病気休暇',
       leavePaidSpecial: '特別有給',
@@ -1096,14 +1077,14 @@
     }
     // Absent/On Leave chips show only raw data (name, assigned branch,
     // shift) -- nothing there is looked up in TRANSLATIONS, so those two
-    // lists genuinely have nothing to update on a language switch. On
-    // Time/Late are different: an unattributed punch (a tablet still on a
-    // pre-PunchBranch build) renders as t('branchUnknown') via
-    // punchBranchLabel(), so those two DO need re-rendering here, same as
-    // any other on-screen translated text.
+    // lists genuinely have nothing to update on a language switch. The
+    // merged On Time/Late list is different: an unattributed punch (a
+    // tablet still on a pre-PunchBranch build) renders as t('branchUnknown')
+    // via punchBranchLabel(), and the "Late" pill text is translated too, so
+    // it DOES need re-rendering here, same as any other on-screen translated
+    // text.
     if (document.getElementById('dailyContent').style.display !== 'none') {
-      renderBranchGroupedList('onTime', lastOnTime, 'present');
-      renderBranchGroupedList('late', lastLate, 'late');
+      renderBranchGroupedList('onTime', lastToday);
     }
     var dailyErrorStateEl = document.getElementById('dailyErrorState');
     if (dailyErrorStateEl.style.display === 'block' && dailyErrorInfo) {
@@ -1795,6 +1776,11 @@
     // entries carry the day's shift value (emp.shift) -- never both.
     var note = emp.shift || emp.inTime;
     var noteHtml = note ? '<span class="chip-note">' + escapeHtml(note) + '</span>' : '';
+    // On Time and Late share one set of branch boxes now (see
+    // renderBranchGroupedList) -- a late arrival is told apart by this
+    // small red "Late" pill instead of its own box. emp.isLate is set by
+    // renderDailyResult when it merges data.onTime/data.late into one list.
+    var lateHtml = emp.isLate ? '<span class="chip-meta pill late">' + escapeHtml(t('lateBadge')) + '</span>' : '';
 
     var branchText, pillClass, branchTitle = '';
     if ('punchBranch' in emp) {
@@ -1811,10 +1797,15 @@
       branchText = branchLabel(emp.branch);
       pillClass = branchPillClass(emp.branch);
     }
-    var branchClass = pillClass ? 'chip-meta pill ' + pillClass : 'chip-meta';
+    // chip-branch (not just chip-meta) so the title-setting query below
+    // can still find this span specifically now that the Late pill above
+    // is also a .chip-meta -- querySelector('.chip-meta') would otherwise
+    // grab whichever of the two comes first in the markup.
+    var branchClass = pillClass ? 'chip-meta chip-branch pill ' + pillClass : 'chip-meta chip-branch';
 
     chip.innerHTML =
       '<span class="chip-name">' + escapeHtml(emp.name) + '</span>' +
+      lateHtml +
       '<span class="' + branchClass + '">' + escapeHtml(branchText) + '</span>' +
       noteHtml;
     // Set as a DOM property, not string-concatenated into the innerHTML
@@ -1822,7 +1813,7 @@
     // not quotes, so building `title="..."` as a string could let a
     // stray " in branchTitle break out of the attribute. .title = text
     // never gets parsed as markup, so this is safe regardless of content.
-    if (branchTitle) chip.querySelector('.chip-meta').title = branchTitle;
+    if (branchTitle) chip.querySelector('.chip-branch').title = branchTitle;
     return chip;
   }
 
@@ -1835,10 +1826,10 @@
     sorted.forEach(function (emp) { el.appendChild(buildNameChip(emp, noteClass)); });
   }
 
-  // On Time/Late: three physically separate boxes (Phrom Phong, Thonglor,
-  // Unknown) instead of one sorted list, per explicit request -- easier to
-  // scan "who's at which branch" at a glance than a single list merely
-  // ordered by branch. idPrefix + 'Group' + key / idPrefix + 'List' + key
+  // On Time and Late share one set of three branch boxes (Phrom Phong,
+  // Thonglor, Unknown) -- a late arrival isn't split into its own box, it's
+  // just tagged with the red "Late" pill built into buildNameChip (see
+  // emp.isLate there). idPrefix + 'Group' + key / idPrefix + 'List' + key
   // must exist in the HTML for each of PP/TL/Unknown (see onTimeGroupPP
   // etc.). A branch group with nobody in it is hidden entirely rather than
   // shown empty -- e.g. Unknown disappears on its own once every tablet is
@@ -1852,7 +1843,7 @@
   // runs again on every language switch and would otherwise stomp this
   // count-included text back to the bare word on every language switch,
   // same bug class as the punch-mismatch tooltip fix earlier.
-  function renderBranchGroupedList(idPrefix, employees, noteClass) {
+  function renderBranchGroupedList(idPrefix, employees) {
     var groups = { PP: [], TL: [], Unknown: [] };
     (employees || []).forEach(function (emp) {
       var code = resolveBranchCode(emp);
@@ -1866,39 +1857,49 @@
       var baseLabel = key === 'Unknown' ? t('branchUnknown') : branchLabel(key);
       groupEl.querySelector('.branch-group-label').textContent = baseLabel + ' (' + list.length + ')';
       listEl.innerHTML = '';
-      list.forEach(function (emp) { listEl.appendChild(buildNameChip(emp, noteClass)); });
+      // noteClass ('late' vs 'present') follows each person's own isLate
+      // flag rather than a single class for the whole box, since a box can
+      // now hold a mix of on-time and late people.
+      list.forEach(function (emp) { listEl.appendChild(buildNameChip(emp, emp.isLate ? 'late' : 'present')); });
     });
   }
 
   // Holds the Daily view's last-fetched lists. lastAbsent/lastOnLeave are
   // NOT re-rendered by setLanguage() -- those chips only ever show raw data
-  // (name/assigned branch/shift), nothing translated. lastOnTime/lastLate
-  // ARE re-rendered there (see setLanguage()): an unattributed punch shows
-  // punchBranchLabel()'s translated "Unknown"/"不明" fallback, so those two
-  // do need to pick up a language switch like any other on-screen text.
-  var lastOnTime = [];
-  var lastLate = [];
+  // (name/assigned branch/shift), nothing translated. lastToday IS
+  // re-rendered there (see setLanguage()): an unattributed punch shows
+  // punchBranchLabel()'s translated "Unknown"/"不明" fallback, and the
+  // "Late" pill text itself is translated too, so it needs to pick up a
+  // language switch like any other on-screen text.
+  //
+  // lastToday merges data.onTime and data.late into the one list the
+  // branch boxes now share -- each late entry gets emp.isLate = true so
+  // buildNameChip/renderBranchGroupedList can tag it, without touching the
+  // objects the server actually sent otherwise.
+  var lastToday = [];
   var lastAbsent = [];
   var lastOnLeave = [];
 
   function renderDailyResult(data) {
     lastAbsent = data.absent;
-    lastLate = data.late;
     lastOnLeave = data.onLeave;
-    lastOnTime = data.onTime;
+    lastToday = (data.onTime || []).concat((data.late || []).map(function (emp) {
+      var tagged = {};
+      for (var key in emp) { if (emp.hasOwnProperty(key)) tagged[key] = emp[key]; }
+      tagged.isLate = true;
+      return tagged;
+    }));
 
     document.getElementById('absentCount').textContent = data.absentCount;
     document.getElementById('lateCount').textContent = data.lateCount;
     document.getElementById('onLeaveCount').textContent = data.onLeaveCount;
     document.getElementById('onTimeCount').textContent = data.onTimeCount;
     document.getElementById('absentEmptyState').style.display = data.absentCount === 0 ? 'block' : 'none';
-    document.getElementById('lateEmptyState').style.display = data.lateCount === 0 ? 'block' : 'none';
     document.getElementById('onLeaveEmptyState').style.display = data.onLeaveCount === 0 ? 'block' : 'none';
-    document.getElementById('onTimeEmptyState').style.display = data.onTimeCount === 0 ? 'block' : 'none';
+    document.getElementById('onTimeEmptyState').style.display = (data.onTimeCount === 0 && data.lateCount === 0) ? 'block' : 'none';
     renderNameList('absentList', lastAbsent);
-    renderBranchGroupedList('late', lastLate, 'late');
     renderNameList('onLeaveList', lastOnLeave, 'leave');
-    renderBranchGroupedList('onTime', lastOnTime, 'present');
+    renderBranchGroupedList('onTime', lastToday);
     document.getElementById('dailyContent').style.display = 'block';
   }
 
