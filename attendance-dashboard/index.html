@@ -8,7 +8,7 @@
      the live page for this tag and shows a "new version available" banner
      when it no longer matches what's running in memory. A tab left open for
      days otherwise has no way to know a newer version was ever shipped. -->
-<meta name="app-version" content="2026-09-11.1" />
+<meta name="app-version" content="2026-09-11.2" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap" rel="stylesheet" />
@@ -838,7 +838,7 @@
             <div class="name-list" id="lateListTL"></div>
           </div>
           <div class="branch-group" id="lateGroupUnknown" style="display:none;">
-            <div class="branch-group-label" data-i18n="branchUnknown">Unknown</div>
+            <div class="branch-group-label">Unknown</div>
             <div class="name-list" id="lateListUnknown"></div>
           </div>
         </div>
@@ -861,7 +861,7 @@
             <div class="name-list" id="onTimeListTL"></div>
           </div>
           <div class="branch-group" id="onTimeGroupUnknown" style="display:none;">
-            <div class="branch-group-label" data-i18n="branchUnknown">Unknown</div>
+            <div class="branch-group-label">Unknown</div>
             <div class="name-list" id="onTimeListUnknown"></div>
           </div>
         </div>
@@ -1843,6 +1843,15 @@
   // etc.). A branch group with nobody in it is hidden entirely rather than
   // shown empty -- e.g. Unknown disappears on its own once every tablet is
   // on a PunchBranch-aware build, with no code change needed here.
+  //
+  // Each box's own heading gets a "(count)" appended, e.g. "Phrom Phong
+  // (27)" -- set here on every render, since the count changes with the
+  // data (the data-branch-label sweep only sets the bare label once at
+  // boot, before any group is ever visible -- see below). This is also why
+  // the Unknown label's HTML has no data-i18n attribute: applyStaticI18n()
+  // runs again on every language switch and would otherwise stomp this
+  // count-included text back to the bare word on every language switch,
+  // same bug class as the punch-mismatch tooltip fix earlier.
   function renderBranchGroupedList(idPrefix, employees, noteClass) {
     var groups = { PP: [], TL: [], Unknown: [] };
     (employees || []).forEach(function (emp) {
@@ -1854,6 +1863,8 @@
       var listEl = document.getElementById(idPrefix + 'List' + key);
       var list = groups[key];
       groupEl.style.display = list.length ? '' : 'none';
+      var baseLabel = key === 'Unknown' ? t('branchUnknown') : branchLabel(key);
+      groupEl.querySelector('.branch-group-label').textContent = baseLabel + ' (' + list.length + ')';
       listEl.innerHTML = '';
       list.forEach(function (emp) { listEl.appendChild(buildNameChip(emp, noteClass)); });
     });
