@@ -8,7 +8,7 @@
      the live page for this tag and shows a "new version available" banner
      when it no longer matches what's running in memory. A tab left open for
      days otherwise has no way to know a newer version was ever shipped. -->
-<meta name="app-version" content="2026-09-11.3" />
+<meta name="app-version" content="2026-09-11.4" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap" rel="stylesheet" />
@@ -472,6 +472,11 @@
     min-width: 140px;
   }
   .name-chip .chip-name { font-size: 13px; font-weight: 700; }
+  /* Name + "Late" pill share one row (space-between pushes the pill to the
+     top-right corner) instead of the pill taking its own line below the
+     name -- keeps a late chip the same height as an on-time one. */
+  .name-chip .chip-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .name-chip .chip-header .chip-meta.pill { margin-top: 0; }
   .name-chip .chip-meta { font-size: 11px; color: var(--text-muted); margin-top: 1px; }
   /* Branch pill (replaces plain chip-meta text when the branch is known) --
      see punchBranchLabel()/branchPillClass() in the script below. Composes
@@ -1804,8 +1809,7 @@
     var branchClass = pillClass ? 'chip-meta chip-branch pill ' + pillClass : 'chip-meta chip-branch';
 
     chip.innerHTML =
-      '<span class="chip-name">' + escapeHtml(emp.name) + '</span>' +
-      lateHtml +
+      '<div class="chip-header"><span class="chip-name">' + escapeHtml(emp.name) + '</span>' + lateHtml + '</div>' +
       '<span class="' + branchClass + '">' + escapeHtml(branchText) + '</span>' +
       noteHtml;
     // Set as a DOM property, not string-concatenated into the innerHTML
