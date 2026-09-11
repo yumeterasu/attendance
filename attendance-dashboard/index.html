@@ -8,7 +8,7 @@
      the live page for this tag and shows a "new version available" banner
      when it no longer matches what's running in memory. A tab left open for
      days otherwise has no way to know a newer version was ever shipped. -->
-<meta name="app-version" content="2026-09-10.3" />
+<meta name="app-version" content="2026-09-11.1" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap" rel="stylesheet" />
@@ -443,6 +443,19 @@
     padding: 16px 20px 4px;
   }
 
+  /* Sub-heading inside a card, one per branch (see onTimeGroupPP etc.) --
+     same left/right padding as .section-label so the chips underneath
+     still line up with it, just smaller/tighter since it's a second-level
+     heading under the card's own .section-label. */
+  .branch-group-label {
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--text-muted);
+    padding: 10px 20px 2px;
+  }
+  .branch-group-label.branch-pp { color: var(--branch-pp-text); }
+  .branch-group-label.branch-tl { color: var(--branch-tl-text); }
+
   .name-list {
     display: flex;
     flex-wrap: wrap;
@@ -816,7 +829,18 @@
         <div class="card">
           <div class="section-label" data-i18n="lateSectionTitle">Late today — punched in after shift start</div>
           <div id="lateEmptyState" style="display:none;padding:4px 20px 20px;color:var(--text-muted);font-size:13px;" data-i18n="lateEmpty">Nobody was late today.</div>
-          <div class="name-list" id="lateList"></div>
+          <div class="branch-group" id="lateGroupPP" style="display:none;">
+            <div class="branch-group-label branch-pp" data-branch-label="PP">Phrom Phong</div>
+            <div class="name-list" id="lateListPP"></div>
+          </div>
+          <div class="branch-group" id="lateGroupTL" style="display:none;">
+            <div class="branch-group-label branch-tl" data-branch-label="TL">Thonglor</div>
+            <div class="name-list" id="lateListTL"></div>
+          </div>
+          <div class="branch-group" id="lateGroupUnknown" style="display:none;">
+            <div class="branch-group-label" data-i18n="branchUnknown">Unknown</div>
+            <div class="name-list" id="lateListUnknown"></div>
+          </div>
         </div>
 
         <div class="card">
@@ -828,7 +852,18 @@
         <div class="card">
           <div class="section-label" data-i18n="onTimeSectionTitle">On time today — punched in</div>
           <div id="onTimeEmptyState" style="display:none;padding:4px 20px 20px;color:var(--text-muted);font-size:13px;" data-i18n="onTimeEmpty">Nobody has punched in on time yet today.</div>
-          <div class="name-list" id="onTimeList"></div>
+          <div class="branch-group" id="onTimeGroupPP" style="display:none;">
+            <div class="branch-group-label branch-pp" data-branch-label="PP">Phrom Phong</div>
+            <div class="name-list" id="onTimeListPP"></div>
+          </div>
+          <div class="branch-group" id="onTimeGroupTL" style="display:none;">
+            <div class="branch-group-label branch-tl" data-branch-label="TL">Thonglor</div>
+            <div class="name-list" id="onTimeListTL"></div>
+          </div>
+          <div class="branch-group" id="onTimeGroupUnknown" style="display:none;">
+            <div class="branch-group-label" data-i18n="branchUnknown">Unknown</div>
+            <div class="name-list" id="onTimeListUnknown"></div>
+          </div>
         </div>
       </div>
     </div>
@@ -1067,8 +1102,8 @@
     // punchBranchLabel(), so those two DO need re-rendering here, same as
     // any other on-screen translated text.
     if (document.getElementById('dailyContent').style.display !== 'none') {
-      renderNameList('onTimeList', lastOnTime, 'present');
-      renderNameList('lateList', lastLate, 'late');
+      renderBranchGroupedList('onTime', lastOnTime, 'present');
+      renderBranchGroupedList('late', lastLate, 'late');
     }
     var dailyErrorStateEl = document.getElementById('dailyErrorState');
     if (dailyErrorStateEl.style.display === 'block' && dailyErrorInfo) {
@@ -1716,75 +1751,111 @@
     return code === 'PP' ? 'branch-pp' : code === 'TL' ? 'branch-tl' : '';
   }
 
-  // The meta line (under the name) shows a different branch depending on
-  // the list: On Time/Late carry emp.punchBranch (where they actually
-  // tapped -- what was asked for, and the more useful of the two for a
-  // list of people who did show up); Absent/On Leave have no punch to
-  // report a location for, so they keep showing the employee's assigned
-  // branch (emp.branch) instead. `'punchBranch' in emp` (not a truthiness
-  // check) tells the two cases apart -- an empty string is a real, valid
-  // "recorded, but unknown" punchBranch value, not "field absent".
-  //
-  // For On Time/Late specifically: if the day's OUT tap (emp.outPunchBranch)
-  // is a DIFFERENT known branch than the IN tap, the pill switches to the
-  // blue->violet gradient instead of a single flat color -- the gradient
-  // itself is the "tapped in at one branch, out at the other" signal, so
-  // the label text stays just the IN branch's name (no need to spell out
-  // both). Never flagged when OUT hasn't happened yet (outPunchBranch is
-  // null, not a real disagreement) or either side is unknown.
+  // On Time/Late carry emp.punchBranch (where they actually tapped -- what
+  // was asked for, and the more useful of the two for a list of people who
+  // did show up); Absent/On Leave have no punch to report a location for,
+  // so they fall back to the employee's assigned branch (emp.branch)
+  // instead. `'punchBranch' in emp` (not a truthiness check) tells the two
+  // cases apart -- an empty string is a real, valid "recorded, but
+  // unknown" punchBranch value, not "field absent". Shared by
+  // branchSortKey and renderBranchGroupedList so both agree on the same
+  // code for the same person; buildNameChip below has its own inline
+  // version of this same check since it needs the raw distinction for more
+  // than just the code (picking punchBranchLabel() vs branchLabel(), and
+  // the mismatch check just below).
+  function resolveBranchCode(emp) {
+    return ('punchBranch' in emp) ? emp.punchBranch : emp.branch;
+  }
+
   // Phrom Phong first, then Thonglor, Unknown always last (it's meant to
   // disappear as tablets get updated, so it shouldn't be first no matter
   // where it'd otherwise sort). A mismatch entry sorts by its IN branch --
   // the same one its pill label shows. Array.prototype.sort is a STABLE
   // sort (guaranteed since ES2019), so within each branch group the
   // server's own order (whatever that is) is preserved rather than
-  // scrambled.
+  // scrambled. (renderBranchGroupedList below doesn't need this at all --
+  // separate boxes make the ordering moot there.)
   var BRANCH_SORT_ORDER = { PP: 0, TL: 1 };
   function branchSortKey(emp) {
-    var code = ('punchBranch' in emp) ? emp.punchBranch : emp.branch;
+    var code = resolveBranchCode(emp);
     return BRANCH_SORT_ORDER.hasOwnProperty(code) ? BRANCH_SORT_ORDER[code] : 2;
   }
 
+  // If the day's OUT tap (emp.outPunchBranch) is a DIFFERENT known branch
+  // than the IN tap, the pill switches to the blue->violet gradient instead
+  // of a single flat color -- the gradient itself is the "tapped in at one
+  // branch, out at the other" signal, so the label text stays just the IN
+  // branch's name (no need to spell out both). Never flagged when OUT
+  // hasn't happened yet (outPunchBranch is null, not a real disagreement)
+  // or either side is unknown.
+  function buildNameChip(emp, noteClass) {
+    var chip = document.createElement('div');
+    chip.className = noteClass ? 'name-chip ' + noteClass : 'name-chip';
+    // Present entries carry a check-in time (emp.inTime), Absent/On Leave
+    // entries carry the day's shift value (emp.shift) -- never both.
+    var note = emp.shift || emp.inTime;
+    var noteHtml = note ? '<span class="chip-note">' + escapeHtml(note) + '</span>' : '';
+
+    var branchText, pillClass, branchTitle = '';
+    if ('punchBranch' in emp) {
+      branchText = punchBranchLabel(emp.punchBranch);
+      var mismatch = emp.punchBranch && emp.outPunchBranch && emp.punchBranch !== emp.outPunchBranch;
+      pillClass = mismatch ? 'branch-mismatch' : branchPillClass(emp.punchBranch);
+      // The gradient is the only visual cue a mismatch happened at all --
+      // a hover/long-press title spells it out in words too, for anyone
+      // who can't rely on distinguishing it from a flat color pill (or
+      // is on a screen reader, which reads title text but not a
+      // background gradient).
+      if (mismatch) branchTitle = t('punchMismatchTitle')(branchLabel(emp.punchBranch), branchLabel(emp.outPunchBranch));
+    } else {
+      branchText = branchLabel(emp.branch);
+      pillClass = branchPillClass(emp.branch);
+    }
+    var branchClass = pillClass ? 'chip-meta pill ' + pillClass : 'chip-meta';
+
+    chip.innerHTML =
+      '<span class="chip-name">' + escapeHtml(emp.name) + '</span>' +
+      '<span class="' + branchClass + '">' + escapeHtml(branchText) + '</span>' +
+      noteHtml;
+    // Set as a DOM property, not string-concatenated into the innerHTML
+    // above -- escapeHtml() only escapes &/</> (safe for text content),
+    // not quotes, so building `title="..."` as a string could let a
+    // stray " in branchTitle break out of the attribute. .title = text
+    // never gets parsed as markup, so this is safe regardless of content.
+    if (branchTitle) chip.querySelector('.chip-meta').title = branchTitle;
+    return chip;
+  }
+
+  // Absent/On Leave: one flat list, sorted by (assigned) branch -- see
+  // buildNameChip/branchSortKey above.
   function renderNameList(elId, employees, noteClass) {
     var el = document.getElementById(elId);
     el.innerHTML = '';
     var sorted = (employees || []).slice().sort(function (a, b) { return branchSortKey(a) - branchSortKey(b); });
-    sorted.forEach(function (emp) {
-      var chip = document.createElement('div');
-      chip.className = noteClass ? 'name-chip ' + noteClass : 'name-chip';
-      // Present entries carry a check-in time (emp.inTime), Absent/On Leave
-      // entries carry the day's shift value (emp.shift) -- never both.
-      var note = emp.shift || emp.inTime;
-      var noteHtml = note ? '<span class="chip-note">' + escapeHtml(note) + '</span>' : '';
+    sorted.forEach(function (emp) { el.appendChild(buildNameChip(emp, noteClass)); });
+  }
 
-      var branchText, pillClass, branchTitle = '';
-      if ('punchBranch' in emp) {
-        branchText = punchBranchLabel(emp.punchBranch);
-        var mismatch = emp.punchBranch && emp.outPunchBranch && emp.punchBranch !== emp.outPunchBranch;
-        pillClass = mismatch ? 'branch-mismatch' : branchPillClass(emp.punchBranch);
-        // The gradient is the only visual cue a mismatch happened at all --
-        // a hover/long-press title spells it out in words too, for anyone
-        // who can't rely on distinguishing it from a flat color pill (or
-        // is on a screen reader, which reads title text but not a
-        // background gradient).
-        if (mismatch) branchTitle = t('punchMismatchTitle')(branchLabel(emp.punchBranch), branchLabel(emp.outPunchBranch));
-      } else {
-        branchText = branchLabel(emp.branch);
-        pillClass = branchPillClass(emp.branch);
-      }
-      var branchClass = pillClass ? 'chip-meta pill ' + pillClass : 'chip-meta';
-
-      chip.innerHTML =
-        '<span class="chip-name">' + escapeHtml(emp.name) + '</span>' +
-        '<span class="' + branchClass + '">' + escapeHtml(branchText) + '</span>' +
-        noteHtml;
-      // Set as a DOM property, not string-concatenated into the innerHTML
-      // above -- escapeHtml() only escapes &/</> (safe for text content),
-      // not quotes, so building `title="..."` as a string could let a
-      // stray " in branchTitle break out of the attribute. .title = text
-      // never gets parsed as markup, so this is safe regardless of content.
-      if (branchTitle) chip.querySelector('.chip-meta').title = branchTitle;
-      el.appendChild(chip);
+  // On Time/Late: three physically separate boxes (Phrom Phong, Thonglor,
+  // Unknown) instead of one sorted list, per explicit request -- easier to
+  // scan "who's at which branch" at a glance than a single list merely
+  // ordered by branch. idPrefix + 'Group' + key / idPrefix + 'List' + key
+  // must exist in the HTML for each of PP/TL/Unknown (see onTimeGroupPP
+  // etc.). A branch group with nobody in it is hidden entirely rather than
+  // shown empty -- e.g. Unknown disappears on its own once every tablet is
+  // on a PunchBranch-aware build, with no code change needed here.
+  function renderBranchGroupedList(idPrefix, employees, noteClass) {
+    var groups = { PP: [], TL: [], Unknown: [] };
+    (employees || []).forEach(function (emp) {
+      var code = resolveBranchCode(emp);
+      groups[(code === 'PP' || code === 'TL') ? code : 'Unknown'].push(emp);
+    });
+    ['PP', 'TL', 'Unknown'].forEach(function (key) {
+      var groupEl = document.getElementById(idPrefix + 'Group' + key);
+      var listEl = document.getElementById(idPrefix + 'List' + key);
+      var list = groups[key];
+      groupEl.style.display = list.length ? '' : 'none';
+      listEl.innerHTML = '';
+      list.forEach(function (emp) { listEl.appendChild(buildNameChip(emp, noteClass)); });
     });
   }
 
@@ -1814,9 +1885,9 @@
     document.getElementById('onLeaveEmptyState').style.display = data.onLeaveCount === 0 ? 'block' : 'none';
     document.getElementById('onTimeEmptyState').style.display = data.onTimeCount === 0 ? 'block' : 'none';
     renderNameList('absentList', lastAbsent);
-    renderNameList('lateList', lastLate, 'late');
+    renderBranchGroupedList('late', lastLate, 'late');
     renderNameList('onLeaveList', lastOnLeave, 'leave');
-    renderNameList('onTimeList', lastOnTime, 'present');
+    renderBranchGroupedList('onTime', lastOnTime, 'present');
     document.getElementById('dailyContent').style.display = 'block';
   }
 
@@ -1926,6 +1997,16 @@
   });
 
   // ---------- Boot ----------
+
+  // The 4 static branch-group headings (Late/On Time x PP/TL) get their
+  // text from here, not hardcoded in the HTML -- single source of truth
+  // with BRANCH_LABELS/branchLabel(), same as every chip pill's label
+  // text. Set once: these never change at runtime (BRANCH_LABELS isn't
+  // translated per-language, unlike "Unknown" alongside them, which is
+  // already handled by the normal data-i18n sweep).
+  document.querySelectorAll('[data-branch-label]').forEach(function (el) {
+    el.textContent = branchLabel(el.getAttribute('data-branch-label'));
+  });
 
   populateYears();
   monthSelect.value = String(new Date().getMonth() + 1);
