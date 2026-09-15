@@ -2,10 +2,13 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { kioskSyncOffline } from '../api/client';
 
 const STORAGE_KEY = 'kiosk_offline_queue_v1';
-// Best-effort backup of a queue value that failed to JSON.parse, so a
-// corrupted read has *some* recovery path (pulled off the device later)
-// instead of every still-unsynced check-in just vanishing with no trace.
-const CORRUPTED_BACKUP_KEY = 'kiosk_offline_queue_v1_corrupted_backup';
+// Prefix for a best-effort backup of a queue value that failed to
+// JSON.parse, so a corrupted read has *some* recovery path (pulled off the
+// device later) instead of every still-unsynced check-in just vanishing
+// with no trace. Suffixed with a timestamp (see readQueue) rather than one
+// fixed key, so a second corruption event before anyone's retrieved the
+// first backup doesn't just overwrite and lose it too.
+const CORRUPTED_BACKUP_KEY_PREFIX = 'kiosk_offline_queue_v1_corrupted_backup_';
 
 export type QueuedCheckin = {
   clientId: string;
@@ -21,16 +24,24 @@ function makeClientId(): string {
 }
 
 async function readQueue(): Promise<QueuedCheckin[]> {
+  // One retry, same as writeQueue() below -- a native-module hiccup on a
+  // read is just as likely to be transient as one on a write, so an
+  // employee tapping Confirm shouldn't see "could not save" over a single
+  // blip that a retry would have silently ridden out. A failure that
+  // survives the retry is deliberately NOT swallowed into "empty queue" --
+  // it propagates to the caller instead. Silently treating "couldn't read
+  // storage" as "empty queue" used to be a second, sneakier way to lose
+  // data: enqueueCheckin would then push its one new entry onto that
+  // fake-empty array and write it back, permanently overwriting however
+  // many earlier unsynced check-ins were actually sitting in storage.
+  // Every caller runs this inside withQueueLock and is expected to treat a
+  // throw as "don't know the real state, don't touch storage" rather than
+  // press on with a guess.
   let raw: string | null;
   try {
     raw = await AsyncStorage.getItem(STORAGE_KEY);
   } catch {
-    // Couldn't even read storage. Nothing's been touched yet at this point
-    // (this only ever runs as the first step of a locked read-modify-write,
-    // see withQueueLock below), so falling back to empty here isn't itself
-    // data loss -- the caller's own write, if any, still goes through
-    // writeQueue()'s real error handling.
-    return [];
+    raw = await AsyncStorage.getItem(STORAGE_KEY); // let this one throw for real if it fails again
   }
   if (!raw) return [];
   try {
@@ -40,10 +51,17 @@ async function readQueue(): Promise<QueuedCheckin[]> {
     // partial write from the app being killed mid-save). This used to
     // silently discard every still-unsynced check-in with zero trace.
     // Now: stash the raw value under a separate key (best-effort -- if
-    // this second write also fails there's nothing more we can do) so
-    // it's at least recoverable from the device later, then fall back to
-    // an empty queue so the kiosk can keep working.
-    AsyncStorage.setItem(CORRUPTED_BACKUP_KEY, raw).catch(() => {});
+    // this write also fails there's nothing more we can do) so it's at
+    // least recoverable from the device later, THEN reset STORAGE_KEY
+    // itself to a valid empty array -- also best-effort, and deliberately
+    // not awaited/thrown on failure, so a corruption event never turns
+    // readQueue() into something that can fail the caller outright.
+    // Without this reset, the same corrupted value would keep failing
+    // JSON.parse on every future read (flushQueue alone reads it every
+    // ~30s via useOfflineSync's retry interval) and write a fresh backup
+    // key each time forever, rather than a single one-time repair.
+    AsyncStorage.setItem(CORRUPTED_BACKUP_KEY_PREFIX + Date.now(), raw).catch(() => {});
+    AsyncStorage.setItem(STORAGE_KEY, '[]').catch(() => {});
     console.warn('[offlineQueue] stored queue was corrupted; backed up and reset to empty');
     return [];
   }
@@ -104,8 +122,11 @@ export async function enqueueCheckin(
   }
 }
 
+// Best-effort: a transient read failure here just means the "N pending"
+// badge doesn't show for a moment -- unlike enqueueCheckin/flushQueue,
+// nothing is written, so there's no data-loss risk in falling back to 0.
 export async function getQueueLength(): Promise<number> {
-  return withQueueLock(async () => (await readQueue()).length);
+  return withQueueLock(async () => (await readQueue()).length).catch(() => 0);
 }
 
 /**
@@ -124,7 +145,16 @@ export async function flushQueue(): Promise<{ synced: number; remaining: number 
   let synced = 0;
 
   while (true) {
-    const next = await withQueueLock(async () => (await readQueue())[0] ?? null);
+    // A read failure here (readQueue() can now throw, see above) means we
+    // don't actually know what's queued -- stop this pass rather than
+    // treat it as "nothing queued" and silently skip everyone waiting to
+    // sync. useOfflineSync retries every 30s / on reconnect regardless.
+    let next: QueuedCheckin | null;
+    try {
+      next = await withQueueLock(async () => (await readQueue())[0] ?? null);
+    } catch {
+      break;
+    }
     if (!next) break;
 
     const res = await kioskSyncOffline(next.pin, next.type, next.ot, next.timestamp, next.clientId, next.branch);
@@ -163,6 +193,9 @@ export async function flushQueue(): Promise<{ synced: number; remaining: number 
     if (stop) break;
   }
 
+  // -1 here means "couldn't read the count" (a storage failure), never a
+  // real queue length -- no current caller inspects `remaining` (useOfflineSync
+  // discards it), but a future one must not treat -1 as a literal count.
   const remaining = await withQueueLock(async () => (await readQueue()).length).catch(() => -1);
   return { synced, remaining };
 }
