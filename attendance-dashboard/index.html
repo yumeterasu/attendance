@@ -8,7 +8,7 @@
      the live page for this tag and shows a "new version available" banner
      when it no longer matches what's running in memory. A tab left open for
      days otherwise has no way to know a newer version was ever shipped. -->
-<meta name="app-version" content="2026-09-11.4" />
+<meta name="app-version" content="2026-09-15.1" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap" rel="stylesheet" />
@@ -1080,9 +1080,9 @@
     if (errorStateEl.style.display === 'block' && monthlyErrorInfo) {
       errorStateEl.textContent = resolveErrorText(monthlyErrorInfo);
     }
-    // Absent/On Leave chips show only raw data (name, assigned branch,
-    // shift) -- nothing there is looked up in TRANSLATIONS, so those two
-    // lists genuinely have nothing to update on a language switch. The
+    // Absent/On Leave chips show only raw data (name, shift) -- nothing
+    // there is looked up in TRANSLATIONS, so those two lists genuinely have
+    // nothing to update on a language switch. The
     // merged On Time/Late list is different: an unattributed punch (a
     // tablet still on a pre-PunchBranch build) renders as t('branchUnknown')
     // via punchBranchLabel(), and the "Late" pill text is translated too, so
@@ -1737,36 +1737,6 @@
     return code === 'PP' ? 'branch-pp' : code === 'TL' ? 'branch-tl' : '';
   }
 
-  // On Time/Late carry emp.punchBranch (where they actually tapped -- what
-  // was asked for, and the more useful of the two for a list of people who
-  // did show up); Absent/On Leave have no punch to report a location for,
-  // so they fall back to the employee's assigned branch (emp.branch)
-  // instead. `'punchBranch' in emp` (not a truthiness check) tells the two
-  // cases apart -- an empty string is a real, valid "recorded, but
-  // unknown" punchBranch value, not "field absent". Shared by
-  // branchSortKey and renderBranchGroupedList so both agree on the same
-  // code for the same person; buildNameChip below has its own inline
-  // version of this same check since it needs the raw distinction for more
-  // than just the code (picking punchBranchLabel() vs branchLabel(), and
-  // the mismatch check just below).
-  function resolveBranchCode(emp) {
-    return ('punchBranch' in emp) ? emp.punchBranch : emp.branch;
-  }
-
-  // Phrom Phong first, then Thonglor, Unknown always last (it's meant to
-  // disappear as tablets get updated, so it shouldn't be first no matter
-  // where it'd otherwise sort). A mismatch entry sorts by its IN branch --
-  // the same one its pill label shows. Array.prototype.sort is a STABLE
-  // sort (guaranteed since ES2019), so within each branch group the
-  // server's own order (whatever that is) is preserved rather than
-  // scrambled. (renderBranchGroupedList below doesn't need this at all --
-  // separate boxes make the ordering moot there.)
-  var BRANCH_SORT_ORDER = { PP: 0, TL: 1 };
-  function branchSortKey(emp) {
-    var code = resolveBranchCode(emp);
-    return BRANCH_SORT_ORDER.hasOwnProperty(code) ? BRANCH_SORT_ORDER[code] : 2;
-  }
-
   // If the day's OUT tap (emp.outPunchBranch) is a DIFFERENT known branch
   // than the IN tap, the pill switches to the blue->violet gradient instead
   // of a single flat color -- the gradient itself is the "tapped in at one
@@ -1787,30 +1757,34 @@
     // renderDailyResult when it merges data.onTime/data.late into one list.
     var lateHtml = emp.isLate ? '<span class="chip-meta pill late">' + escapeHtml(t('lateBadge')) + '</span>' : '';
 
-    var branchText, pillClass, branchTitle = '';
+    // Branch pill only applies to entries that actually punched (On
+    // Time/Late carry emp.punchBranch -- Absent/On Leave don't, since they
+    // never tapped in). Showing the employee's assigned branch there used
+    // to read as "this is where they tapped", which isn't true for someone
+    // who hasn't punched at all -- so those two lists get no branch pill,
+    // just the shift/time note below.
+    var branchHtml = '', branchTitle = '';
     if ('punchBranch' in emp) {
-      branchText = punchBranchLabel(emp.punchBranch);
+      var branchText = punchBranchLabel(emp.punchBranch);
       var mismatch = emp.punchBranch && emp.outPunchBranch && emp.punchBranch !== emp.outPunchBranch;
-      pillClass = mismatch ? 'branch-mismatch' : branchPillClass(emp.punchBranch);
+      var pillClass = mismatch ? 'branch-mismatch' : branchPillClass(emp.punchBranch);
+      // chip-branch (not just chip-meta) so the title-setting query below
+      // can still find this span specifically now that the Late pill above
+      // is also a .chip-meta -- querySelector('.chip-meta') would otherwise
+      // grab whichever of the two comes first in the markup.
+      var branchClass = pillClass ? 'chip-meta chip-branch pill ' + pillClass : 'chip-meta chip-branch';
+      branchHtml = '<span class="' + branchClass + '">' + escapeHtml(branchText) + '</span>';
       // The gradient is the only visual cue a mismatch happened at all --
       // a hover/long-press title spells it out in words too, for anyone
       // who can't rely on distinguishing it from a flat color pill (or
       // is on a screen reader, which reads title text but not a
       // background gradient).
       if (mismatch) branchTitle = t('punchMismatchTitle')(branchLabel(emp.punchBranch), branchLabel(emp.outPunchBranch));
-    } else {
-      branchText = branchLabel(emp.branch);
-      pillClass = branchPillClass(emp.branch);
     }
-    // chip-branch (not just chip-meta) so the title-setting query below
-    // can still find this span specifically now that the Late pill above
-    // is also a .chip-meta -- querySelector('.chip-meta') would otherwise
-    // grab whichever of the two comes first in the markup.
-    var branchClass = pillClass ? 'chip-meta chip-branch pill ' + pillClass : 'chip-meta chip-branch';
 
     chip.innerHTML =
       '<div class="chip-header"><span class="chip-name">' + escapeHtml(emp.name) + '</span>' + lateHtml + '</div>' +
-      '<span class="' + branchClass + '">' + escapeHtml(branchText) + '</span>' +
+      branchHtml +
       noteHtml;
     // Set as a DOM property, not string-concatenated into the innerHTML
     // above -- escapeHtml() only escapes &/</> (safe for text content),
@@ -1821,13 +1795,12 @@
     return chip;
   }
 
-  // Absent/On Leave: one flat list, sorted by (assigned) branch -- see
-  // buildNameChip/branchSortKey above.
+  // Absent/On Leave: no branch pill (see buildNameChip above), just name +
+  // shift, in whatever order the server sent them.
   function renderNameList(elId, employees, noteClass) {
     var el = document.getElementById(elId);
     el.innerHTML = '';
-    var sorted = (employees || []).slice().sort(function (a, b) { return branchSortKey(a) - branchSortKey(b); });
-    sorted.forEach(function (emp) { el.appendChild(buildNameChip(emp, noteClass)); });
+    (employees || []).forEach(function (emp) { el.appendChild(buildNameChip(emp, noteClass)); });
   }
 
   // On Time and Late share one set of three branch boxes (Phrom Phong,
@@ -1850,7 +1823,7 @@
   function renderBranchGroupedList(idPrefix, employees) {
     var groups = { PP: [], TL: [], Unknown: [] };
     (employees || []).forEach(function (emp) {
-      var code = resolveBranchCode(emp);
+      var code = emp.punchBranch;
       groups[(code === 'PP' || code === 'TL') ? code : 'Unknown'].push(emp);
     });
     ['PP', 'TL', 'Unknown'].forEach(function (key) {
@@ -1870,7 +1843,7 @@
 
   // Holds the Daily view's last-fetched lists. lastAbsent/lastOnLeave are
   // NOT re-rendered by setLanguage() -- those chips only ever show raw data
-  // (name/assigned branch/shift), nothing translated. lastToday IS
+  // (name/shift), nothing translated. lastToday IS
   // re-rendered there (see setLanguage()): an unattributed punch shows
   // punchBranchLabel()'s translated "Unknown"/"不明" fallback, and the
   // "Late" pill text itself is translated too, so it needs to pick up a
