@@ -353,7 +353,19 @@ export default function KioskScreen({ navigation }: Props) {
   // pure waste.
   const queueOffline = async (type: 'IN' | 'OUT', ot: boolean, branch: string | null) => {
     const name = lookupName ?? '';
-    await enqueueCheckin(pin, type, ot, branch);
+    const result = await enqueueCheckin(pin, type, ot, branch);
+    if (!result.success) {
+      // Could not actually persist this locally (e.g. device storage full
+      // or corrupted) -- must never show the "saved offline" success below
+      // when nothing was actually written, since there'd be nothing left
+      // to sync later. Retrying is unlikely to help on its own if storage
+      // itself is the problem, so this points the employee at an admin
+      // instead of just letting them tap Confirm again into the same wall.
+      resetCheckin();
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      showFeedback({ kind: 'error', message: 'Could not save your check-in on this device. Please tell your admin.' });
+      return;
+    }
     resetCheckin();
     if (type === 'IN') playCheckinSound(); else playCheckoutSound();
     await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
