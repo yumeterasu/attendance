@@ -8,7 +8,7 @@
      the live page for this tag and shows a "new version available" banner
      when it no longer matches what's running in memory. A tab left open for
      days otherwise has no way to know a newer version was ever shipped. -->
-<meta name="app-version" content="2026-09-15.1" />
+<meta name="app-version" content="2026-09-15.2" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap" rel="stylesheet" />
@@ -1147,7 +1147,9 @@
   // timeoutMs for that one instead of this being tuned down to fit it.
   var API_TIMEOUT_MS = 20000;
 
-  function apiGet(action, params, timeoutMs) {
+  // isRetry: internal, set on the one automatic retry below -- callers
+  // never pass this themselves.
+  function apiGet(action, params, timeoutMs, isRetry) {
     var url = new URL(API_URL);
     url.searchParams.set('action', action);
     url.searchParams.set('apiKey', API_KEY);
@@ -1165,6 +1167,26 @@
     return fetch(url.toString(), { signal: controller.signal, cache: 'no-store' })
       .then(function (res) { return res.json(); })
       .catch(function () {
+        // A timeout here is usually the backend's Apps Script Web App
+        // still cold-starting, not a real outage -- one silent automatic
+        // retry (same action/params/budget) quietly resolves that instead
+        // of making the admin read an error and click Refresh themselves.
+        // Only for a timeout, and only once: a genuine network_error (never
+        // even reached the server) or a second timeout in a row falls
+        // through to the error below as before.
+        //
+        // Never for 'pair' (admin sign-in): it consumes a one-time setup
+        // code server-side. A timeout there doesn't mean the request never
+        // arrived -- the server may have already marked the code used and
+        // handed back a session token that got lost when the client gave up
+        // waiting. Resubmitting would hit handlePair_'s "already used"
+        // rejection and strand the admin with a burned code, even though
+        // sign-in genuinely succeeded. Read-only actions (dashboardSummary/
+        // dashboardDaily) have no such side effect, so a duplicate request
+        // there is harmless.
+        if (timedOut && !isRetry && action !== 'pair') {
+          return apiGet(action, params, timeoutMs, true);
+        }
         // messageKey (not a baked-in message string) so this stays
         // translatable if the language changes after this error is shown --
         // see errorInfoFrom(). Distinguish "gave up waiting" from "never
@@ -1762,7 +1784,10 @@
     // never tapped in). Showing the employee's assigned branch there used
     // to read as "this is where they tapped", which isn't true for someone
     // who hasn't punched at all -- so those two lists get no branch pill,
-    // just the shift/time note below.
+    // just the shift/time note below. `in`, not a truthiness check -- an
+    // empty string is a real, valid "recorded, but unknown" punchBranch
+    // value (still gets a pill, just an uncolored "Unknown" one), not the
+    // same as the key being absent entirely.
     var branchHtml = '', branchTitle = '';
     if ('punchBranch' in emp) {
       var branchText = punchBranchLabel(emp.punchBranch);
