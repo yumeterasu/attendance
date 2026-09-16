@@ -50,18 +50,23 @@ async function readQueue(): Promise<QueuedCheckin[]> {
     // The stored queue is corrupted -- shouldn't normally happen (e.g. a
     // partial write from the app being killed mid-save). This used to
     // silently discard every still-unsynced check-in with zero trace.
-    // Now: stash the raw value under a separate key (best-effort -- if
-    // this write also fails there's nothing more we can do) so it's at
-    // least recoverable from the device later, THEN reset STORAGE_KEY
-    // itself to a valid empty array -- also best-effort, and deliberately
-    // not awaited/thrown on failure, so a corruption event never turns
-    // readQueue() into something that can fail the caller outright.
-    // Without this reset, the same corrupted value would keep failing
-    // JSON.parse on every future read (flushQueue alone reads it every
-    // ~30s via useOfflineSync's retry interval) and write a fresh backup
-    // key each time forever, rather than a single one-time repair.
+    // Now: stash the raw value under a separate key (best-effort, fire-
+    // and-forget is fine here -- it's a different key, so it can't race
+    // with anything) so it's at least recoverable from the device later.
     AsyncStorage.setItem(CORRUPTED_BACKUP_KEY_PREFIX + Date.now(), raw).catch(() => {});
-    AsyncStorage.setItem(STORAGE_KEY, '[]').catch(() => {});
+    // Then reset STORAGE_KEY itself to a valid empty array -- AWAITED, not
+    // fire-and-forget, unlike the backup write above. This call and every
+    // caller's own writeQueue() target the exact same key, and every
+    // caller here runs inside withQueueLock (see below), so the only thing
+    // that keeps two writes to STORAGE_KEY from racing is doing them one
+    // at a time within that single locked call, in order. Firing this one
+    // off without waiting for it would let it land AFTER a caller's own
+    // writeQueue() (e.g. enqueueCheckin's) and silently erase whatever
+    // was just legitimately saved -- still swallowed on failure (best-
+    // effort), so a repair that can't complete never turns readQueue()
+    // into something that fails the caller outright; it just means the
+    // same corruption gets detected and retried next time instead.
+    await AsyncStorage.setItem(STORAGE_KEY, '[]').catch(() => {});
     console.warn('[offlineQueue] stored queue was corrupted; backed up and reset to empty');
     return [];
   }
