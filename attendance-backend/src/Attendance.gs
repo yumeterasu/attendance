@@ -28,6 +28,99 @@ var BRANCHES = ['PP', 'TL']; // Phrom Phong, Thonglor -- Schedule sheet row orde
 function normalizePunchBranch_(branch) {
   return BRANCHES.indexOf(branch) !== -1 ? branch : '';
 }
+
+// Every employee can pick from these 3 at the Kiosk; a handful of people
+// also have one more of their own (Employees.ExtraShift, blank for
+// everyone else) -- e.g. Kahana's 8:30-17:30, Shunya's 7:00-17:00. Kept
+// separate from SHIFTS (which also lists every Leave/Holiday value, none of
+// which an employee should ever pick for themselves at check-in).
+var STANDARD_SHIFT_CHOICES = ['7:00-16:00', '7:30-16:30', '8:00-17:00'];
+
+/**
+ * True if a value looks like a real clock-time shift an employee could
+ * genuinely be scheduled for -- shaped like "H:MM-H:MM" AND a real SHIFTS
+ * entry (so it can never be a Leave/Holiday/Event label, and never a typo'd
+ * time that isn't in the canonical list the Schedule sheet's own dropdown
+ * uses). Shared by shiftChoicesFor_ below (what's actually OFFERED at the
+ * Kiosk -- a bad Employees.ExtraShift is filtered out here and simply never
+ * becomes pickable, not just flagged after the fact) and
+ * checkEmployeesSheet_ in HealthCheck.gs (what's reported as WRONG in the
+ * Employees sheet), so the two can never disagree about what counts as
+ * valid.
+ */
+function isValidShiftChoice_(value) {
+  return /^\d{1,2}:\d{2}-\d{1,2}:\d{2}$/.test(value) && SHIFTS.indexOf(value) !== -1;
+}
+
+/** The list a given employee sees on the Kiosk's shift picker -- the 3 standard choices, plus their own ExtraShift if they have one and it's valid (see isValidShiftChoice_ -- an invalid one is silently omitted, not offered broken). Trimmed, so a stray leading/trailing space from a manual Employees-sheet edit doesn't silently break the round-trip match in normalizeShiftChoice_ below. */
+function shiftChoicesFor_(emp) {
+  var choices = STANDARD_SHIFT_CHOICES.slice();
+  var extra = String(emp.ExtraShift || '').trim();
+  if (extra && isValidShiftChoice_(extra) && choices.indexOf(extra) === -1) choices.push(extra);
+  return choices;
+}
+
+/**
+ * Validates a Kiosk-submitted shift choice against what this specific
+ * employee is actually allowed to pick (their own shiftChoicesFor_) --
+ * never trusts the raw value straight from the request. Blank for
+ * anything not on their list (an older app build that never sends this, a
+ * stale cached shift list from before an ExtraShift was added/removed, or
+ * a tampered request) -- callers fall back to the admin-set schedule in
+ * that case, same as before this feature existed.
+ */
+function normalizeShiftChoice_(emp, shift) {
+  var trimmed = String(shift || '').trim();
+  if (!trimmed) return '';
+  return shiftChoicesFor_(emp).indexOf(trimmed) !== -1 ? trimmed : '';
+}
+
+/**
+ * Overwrites today's cell in the "Schedule YYYY-MM" sheet (this employee's
+ * row, this day's column) with the shift they actually picked at check-in
+ * -- so the sheet ends up showing what really happened, not just what was
+ * planned (including replacing a Leave/Holiday label there, if that's what
+ * was scheduled but they came in and worked anyway -- intentional, not a
+ * bug: Sheets' own Version History is the audit trail for "what did this
+ * cell used to say"). Fails open (does nothing) if that month's sheet, or
+ * this employee's row in it, doesn't exist yet. Uses findScheduleCell_
+ * (Report.gs) -- the same lookup getScheduledShift_ reads with -- so the
+ * two can never disagree about which cell they mean.
+ *
+ * Callers must wrap this in try/catch, not call it bare: a Sheets API
+ * error here (quota, transient failure) must never take the actual
+ * check-in down with it -- seconds matter on this path (see
+ * KIOSK_TIMEOUT_MS in attendance-app), and there's no scenario where
+ * failing the whole check-in over a schedule-sheet cosmetic write is the
+ * right tradeoff.
+ */
+// No locking here, deliberately, same as the read side (getScheduledShift_/
+// findScheduleCell_ have never taken one either). A LockService lock would
+// only serialize this function against ITSELF -- it wouldn't protect
+// against the one real structural race (an admin's "Create/Update Schedule
+// Sheet", which re-sorts every row and doesn't take this lock either), so
+// it would add latency on this tight check-in-timeout path for
+// near-zero actual protection. What DOES make this safe in practice: two
+// concurrent check-ins are two different employees' rows almost always
+// (the same employee re-checking in within a short window is already
+// blocked by DUPLICATE_GUARD_MS well before either tap gets here), so a
+// same-cell collision needs both a same-employee double-tap AND an
+// admin-triggered resort landing in the same instant -- accepted as a rare
+// edge case, same as every other unlocked Schedule-sheet read in this
+// codebase.
+function writeScheduleShiftCell_(employeeId, date, shiftValue) {
+  var loc = findScheduleCell_(employeeId, date);
+  if (!loc) return;
+  // The common case is an employee picking the shift that's already
+  // correctly scheduled for them that day -- findScheduleCell_ already has
+  // the current value in memory at zero extra read cost, so skip the
+  // setValue() round trip entirely when there's nothing to change. Saves a
+  // write (and its latency/quota cost) on the live check-in path for the
+  // majority of picks, not just the rare ExtraShift ones.
+  var current = String(loc.values[loc.rowIndex][loc.dayCol] || '').trim();
+  if (current === shiftValue) return;
+  loc.sheet.getRange(loc.rowIndex + 1, loc.dayCol + 1).setValue(shiftValue);
+}
 var OT_GRACE_MINUTES = 15; // first 15 min after shift end never counts as Japanese OT (see computeJapaneseOtMinutes_). Thai OT's free period is governed by OT_QUARTER_MINUTES instead (see computeThaiOtQuarters_) -- the two happen to be the same value today, but changing one no longer changes the other.
 var JP_OT_CAP_MINUTES = 75; // default Japanese OT cap, in minutes/day -- overridden per employee by Employees.OTMaxMinutes when set
 var OT_QUARTER_MINUTES = 15; // Thai OT is counted in whole 15-min blocks, no cap
@@ -176,7 +269,7 @@ function handleKioskCheckin_(params) {
   var found = findEmployeeByKioskPin_(params.pin);
   if (!found) return fail_('not_found', 'Code not recognized');
 
-  return recordAttendance_(found.row.EmployeeID, 'KioskPIN', params.pin, params.type, params.ot === 'true', params.branch);
+  return recordAttendance_(found.row.EmployeeID, 'KioskPIN', params.pin, params.type, params.ot === 'true', params.branch, params.shift);
 }
 
 /**
@@ -195,7 +288,7 @@ function handleKioskLookupPin_(params) {
     return fail_('inactive', 'Employee is not active');
   }
 
-  return ok_({ name: found.row.Name });
+  return ok_({ name: found.row.Name, shifts: shiftChoicesFor_(found.row) });
 }
 
 /**
@@ -210,7 +303,7 @@ function handleKioskDirectory_(params) {
 
   var employees = getAllEmployees_()
     .filter(function (emp) { return isTrue_(emp.Active) && emp.KioskPIN; })
-    .map(function (emp) { return { pin: pad4_(emp.KioskPIN), name: emp.Name }; });
+    .map(function (emp) { return { pin: pad4_(emp.KioskPIN), name: emp.Name, shifts: shiftChoicesFor_(emp) }; });
 
   return ok_({ employees: employees });
 }
@@ -237,7 +330,7 @@ function handleKioskSyncOffline_(params) {
   if (isNaN(timestamp.getTime())) return fail_('bad_request', 'timestamp did not parse');
 
   var result = recordOfflineSyncedAttendance_(
-    found.row.EmployeeID, params.type, timestamp, params.ot === 'true', params.clientId, params.branch
+    found.row.EmployeeID, params.type, timestamp, params.ot === 'true', params.clientId, params.branch, params.shift
   );
   if (result.duplicate) return fail_('duplicate', 'Already recorded around this time, skipped as a duplicate');
   return ok_(result);
@@ -378,6 +471,14 @@ function handleKioskMyAttendanceBulk_(params) {
  * Schedule cell was still blank at check-in time -- Late/Shift/OT get frozen
  * in then and are never re-checked automatically.
  *
+ * Never touches an IN row whose Shift came from the employee's own Kiosk
+ * pick (ShiftPicked=TRUE) -- that row is already correct by definition (see
+ * writeScheduleShiftCell_), and blindly trusting the Schedule sheet for it
+ * here would run the feature backwards: an unrelated later edit to that
+ * month's Schedule sheet (e.g. Create/Update Schedule Sheet backfilling a
+ * blank row for a different employee) must never overwrite an
+ * already-correct picked shift back to blank/wrong.
+ *
  * "Japanese" is decided from each employee's *current* Employees sheet
  * Department, not the Department value frozen onto the old row -- old rows
  * can carry a stale label (e.g. "Japanese Staff" from before Department was
@@ -418,6 +519,7 @@ function recomputeLateAndOt_(year, month, startDay, endDay) {
   var otCol = headers.indexOf('OT');
   var otMinCol = headers.indexOf('OTMinutes');
   var otQCol = headers.indexOf('OTQuarters');
+  var shiftPickedCol = headers.indexOf('ShiftPicked'); // -1 on a sheet from before this column existed -- every row just behaves as before (schedule-recomputed), see below
 
   // Find exactly which sheet rows belong to this month by scanning ONLY the
   // Timestamp column first (1 column instead of all of them) -- cheap even
@@ -457,6 +559,16 @@ function recomputeLateAndOt_(year, month, startDay, endDay) {
   // touched column back in one batched call at the end, instead of a
   // separate setValue() network round-trip per row.
   var shiftByEmployeeDay = {};
+  // Tracks which IN row's timestamp currently "owns" shiftByEmployeeDay for
+  // each employee/day -- LATEST IN wins, matching findTodayInLog_/
+  // findLogEntryForDate_ (what the live/offline paths actually use to pair
+  // an OUT with "today's IN"). Needed because a day can have more than one
+  // IN row (offline-sync duplicate, admin backdated fix alongside a real
+  // Kiosk tap) processed in arbitrary sheet order here -- without this,
+  // whichever row happened to be LAST in sheet order would silently decide
+  // shiftByEmployeeDay, which could be the wrong one (e.g. clobbering a
+  // genuinely later, correctly-picked shift with an earlier row's).
+  var latestInTsByKey = {};
   var inRowsUpdated = 0;
   var outRowsUpdated = 0;
 
@@ -468,6 +580,27 @@ function recomputeLateAndOt_(year, month, startDay, endDay) {
     if (sliceValues[i][typeCol] !== 'IN') continue;
 
     var employeeId = String(sliceValues[i][idCol]);
+    var key = employeeId + '|' + day;
+    var isLatestSoFar = !(key in latestInTsByKey) || ts.getTime() >= latestInTsByKey[key];
+
+    // A row whose Shift came from the employee's own Kiosk pick (see
+    // ShiftPicked/writeScheduleShiftCell_ in the live/offline check-in
+    // paths) is already correct BY DEFINITION -- recomputing it from the
+    // Schedule sheet would run this feature backwards: the point of
+    // writeScheduleShiftCell_ is that the Schedule sheet catches up to
+    // what was picked, not the other way around. Left completely
+    // untouched (Shift/Late never rewritten here); its already-correct
+    // shift only feeds shiftByEmployeeDay (for the OUT-row loop's OT calc
+    // below) when it's also the latest-so-far IN for that key, same rule
+    // as every other row.
+    if (shiftPickedCol !== -1 && isTrue_(sliceValues[i][shiftPickedCol])) {
+      if (isLatestSoFar) {
+        latestInTsByKey[key] = ts.getTime();
+        shiftByEmployeeDay[key] = sliceValues[i][shiftCol];
+      }
+      continue;
+    }
+
     var scheduledShift = (shiftsForMonth[employeeId] && shiftsForMonth[employeeId][day]) || '';
     // An Event day is always on time, no matter when the actual tap
     // happened -- same rule eventShiftOverrideTimestamp_ enforces live at
@@ -479,7 +612,10 @@ function recomputeLateAndOt_(year, month, startDay, endDay) {
 
     sliceValues[i][shiftCol] = scheduledShift;
     sliceValues[i][lateCol] = late;
-    shiftByEmployeeDay[employeeId + '|' + day] = scheduledShift;
+    if (isLatestSoFar) {
+      latestInTsByKey[key] = ts.getTime();
+      shiftByEmployeeDay[key] = scheduledShift;
+    }
     inRowsUpdated++;
   }
 
@@ -805,16 +941,17 @@ function findLogEntryByClientId_(clientId) {
  * second row -- this function just returns the already-recorded result
  * instead of writing again.
  */
-function recordOfflineSyncedAttendance_(employeeId, type, timestamp, ot, clientId, punchBranch) {
+function recordOfflineSyncedAttendance_(employeeId, type, timestamp, ot, clientId, punchBranch, shift) {
   // Unconditional (unlike recordAttendance_'s conditional check against
   // log.headers -- that one's on the tight-timeout live path, this one
   // isn't) -- ClientId already needed this same unconditional call before
-  // PunchBranch existed, so no extra cost is introduced by adding it here
-  // too. Must run before findLogEntryByClientId_/getRecentAttendanceLog_
-  // below, since appendRow_ further down (no explicit headers arg) re-reads
-  // the header row fresh at write time, but findLogEntryByClientId_ needs
-  // the ClientId column to already exist to find anything by it.
-  ensureColumns_('AttendanceLog', ['ClientId', 'PunchBranch']);
+  // PunchBranch/ShiftPicked existed, so no extra cost is introduced by
+  // adding them here too. Must run before
+  // findLogEntryByClientId_/getRecentAttendanceLog_ below, since
+  // appendRow_ further down (no explicit headers arg) re-reads the header
+  // row fresh at write time, but findLogEntryByClientId_ needs the
+  // ClientId column to already exist to find anything by it.
+  ensureColumns_('AttendanceLog', ['ClientId', 'PunchBranch', 'ShiftPicked']);
 
   var existing = findLogEntryByClientId_(clientId);
   if (existing) {
@@ -854,11 +991,19 @@ function recordOfflineSyncedAttendance_(employeeId, type, timestamp, ot, clientI
   var recordedTimestamp = timestamp; // overridden below for "Event" shifts -- see eventShiftOverrideTimestamp_
 
   if (type === 'IN') {
-    var scheduledShift = getScheduledShift_(employeeId, timestamp);
+    // Same picked-shift-wins-else-fall-back-to-schedule rule as the live
+    // path (recordAttendance_) -- see the comment there. Written back to
+    // the Schedule sheet dated by `timestamp` (the real moment the tap
+    // happened on the device, per this function's own doc comment), not
+    // whenever the sync request happens to reach the server.
+    var pickedShift = normalizeShiftChoice_(emp, shift);
+    var scheduledShift = pickedShift || getScheduledShift_(employeeId, timestamp);
     if (scheduledShift) {
       shiftForRow = scheduledShift;
       recordedTimestamp = eventShiftOverrideTimestamp_(scheduledShift, timestamp, 'IN');
       late = isLate_(scheduledShift, recordedTimestamp);
+      // The actual Schedule-sheet write (writeScheduleShiftCell_) happens
+      // AFTER appendRow_ below, not here -- see the comment there for why.
     }
   } else {
     var matchingIn = findLogEntryForDate_(employeeId, 'IN', timestamp);
@@ -894,8 +1039,36 @@ function recordOfflineSyncedAttendance_(employeeId, type, timestamp, ot, clientI
     OT: otForRow,
     OTMinutes: otMinutesForRow,
     OTQuarters: otQuartersForRow,
-    PunchBranch: punchBranchForRow
+    PunchBranch: punchBranchForRow,
+    // True only for an IN row whose Shift came from the employee's own
+    // Kiosk pick (pickedShift, set above) -- recomputeLateAndOt_ reads this
+    // to know it must never overwrite this row's Shift/Late from the
+    // Schedule sheet; it's already correct by definition, and the whole
+    // point of this feature is the Schedule sheet catches up to THIS
+    // value (see writeScheduleShiftCell_), not the other way around.
+    ShiftPicked: !!pickedShift
   });
+
+  // Deliberately AFTER the AttendanceLog append above, not before: that's
+  // the real record of the check-in, and it must exist unconditionally
+  // regardless of whether this best-effort side effect succeeds. Writing
+  // the Schedule sheet first (as an earlier version of this code did)
+  // could leave the Schedule sheet showing a picked shift with no
+  // AttendanceLog row and no ShiftPicked flag to back it up, if appendRow_
+  // itself then failed -- a half-committed state that's structurally
+  // impossible with this ordering, since a thrown appendRow_ here means
+  // this line is simply never reached. try/catch, not a bare call -- see
+  // writeScheduleShiftCell_'s doc comment: a failure here must never be
+  // treated as the check-in having failed, since by this point it hasn't.
+  // Logger.log so a failure at least leaves SOME trace (View > Logs)
+  // instead of vanishing completely -- nothing reads this automatically,
+  // but it's the only record if an admin ever goes looking for why a
+  // Schedule cell doesn't match what was picked.
+  if (pickedShift) {
+    try { writeScheduleShiftCell_(employeeId, timestamp, pickedShift); } catch (e) {
+      Logger.log('writeScheduleShiftCell_ failed for ' + employeeId + ' on ' + timestamp + ': ' + e);
+    }
+  }
 
   return {
     alreadySynced: false,
@@ -909,7 +1082,7 @@ function recordOfflineSyncedAttendance_(employeeId, type, timestamp, ot, clientI
   };
 }
 
-function recordAttendance_(employeeId, method, rawScanValue, type, ot, punchBranch) {
+function recordAttendance_(employeeId, method, rawScanValue, type, ot, punchBranch, shift) {
   var found = findEmployeeRow_(employeeId);
   if (!found) return fail_('not_found', 'Employee not found');
   var emp = found.row;
@@ -922,12 +1095,12 @@ function recordAttendance_(employeeId, method, rawScanValue, type, ot, punchBran
   // instead of unconditionally calling ensureColumns_ on every single live
   // check-in (this path is latency-sensitive, see KIOSK_TIMEOUT_MS). Only
   // pays for the extra write the first time this sheet has ever seen a
-  // PunchBranch value; after that it's a free array scan on data already
-  // fetched. appendHeaders (not log.headers -- see below) is what
-  // appendRow_ further down actually gets.
+  // PunchBranch/ShiftPicked value; after that it's a free array scan on
+  // data already fetched. appendHeaders (not log.headers -- see below) is
+  // what appendRow_ further down actually gets.
   var appendHeaders = log.headers;
-  if (log.headers.indexOf('PunchBranch') === -1) {
-    ensureColumns_('AttendanceLog', ['PunchBranch']);
+  if (log.headers.indexOf('PunchBranch') === -1 || log.headers.indexOf('ShiftPicked') === -1) {
+    ensureColumns_('AttendanceLog', ['PunchBranch', 'ShiftPicked']);
     // Deliberately NOT log.headers.push(...) -- log.rows was already read
     // with the OLD column count, so every row is one shorter than headers
     // would then claim; appendHeaders = null instead, so appendRow_ falls
@@ -954,12 +1127,19 @@ function recordAttendance_(employeeId, method, rawScanValue, type, ot, punchBran
   var recordedTimestamp = now; // overridden below for "Event" shifts -- see eventShiftOverrideTimestamp_
 
   if (type === 'IN') {
-    // Shift comes from the admin-filled monthly schedule, not from the employee.
-    var scheduledShift = getScheduledShift_(employeeId, now);
+    // The employee's own pick, validated against their shiftChoicesFor_,
+    // wins when present; falls back to the admin-filled monthly schedule
+    // otherwise -- an older app build that never sends `shift`, or one
+    // that sent something invalid, behaves exactly as before this feature
+    // existed.
+    var pickedShift = normalizeShiftChoice_(emp, shift);
+    var scheduledShift = pickedShift || getScheduledShift_(employeeId, now);
     if (scheduledShift) {
       shiftForRow = scheduledShift;
       recordedTimestamp = eventShiftOverrideTimestamp_(scheduledShift, now, 'IN');
       late = isLate_(scheduledShift, recordedTimestamp);
+      // The actual Schedule-sheet write (writeScheduleShiftCell_) happens
+      // AFTER appendRow_ below, not here -- see the comment there for why.
     }
   } else {
     var todayIn = findTodayInLog_(employeeId, now, log);
@@ -1000,8 +1180,18 @@ function recordAttendance_(employeeId, method, rawScanValue, type, ot, punchBran
     OT: otForRow,
     OTMinutes: otMinutesForRow,
     OTQuarters: otQuartersForRow,
-    PunchBranch: punchBranchForRow
+    PunchBranch: punchBranchForRow,
+    ShiftPicked: !!pickedShift // see the identical field in recordOfflineSyncedAttendance_ for why
   }, appendHeaders);
+
+  // Deliberately AFTER the AttendanceLog append above, not before -- see
+  // the identical ordering (and the full reasoning) in
+  // recordOfflineSyncedAttendance_.
+  if (pickedShift) {
+    try { writeScheduleShiftCell_(employeeId, now, pickedShift); } catch (e) {
+      Logger.log('writeScheduleShiftCell_ failed for ' + employeeId + ' on ' + now + ': ' + e);
+    }
+  }
 
   return ok_({
     type: type,

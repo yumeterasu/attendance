@@ -112,8 +112,27 @@ function removeDailyHealthCheckTrigger() {
 // function that touches that sheet. Checked (and auto-repaired) by Health
 // Check on every run -- see checkAndFixCriticalSheets_.
 var CANONICAL_HEADERS = {
+  // ExtraShift deliberately NOT listed here -- CANONICAL_HEADERS drives
+  // checkAndFixCriticalSheets_'s POSITION-based repair (row[i] gets
+  // overwritten to canonical[i] whenever they differ), so appending to
+  // this array shifts which column index that repair reaches. If the live
+  // sheet already had anything in that next column (an admin's own extra
+  // column, following this same file's own "extra columns beyond the
+  // canonical list are left completely untouched" rule), appending here
+  // would make the repair silently relabel it "ExtraShift" instead.
+  // checkEmployeesSheet_'s own ExtraShift validation below finds the
+  // column by name (headers.indexOf('ExtraShift')) and simply skips the
+  // check when it's absent, the same safe pattern branchCol/otEligibleCol
+  // already use -- no need to declare it canonical for that to work.
   Employees: ['EmployeeID', 'Name', 'Department', 'Active', 'CreatedAt', 'SetupCodeHash', 'SetupCodeSalt', 'SetupCodeUsed', 'IsAdmin', 'Branch', 'KioskPIN', 'OTMaxMinutes', 'Salary', 'LastWorkingDay', 'OTEligible'],
-  AttendanceLog: ['Timestamp', 'EmployeeID', 'Name', 'Department', 'Type', 'Method', 'RawScanValue', 'DurationMinutes', 'Shift', 'Late', 'OT', 'OTMinutes', 'OTQuarters', 'ClientId', 'PunchBranch']
+  // ShiftPicked included here (unlike Employees.ExtraShift, deliberately
+  // excluded above) -- AttendanceLog is append-only and entirely
+  // code-managed (every column here, including this one, only ever gets
+  // added via ensureColumns_/appendRow_), so there's no realistic case of
+  // an admin's own hand-added extra column sitting past the canonical end
+  // for the position-based repair below to clobber, unlike Employees which
+  // admins actively hand-edit.
+  AttendanceLog: ['Timestamp', 'EmployeeID', 'Name', 'Department', 'Type', 'Method', 'RawScanValue', 'DurationMinutes', 'Shift', 'Late', 'OT', 'OTMinutes', 'OTQuarters', 'ClientId', 'PunchBranch', 'ShiftPicked']
 };
 
 /**
@@ -238,7 +257,7 @@ function checkAndFixScheduleHeaders_(findings) {
   });
 }
 
-/** Department spelling, missing Kiosk PIN, and an Active column value that isn't cleanly TRUE/FALSE. */
+/** Department spelling, missing Kiosk PIN, an Active column value that isn't cleanly TRUE/FALSE, and an ExtraShift that isn't a valid SHIFTS entry. */
 function checkEmployeesSheet_(findings) {
   var sheet = getSheet_('Employees');
   var values = sheet.getDataRange().getValues();
@@ -249,6 +268,7 @@ function checkEmployeesSheet_(findings) {
   var pinCol = headers.indexOf('KioskPIN');
   var nameCol = headers.indexOf('Name');
   var otEligibleCol = headers.indexOf('OTEligible'); // -1 until the admin adds this column -- skip the check until then
+  var extraShiftCol = headers.indexOf('ExtraShift'); // -1 until the admin adds this column -- skip the check until then
 
   for (var i = 1; i < values.length; i++) {
     var row = values[i];
@@ -305,6 +325,24 @@ function checkEmployeesSheet_(findings) {
           sheetName: 'Employees',
           a1: sheet.getRange(i + 1, otEligibleCol + 1).getA1Notation(),
           message: name + ': OTEligible column has an unexpected value ("' + rawOtEligible + '") -- should be TRUE or FALSE.'
+        });
+      }
+    }
+
+    if (extraShiftCol !== -1) {
+      // Blank is valid (most employees have no extra Kiosk shift choice at
+      // all -- see shiftChoicesFor_ in Attendance.gs). Non-blank must pass
+      // isValidShiftChoice_ (Attendance.gs) -- the exact same check
+      // shiftChoicesFor_ itself applies before ever offering ExtraShift as
+      // a Kiosk pick, so an invalid value here is already harmless (never
+      // reaches the Kiosk or gets written anywhere) by the time this
+      // finding surfaces; this is just telling the admin to go fix the typo.
+      var rawExtraShift = String(row[extraShiftCol] || '').trim();
+      if (rawExtraShift && !isValidShiftChoice_(rawExtraShift)) {
+        findings.push({
+          sheetName: 'Employees',
+          a1: sheet.getRange(i + 1, extraShiftCol + 1).getA1Notation(),
+          message: name + ': ExtraShift is "' + rawExtraShift + '" -- should be a plain clock-time shift that\'s also in the SHIFTS list (e.g. "8:30-17:30"), not a Leave/Holiday value, the "Event ..." form, or a typo.'
         });
       }
     }

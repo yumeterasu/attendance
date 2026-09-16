@@ -54,16 +54,24 @@ export function adminResetCode(sessionToken: string, employeeId: string) {
   return postAction<{ employeeId: string; setupCode: string }>('adminResetCode', { sessionToken, employeeId });
 }
 
-export function kioskCheckin(pin: string, type: 'IN' | 'OUT', ot: boolean | undefined, branch: string | null) {
+// shift: the employee's own pick from their shiftChoicesFor_ list (see
+// kioskLookupPin/kioskDirectory below) -- only meaningful for type IN, the
+// backend ignores it for OUT. undefined for OUT, or for an IN where nothing
+// was picked (falls back server-side to the admin-set schedule, same as
+// before this feature existed).
+export function kioskCheckin(pin: string, type: 'IN' | 'OUT', ot: boolean | undefined, branch: string | null, shift: string | undefined) {
   return postAction<{ type: 'IN' | 'OUT'; timestamp: string; name: string; late?: boolean; ot?: boolean }>(
     'kioskCheckin',
-    { pin, type, ot: ot ? 'true' : undefined, branch: branch ?? undefined },
+    { pin, type, ot: ot ? 'true' : undefined, branch: branch ?? undefined, shift },
     KIOSK_TIMEOUT_MS
   );
 }
 
+// shifts: the shift strings this specific employee can pick at the Kiosk --
+// the 3 standard choices everyone gets, plus their own ExtraShift if they
+// have one (see shiftChoicesFor_ server-side). Always non-empty.
 export function kioskLookupPin(pin: string) {
-  return postAction<{ name: string }>('kioskLookupPin', { pin }, KIOSK_TIMEOUT_MS);
+  return postAction<{ name: string; shifts: string[] }>('kioskLookupPin', { pin }, KIOSK_TIMEOUT_MS);
 }
 
 export type ScheduleDay = { day: number; date: string; timeIn: string; timeOut: string; shift: string; note: string; late: boolean; ot: boolean };
@@ -103,17 +111,18 @@ export function verifyKioskExitPin(pin: string) {
 }
 
 export function kioskDirectory() {
-  return postAction<{ employees: { pin: string; name: string }[] }>('kioskDirectory', {});
+  return postAction<{ employees: { pin: string; name: string; shifts: string[] }[] }>('kioskDirectory', {});
 }
 
-export function kioskSyncOffline(pin: string, type: 'IN' | 'OUT', ot: boolean, timestamp: string, clientId: string, branch: string | null | undefined) {
+export function kioskSyncOffline(pin: string, type: 'IN' | 'OUT', ot: boolean, timestamp: string, clientId: string, branch: string | null | undefined, shift: string | undefined) {
   return postAction<{ alreadySynced: boolean; name: string }>('kioskSyncOffline', {
     pin,
     type,
     ot: ot ? 'true' : undefined,
     timestamp,
     clientId,
-    branch: branch ?? undefined
+    branch: branch ?? undefined,
+    shift
   });
 }
 

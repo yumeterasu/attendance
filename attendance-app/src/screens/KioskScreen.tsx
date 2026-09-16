@@ -29,6 +29,15 @@ const AUTO_IN_START_HOUR = 5; // morning arrival window -- pre-select IN from th
 const AUTO_IN_END_HOUR = 9; // ...up to (not including) this hour
 const AUTO_OUT_HOUR = 16; // nobody realistically checks IN this late -- pre-select OUT after this hour so the common case is a single tap on Confirm
 
+// Mirrors the backend's STANDARD_SHIFT_CHOICES (Attendance.gs) -- used ONLY
+// as a fallback when a PIN lookup ever comes back with an empty shifts
+// list (shouldn't normally happen; the server always sends at least these
+// 3), so a stale-format cached directory entry from before this feature
+// existed can never leave someone stuck at the shift picker with nothing
+// to tap. Never includes anyone's ExtraShift -- that always has to come
+// from the server/cache, there's no safe way to guess it here.
+const DEFAULT_SHIFT_CHOICES = ['7:00-16:00', '7:30-16:30', '8:00-17:00'];
+
 // The two busiest windows -- most of the workforce clocks in/out within a
 // couple minutes of each other, so during these, skip the network round-trip
 // entirely and go straight to the same local-queue path already used when
@@ -190,6 +199,15 @@ export default function KioskScreen({ navigation }: Props) {
 
   const [pin, setPin] = useState('');
   const [lookupName, setLookupName] = useState<string | null>(null);
+  // This employee's own pickable shifts (3 standard + their ExtraShift if
+  // they have one) -- set alongside lookupName by both lookupPin's local
+  // and live paths, so it's always in hand by the time the shift picker
+  // could show. Falls back to DEFAULT_SHIFT_CHOICES (see below) if a
+  // lookup ever comes back with an empty list -- shouldn't normally
+  // happen (the server always sends at least the 3 standard ones), but
+  // must never leave someone stuck unable to pick anything.
+  const [shiftChoices, setShiftChoices] = useState<string[]>([]);
+  const [selectedShift, setSelectedShift] = useState<string | null>(null);
   const [isLookingUp, setIsLookingUp] = useState(false);
   const [selection, setSelection] = useState<Selection | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -242,9 +260,27 @@ export default function KioskScreen({ navigation }: Props) {
   const resetCheckin = () => {
     setPin('');
     setLookupName(null);
+    setShiftChoices([]);
+    setSelectedShift(null);
     setSelection(null);
     setLookupIssue(null);
     setForcedOffline(false);
+  };
+
+  // Shared by both lookup paths (local-cache and live) below, so the
+  // "empty list -> DEFAULT_SHIFT_CHOICES" fallback rule only lives in one
+  // place.
+  const applyShiftChoices = (shifts: string[]) => {
+    setShiftChoices(shifts.length > 0 ? shifts : DEFAULT_SHIFT_CHOICES);
+  };
+
+  // Wraps setSelection so switching to/from IN always clears any
+  // previously-picked shift -- OUT/OUT OT never use one (see onConfirm),
+  // and re-selecting IN after that should make the employee pick again
+  // rather than silently keep whatever was picked before switching away.
+  const selectType = (next: Selection) => {
+    setSelection(next);
+    setSelectedShift(null);
   };
 
   // Prime the audio session once so the first check-in chime isn't delayed.
@@ -273,12 +309,14 @@ export default function KioskScreen({ navigation }: Props) {
     else if (hour >= AUTO_OUT_HOUR) setSelection('OUT');
   }, [lookupName]);
 
-  // Falls back to the on-device PIN->Name copy (see employeeDirectory) when
-  // there's truly no way to reach the server -- returns whether a name was found.
+  // Falls back to the on-device PIN->Name->shifts copy (see
+  // employeeDirectory) when there's truly no way to reach the server --
+  // returns whether a match was found.
   const tryLocalLookup = async (value: string): Promise<boolean> => {
-    const localName = await lookupPinLocally(value);
-    if (!localName) return false;
-    setLookupName(localName);
+    const local = await lookupPinLocally(value);
+    if (!local) return false;
+    setLookupName(local.name);
+    applyShiftChoices(local.shifts);
     return true;
   };
 
@@ -320,6 +358,7 @@ export default function KioskScreen({ navigation }: Props) {
 
     if (res.success) {
       setLookupName(res.name);
+      applyShiftChoices(res.shifts);
     } else if (res.error === 'timeout' || res.error === 'network_error') {
       // Connection dropped mid-request -- try the local copy again in case
       // the directory refreshed in the meantime (see useOfflineSync).
@@ -347,13 +386,13 @@ export default function KioskScreen({ navigation }: Props) {
   // Saves locally and treats it as a success from the employee's point of
   // view -- useOfflineSync drains this queue automatically once the
   // connection comes back, no separate "sync now" step for anyone to remember.
-  // branch is passed in rather than re-read here -- both call sites below
-  // already have it in hand (onConfirm reads it once up front), so a second
-  // AsyncStorage round trip on every network-failure fallback would be
-  // pure waste.
-  const queueOffline = async (type: 'IN' | 'OUT', ot: boolean, branch: string | null) => {
+  // branch/shift are passed in rather than re-read here -- both call sites
+  // below already have them in hand (onConfirm reads them once up front),
+  // so redoing that work on every network-failure fallback would be pure
+  // waste.
+  const queueOffline = async (type: 'IN' | 'OUT', ot: boolean, branch: string | null, shift: string | null) => {
     const name = lookupName ?? '';
-    const result = await enqueueCheckin(pin, type, ot, branch);
+    const result = await enqueueCheckin(pin, type, ot, branch, shift);
     if (!result.success) {
       // Could not actually persist this locally (e.g. device storage full
       // or corrupted) -- must never show the "saved offline" success below
@@ -376,17 +415,23 @@ export default function KioskScreen({ navigation }: Props) {
     if (!selection) return;
     const type = selection === 'IN' ? 'IN' : 'OUT';
     const ot = selection === 'OUT_OT';
+    // OUT never carries a shift (the picker only shows for IN, see the
+    // render below) -- defensive guard here too in case this ever gets
+    // called some other way, matching the Confirm button's own disabled
+    // condition rather than trusting it alone.
+    if (type === 'IN' && !selectedShift) return;
+    const shift = type === 'IN' ? selectedShift : null;
     const branch = await getDeviceBranch();
 
     if (!isConnected || forcedOffline) {
       setIsProcessing(true);
-      await queueOffline(type, ot, branch);
+      await queueOffline(type, ot, branch, shift);
       setIsProcessing(false);
       return;
     }
 
     setIsProcessing(true);
-    const res = await kioskCheckin(pin, type, ot, branch);
+    const res = await kioskCheckin(pin, type, ot, branch, shift ?? undefined);
 
     if (res.success) {
       setIsProcessing(false);
@@ -396,7 +441,7 @@ export default function KioskScreen({ navigation }: Props) {
       showFeedback({ kind: 'success', type: res.type, name: res.name, timestamp: res.timestamp, late: res.late, ot: res.ot });
     } else if (res.error === 'timeout' || res.error === 'network_error') {
       // Connection dropped mid-request -- queue it rather than making them retry manually.
-      await queueOffline(type, ot, branch);
+      await queueOffline(type, ot, branch, shift);
       setIsProcessing(false);
     } else {
       setIsProcessing(false);
@@ -796,6 +841,11 @@ export default function KioskScreen({ navigation }: Props) {
     </>
   );
 
+  // IN requires a shift pick (see the shift-section render below); OUT and
+  // OUT OT don't use one at all, so any type selection is enough on its
+  // own -- matches onConfirm's own guard exactly.
+  const canConfirm = selection === 'IN' ? !!selectedShift : !!selection;
+
   // One continuous screen for the whole check-in flow -- entering the PIN
   // and confirming IN/OUT never feels like a page change, just this same
   // frame updating in place. lookupName === null shows the keypad;
@@ -847,21 +897,21 @@ export default function KioskScreen({ navigation }: Props) {
           <View style={styles.typeRow}>
             <Pressable
               style={[styles.typeButton, styles.typeButtonIn, selection === 'IN' && styles.typeButtonInSelected]}
-              onPress={() => setSelection('IN')}
+              onPress={() => selectType('IN')}
               disabled={isProcessing}
             >
               <Text style={[styles.typeButtonInText, selection === 'IN' && styles.typeButtonTextSelected]}>IN</Text>
             </Pressable>
             <Pressable
               style={[styles.typeButton, styles.typeButtonOut, selection === 'OUT' && styles.typeButtonOutSelected]}
-              onPress={() => setSelection('OUT')}
+              onPress={() => selectType('OUT')}
               disabled={isProcessing}
             >
               <Text style={[styles.typeButtonOutText, selection === 'OUT' && styles.typeButtonTextSelected]}>OUT</Text>
             </Pressable>
             <Pressable
               style={[styles.typeButton, styles.typeButtonOt, selection === 'OUT_OT' && styles.typeButtonOtSelected]}
-              onPress={() => setSelection('OUT_OT')}
+              onPress={() => selectType('OUT_OT')}
               disabled={isProcessing}
             >
               <Text style={[styles.typeButtonOtText, selection === 'OUT_OT' && styles.typeButtonTextSelected]}>
@@ -870,10 +920,28 @@ export default function KioskScreen({ navigation }: Props) {
             </Pressable>
           </View>
 
+          {selection === 'IN' && (
+            <View style={styles.shiftSection}>
+              <Text style={styles.shiftLabel}>Choose your shift</Text>
+              <View style={styles.shiftGrid}>
+                {shiftChoices.map((s) => (
+                  <Pressable
+                    key={s}
+                    style={[styles.shiftButton, selectedShift === s && styles.shiftButtonSelected]}
+                    onPress={() => setSelectedShift(s)}
+                    disabled={isProcessing}
+                  >
+                    <Text style={[styles.shiftButtonText, selectedShift === s && styles.shiftButtonTextSelected]}>{s}</Text>
+                  </Pressable>
+                ))}
+              </View>
+            </View>
+          )}
+
           <Pressable
-            style={[styles.confirmButton, (!selection || isProcessing) && styles.confirmButtonDisabled]}
+            style={[styles.confirmButton, (!canConfirm || isProcessing) && styles.confirmButtonDisabled]}
             onPress={onConfirm}
-            disabled={!selection || isProcessing}
+            disabled={!canConfirm || isProcessing}
           >
             {isProcessing ? <ActivityIndicator color={ACCENT_TEXT} /> : <Text style={styles.confirmButtonText}>Confirm</Text>}
           </Pressable>
@@ -1038,6 +1106,32 @@ const styles = StyleSheet.create({
   typeButtonOutText: { color: ROSE_TEXT, fontSize: 17, fontFamily: FONT_DISPLAY_EXTRABOLD },
   typeButtonOtText: { color: BUTTER, fontSize: 17, fontFamily: FONT_DISPLAY_EXTRABOLD },
   typeButtonTextSelected: { color: '#fff' },
+  // The IN-only shift picker -- reuses the Sky accent (ACCENT/ACCENT_BG/
+  // BORDER) already used for Confirm below, rather than borrowing the
+  // Schedule screen's violet or introducing a new color family, since this
+  // lives on the same screen as Confirm.
+  shiftSection: { width: '100%', maxWidth: 420, marginTop: 4 },
+  shiftLabel: {
+    color: TEXT_MUTED,
+    fontSize: 13,
+    fontFamily: FONT_BODY_EXTRABOLD,
+    textAlign: 'center',
+    marginBottom: 10,
+    textTransform: 'uppercase',
+    letterSpacing: 0.3
+  },
+  shiftGrid: { gap: 10 },
+  shiftButton: {
+    borderRadius: 16,
+    borderWidth: 2,
+    borderColor: BORDER,
+    backgroundColor: CARD,
+    paddingVertical: 14,
+    alignItems: 'center'
+  },
+  shiftButtonSelected: { backgroundColor: ACCENT, borderColor: ACCENT },
+  shiftButtonText: { color: TEXT, fontSize: 16, fontFamily: FONT_BODY_EXTRABOLD },
+  shiftButtonTextSelected: { color: '#fff' },
   dots: { flexDirection: 'row', gap: 20, marginTop: 20, marginBottom: 36 },
   dot: {
     width: 22,

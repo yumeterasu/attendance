@@ -1054,7 +1054,24 @@ function highlightShiftMismatches_(sheet, year, month) {
   var logIdCol = logHeaders.indexOf('EmployeeID');
   var logTsCol = logHeaders.indexOf('Timestamp');
   var logTypeCol = logHeaders.indexOf('Type');
+  var logShiftPickedCol = logHeaders.indexOf('ShiftPicked'); // -1 on a sheet from before this column existed -- pickedKeys just stays empty, same as always
   var actualInMinutesByKey = {};
+  // Days the employee picked their own shift at the Kiosk -- never flagged
+  // below, no matter how the actual clock-in compares to any SHIFTS option.
+  // This heuristic exists to catch a STALE schedule entry (nobody updated
+  // it, so it drifted out of sync with reality); a picked shift is already
+  // exactly what the employee intended, by definition never stale, so
+  // "closer to a later shift" just means an ordinary late arrival within
+  // the shift they genuinely chose -- not a wrong entry to suggest fixing.
+  // Set/overwritten IN THE SAME BRANCH as actualInMinutesByKey below, not
+  // independently -- on a day with more than one IN row for the same
+  // employee (offline-sync duplicate, admin backdated fix alongside a real
+  // Kiosk tap, etc.), this must track whether the SPECIFIC row that ends
+  // up as the earliest-so-far (the one actualMinutes below is compared
+  // against) was picked, not "was ANY row for this key picked" -- those
+  // can disagree when the earliest row and the picked row aren't the same
+  // one, which would wrongly suppress a genuinely stale entry.
+  var pickedKeys = {};
   for (var i = 1; i < logValues.length; i++) {
     if (logValues[i][logTypeCol] !== 'IN') continue;
     var ts = new Date(logValues[i][logTsCol]);
@@ -1063,6 +1080,7 @@ function highlightShiftMismatches_(sheet, year, month) {
     var minutes = ts.getHours() * 60 + ts.getMinutes();
     if (!(key in actualInMinutesByKey) || minutes < actualInMinutesByKey[key]) {
       actualInMinutesByKey[key] = minutes;
+      pickedKeys[key] = logShiftPickedCol !== -1 && isTrue_(logValues[i][logShiftPickedCol]);
     }
   }
 
@@ -1080,6 +1098,7 @@ function highlightShiftMismatches_(sheet, year, month) {
 
       var key = employeeId + '|' + d;
       if (!(key in actualInMinutesByKey)) continue; // no check-in that day -- a different concern (see checkMissingAttendance_)
+      if (pickedKeys[key]) continue; // employee's own Kiosk pick -- see pickedKeys above
       var actualMinutes = actualInMinutesByKey[key];
 
       // Arriving early never causes a false Late flag (isLate_ only fires
@@ -1119,27 +1138,42 @@ function highlightShiftMismatches_(sheet, year, month) {
   return { flaggedCount: flaggedA1.length, lines: lines };
 }
 
-/** Returns the scheduled shift string for an employee on a given date, or '' if none is set. */
-function getScheduledShift_(employeeId, date) {
+/**
+ * Locates one employee's one day in "Schedule YYYY-MM" -- the sheet name,
+ * the employee's row, and the day's column all resolved in one place, so
+ * every reader/writer of a Schedule cell (getScheduledShift_ here,
+ * writeScheduleShiftCell_ in Attendance.gs) agrees on exactly which cell
+ * that means. Returns { sheet, values, rowIndex, dayCol } (rowIndex/dayCol
+ * are indexes into `values`, both 0-based) or null if that month's sheet,
+ * this employee's row, or this day's column doesn't exist.
+ */
+function findScheduleCell_(employeeId, date) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var year = date.getFullYear();
   var month = date.getMonth() + 1;
   var sheetName = 'Schedule ' + year + '-' + (month < 10 ? '0' + month : String(month));
   var sheet = ss.getSheetByName(sheetName);
-  if (!sheet) return '';
+  if (!sheet) return null;
 
   var values = sheet.getDataRange().getValues();
   var headers = values[0];
   var idCol = headers.indexOf('EmployeeID');
   var dayCol = headers.indexOf(date.getDate());
-  if (idCol === -1 || dayCol === -1) return '';
+  if (idCol === -1 || dayCol === -1) return null;
 
   for (var i = 1; i < values.length; i++) {
     if (String(values[i][idCol]) === String(employeeId)) {
-      return String(values[i][dayCol] || '').trim();
+      return { sheet: sheet, values: values, rowIndex: i, dayCol: dayCol };
     }
   }
-  return '';
+  return null;
+}
+
+/** Returns the scheduled shift string for an employee on a given date, or '' if none is set. */
+function getScheduledShift_(employeeId, date) {
+  var loc = findScheduleCell_(employeeId, date);
+  if (!loc) return '';
+  return String(loc.values[loc.rowIndex][loc.dayCol] || '').trim();
 }
 
 function getAllEmployees_() {

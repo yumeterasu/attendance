@@ -17,6 +17,7 @@ export type QueuedCheckin = {
   ot: boolean;
   timestamp: string; // ISO -- the real moment the employee tapped, not whenever this eventually syncs
   branch: string | null; // this device's configured branch (see deviceBranch.ts) AT THE TIME OF THE TAP -- captured here, not re-read at sync time, in case the device's branch setting changes in between
+  shift: string | null; // the shift the employee picked (IN only -- always null for OUT); server ignores it for OUT and falls back to the admin-set schedule if null
 };
 
 function makeClientId(): string {
@@ -112,9 +113,10 @@ export async function enqueueCheckin(
   pin: string,
   type: 'IN' | 'OUT',
   ot: boolean,
-  branch: string | null
+  branch: string | null,
+  shift: string | null
 ): Promise<{ success: true; clientId: string } | { success: false }> {
-  const entry: QueuedCheckin = { clientId: makeClientId(), pin, type, ot, timestamp: new Date().toISOString(), branch };
+  const entry: QueuedCheckin = { clientId: makeClientId(), pin, type, ot, timestamp: new Date().toISOString(), branch, shift };
   try {
     await withQueueLock(async () => {
       const queue = await readQueue();
@@ -162,7 +164,7 @@ export async function flushQueue(): Promise<{ synced: number; remaining: number 
     }
     if (!next) break;
 
-    const res = await kioskSyncOffline(next.pin, next.type, next.ot, next.timestamp, next.clientId, next.branch);
+    const res = await kioskSyncOffline(next.pin, next.type, next.ot, next.timestamp, next.clientId, next.branch, next.shift ?? undefined);
     let stop = false;
 
     try {
