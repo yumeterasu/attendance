@@ -35,3 +35,34 @@ export async function getCachedScheduleMonth(pin: string, year: number, month: n
     return null;
   }
 }
+
+// A separate, single-entry-per-PIN slot for the CURRENT month specifically
+// (the one CachedMonth above deliberately never stores -- see its comment).
+// Unlike a past month, this snapshot goes stale the moment more of the day
+// passes, so it's only ever shown labeled as such (see KioskScreen's stale
+// banner) after a live fetch has failed -- never silently in place of one.
+const CURRENT_KEY_PREFIX = 'kiosk_schedule_current_v1';
+export type CurrentSnapshot = { name: string; year: number; month: number; days: ScheduleDay[]; fetchedAt: number };
+
+function currentKeyFor(pin: string): string {
+  return `${CURRENT_KEY_PREFIX}_${pin}`;
+}
+
+/** Saves the current month's just-fetched result as a fallback for the next time a live fetch fails. Silently does nothing on a storage failure -- same no-fallback behavior as before this cache existed. */
+export async function cacheCurrentScheduleSnapshot(pin: string, snapshot: Omit<CurrentSnapshot, 'fetchedAt'>): Promise<void> {
+  try {
+    await AsyncStorage.setItem(currentKeyFor(pin), JSON.stringify({ ...snapshot, fetchedAt: Date.now() }));
+  } catch {
+    // ignore
+  }
+}
+
+/** Returns the last successfully-fetched current-month snapshot for this PIN, or null if there's never been one (including on a storage read failure). */
+export async function getCurrentScheduleSnapshot(pin: string): Promise<CurrentSnapshot | null> {
+  try {
+    const raw = await AsyncStorage.getItem(currentKeyFor(pin));
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}

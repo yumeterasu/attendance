@@ -12,7 +12,13 @@ import { useSession } from '../context/SessionContext';
 import { lookupPinLocally } from '../utils/employeeDirectory';
 import { enqueueCheckin } from '../utils/offlineQueue';
 import { getDeviceBranch } from '../utils/deviceBranch';
-import { cacheScheduleMonth, getCachedScheduleMonth, CachedMonth } from '../utils/scheduleCache';
+import {
+  cacheScheduleMonth,
+  getCachedScheduleMonth,
+  CachedMonth,
+  cacheCurrentScheduleSnapshot,
+  getCurrentScheduleSnapshot
+} from '../utils/scheduleCache';
 import { configureCheckinAudio, playCheckinSound, playCheckoutSound } from '../utils/sound';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Kiosk'>;
@@ -250,6 +256,12 @@ export default function KioskScreen({ navigation }: Props) {
   // screen stays put (unlike scheduleIssue, which blocks the whole PIN
   // entry step), so this is its own flag rather than reusing that one.
   const [scheduleMonthNavError, setScheduleMonthNavError] = useState<string | null>(null);
+  // Set when scheduleData on screen is the last cached snapshot rather than
+  // a fresh live fetch (see submitSchedulePin's fallback below) -- drives
+  // the stale banner + its own Refresh button in scheduleResult. Cleared by
+  // any successful live fetch of the current month.
+  const [scheduleIsStale, setScheduleIsStale] = useState(false);
+  const [scheduleStaleAt, setScheduleStaleAt] = useState<number | null>(null);
 
   const showFeedback = (next: Feedback) => {
     if (feedbackTimerRef.current) clearTimeout(feedbackTimerRef.current);
@@ -497,6 +509,8 @@ export default function KioskScreen({ navigation }: Props) {
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       setScheduleAuthPin(value);
       setScheduleData({ name: res.name, year: res.year, month: res.month, days: res.days });
+      setScheduleIsStale(false);
+      setScheduleStaleAt(null);
       setMode('scheduleResult');
       // Fire-and-forget: pulls up to a year of history in the background so
       // paging Prev/Next lands on an instant local cache hit for most
@@ -504,8 +518,46 @@ export default function KioskScreen({ navigation }: Props) {
       // goToScheduleMonth). Never awaited -- the screen above is already
       // showing the current month and shouldn't wait on this.
       syncScheduleHistory(value);
+      // Refreshes the fallback used below the next time a live fetch fails
+      // for this PIN. Fire-and-forget, same reasoning as syncScheduleHistory.
+      cacheCurrentScheduleSnapshot(value, { name: res.name, year: res.year, month: res.month, days: res.days });
     } else if (res.error === 'timeout' || res.error === 'network_error') {
-      // Connection dropped mid-request -- offer a retry instead of just flashing an error.
+      // Connection dropped, or the backend was just slow/cold this moment --
+      // rather than leaving the employee stuck on a bare error screen, fall
+      // back to whatever current-month snapshot was last fetched
+      // successfully for this PIN (if any), clearly labeled as possibly
+      // outdated (see the stale banner in scheduleResult).
+      const cached = await getCurrentScheduleSnapshot(value);
+      // Only usable if it's still describing the actual current month --
+      // otherwise (e.g. the device was offline across a month rollover) it
+      // would display last month's calendar mislabeled as just "possibly
+      // outdated" rather than being the wrong month entirely.
+      const nowForCache = new Date();
+      const cachedIsCurrentMonth =
+        cached && cached.year === nowForCache.getFullYear() && cached.month === nowForCache.getMonth() + 1;
+      // Not re-verified against a live name the way goToScheduleMonth's own
+      // cache read is (there's nothing live to compare against here -- the
+      // fetch that would have confirmed the name is exactly what just
+      // failed). Same inherent limitation as the offline PIN-lookup
+      // fallback elsewhere in this screen: a PIN reassigned to a new
+      // employee right before a network hiccup could briefly show the
+      // previous employee's cached schedule. Error haptic (not Success) on
+      // purpose -- this is a degraded fallback, not a real success, and the
+      // stale banner plus the employee's own name on screen are the tell.
+      if (cached && cachedIsCurrentMonth) {
+        setSchedulePin('');
+        await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+        setScheduleAuthPin(value);
+        setScheduleData({ name: cached.name, year: cached.year, month: cached.month, days: cached.days });
+        setScheduleIsStale(true);
+        setScheduleStaleAt(cached.fetchedAt);
+        setMode('scheduleResult');
+        syncScheduleHistory(value);
+        return;
+      }
+      // No fallback available (first-ever lookup on this device, or the
+      // cache write above never landed) -- offer a retry instead of just
+      // flashing an error, same as before this fallback existed.
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       setScheduleIssue(res.message);
     } else {
@@ -566,6 +618,8 @@ export default function KioskScreen({ navigation }: Props) {
       if (cached && cached.name === scheduleData?.name) {
         isChangingScheduleMonthRef.current = false;
         setScheduleData(cached);
+        setScheduleIsStale(false);
+        setScheduleStaleAt(null);
         return;
       }
     }
@@ -583,6 +637,14 @@ export default function KioskScreen({ navigation }: Props) {
 
     if (res.success) {
       setScheduleData({ name: res.name, year: res.year, month: res.month, days: res.days });
+      // Any successful live fetch here -- past month or current -- proves
+      // the server is reachable right now, so whatever stale-fallback
+      // banner might still be up from an earlier failed load no longer applies.
+      setScheduleIsStale(false);
+      setScheduleStaleAt(null);
+      if (isCurrentMonth) {
+        cacheCurrentScheduleSnapshot(scheduleAuthPin, { name: res.name, year: res.year, month: res.month, days: res.days });
+      }
     } else {
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       setScheduleMonthNavError(res.message);
@@ -734,6 +796,27 @@ export default function KioskScreen({ navigation }: Props) {
           </Pressable>
         </View>
         {scheduleMonthNavError && <Text style={styles.errorText}>{scheduleMonthNavError}</Text>}
+
+        {scheduleIsStale && (
+          <View style={styles.staleBanner}>
+            <Text style={styles.staleBannerText}>
+              {scheduleStaleAt
+                ? `Showing data from ${new Date(scheduleStaleAt).toLocaleTimeString()} — could not reach the server just now.`
+                : 'Showing saved data — could not reach the server just now.'}
+            </Text>
+            <Pressable
+              style={styles.staleBannerButton}
+              disabled={isLoadingSchedule}
+              onPress={() => submitSchedulePin(scheduleAuthPin)}
+            >
+              {isLoadingSchedule ? (
+                <ActivityIndicator color="#fff" size="small" />
+              ) : (
+                <Text style={styles.staleBannerButtonText}>Refresh</Text>
+              )}
+            </Pressable>
+          </View>
+        )}
 
         <View style={styles.calendarWeekRow}>
           {WEEKDAY_HEADERS.map((h, i) => (
@@ -1041,6 +1124,23 @@ const styles = StyleSheet.create({
   monthNavArrow: { fontSize: 28, fontFamily: FONT_DISPLAY_BOLD, color: SCHEDULE_ACCENT_DARK, lineHeight: 30 },
   monthNavArrowDisabled: { color: TEXT_MUTED },
   monthNavLoading: { width: 120 },
+  staleBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    backgroundColor: '#FFF3E0',
+    borderWidth: 1,
+    borderColor: '#F0D9A8',
+    borderRadius: 12,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    marginTop: 6,
+    marginBottom: 6,
+    maxWidth: 320
+  },
+  staleBannerText: { flex: 1, color: '#8A5A1E', fontSize: 12, fontFamily: FONT_BODY_MEDIUM },
+  staleBannerButton: { backgroundColor: SCHEDULE_ACCENT_DARK, borderRadius: 999, paddingVertical: 7, paddingHorizontal: 16, minWidth: 64, alignItems: 'center' },
+  staleBannerButtonText: { color: '#fff', fontSize: 12, fontFamily: FONT_DISPLAY_BOLD },
   subtitleDanger: { color: '#A9645D', fontSize: 13, fontFamily: FONT_BODY_MEDIUM, marginBottom: 8, textAlign: 'center' },
   badge: {
     width: 64,
