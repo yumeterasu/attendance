@@ -331,19 +331,25 @@ function checkEmployeesSheet_(findings) {
 
     if (extraShiftCol !== -1) {
       // Blank is valid (most employees have no extra Kiosk shift choice at
-      // all -- see shiftChoicesFor_ in Attendance.gs). Non-blank must pass
-      // isValidShiftChoice_ (Attendance.gs) -- the exact same check
-      // shiftChoicesFor_ itself applies before ever offering ExtraShift as
-      // a Kiosk pick, so an invalid value here is already harmless (never
-      // reaches the Kiosk or gets written anywhere) by the time this
-      // finding surfaces; this is just telling the admin to go fix the typo.
-      var rawExtraShift = String(row[extraShiftCol] || '').trim();
-      if (rawExtraShift && !isValidShiftChoice_(rawExtraShift)) {
-        findings.push({
-          sheetName: 'Employees',
-          a1: sheet.getRange(i + 1, extraShiftCol + 1).getA1Notation(),
-          message: name + ': ExtraShift is "' + rawExtraShift + '" -- should be a plain clock-time shift that\'s also in the SHIFTS list (e.g. "8:30-17:30"), not a Leave/Holiday value, the "Event ..." form, or a typo.'
-        });
+      // all -- see shiftChoicesFor_ in Attendance.gs). Can hold more than
+      // one shift, comma-separated (e.g. "7:00-17:00, 8:00-18:30") -- each
+      // piece must pass isValidShiftChoice_ (Attendance.gs) on its own, the
+      // exact same check shiftChoicesFor_ itself applies before ever
+      // offering ExtraShift as a Kiosk pick, so an invalid piece here is
+      // already harmless (never reaches the Kiosk or gets written anywhere)
+      // by the time this finding surfaces; this is just telling the admin
+      // to go fix the typo.
+      var extraPieces = parseExtraShifts_(row[extraShiftCol]);
+      var flaggedExtraPieces = []; // dedupe -- "abc, abc" should only ever produce one finding for the cell
+      for (var ei = 0; ei < extraPieces.length; ei++) {
+        if (!isValidShiftChoice_(extraPieces[ei]) && flaggedExtraPieces.indexOf(extraPieces[ei]) === -1) {
+          flaggedExtraPieces.push(extraPieces[ei]);
+          findings.push({
+            sheetName: 'Employees',
+            a1: sheet.getRange(i + 1, extraShiftCol + 1).getA1Notation(),
+            message: name + ': ExtraShift has "' + extraPieces[ei] + '" -- should be a plain clock-time shift that\'s also in the SHIFTS list (e.g. "8:30-17:30"), not a Leave/Holiday value, the "Event ..." form, or a typo. Multiple shifts can go in the same cell separated by commas.'
+          });
+        }
       }
     }
   }

@@ -215,8 +215,18 @@ export default function KioskScreen({ navigation }: Props) {
   const [shiftChoices, setShiftChoices] = useState<string[]>([]);
   const [selectedShift, setSelectedShift] = useState<string | null>(null);
   const [isLookingUp, setIsLookingUp] = useState(false);
+  // Same reasoning as isConfirmingRef below -- state alone can't close a
+  // same-tick double-invocation (e.g. a bounced touch on the 4th digit).
+  const isLookingUpRef = useRef(false);
   const [selection, setSelection] = useState<Selection | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
+  // Mirrors isProcessing but read/written synchronously -- same reasoning as
+  // isChangingScheduleMonthRef below: state doesn't land until the next
+  // render, so two Confirm taps close enough together (inside the same
+  // event-loop tick) could both still read isProcessing as false and both
+  // proceed. This ref is the actual re-entrancy guard; the state is just
+  // for disabling/animating the UI.
+  const isConfirmingRef = useRef(false);
   const [feedback, setFeedback] = useState<Feedback | null>(null);
   const feedbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Set only for a lookup that fails for a retriable reason AND has no local
@@ -232,6 +242,26 @@ export default function KioskScreen({ navigation }: Props) {
 
   const [exitPin, setExitPin] = useState('');
   const [exitError, setExitError] = useState(false);
+  const [isVerifyingExit, setIsVerifyingExit] = useState(false);
+  // Flipped by the Exit screen's Cancel button (which itself isn't blocked
+  // while a verify is in flight -- REQUEST_TIMEOUT_MS is 15s and trapping
+  // the admin on this screen for that long would be worse). Checked when
+  // verifyKioskExitPin finally resolves so a late "success" that arrives
+  // after Cancel can't still unlock the kiosk / navigate to Admin out from
+  // under whatever the admin is doing by then.
+  // Identifies which submitExitPin call is the current one -- bumped by
+  // Cancel (and by a fresh submit) so a verifyKioskExitPin response that
+  // finally arrives after the admin already cancelled (or started a new
+  // attempt) can tell it's stale and neither act on it nor clobber
+  // whatever newer state is now in progress. A plain boolean "cancelled"
+  // flag isn't enough here: Cancel needs to unblock the keypad immediately
+  // (see isVerifyingExitRef below), and if the admin then re-enters a PIN
+  // right away, the OLD request's own `finally` must not be the one to
+  // decide when the NEW request's isVerifyingExit gets cleared.
+  const exitRequestIdRef = useRef(0);
+  // Same reasoning as isConfirmingRef/isLookingUpRef -- closes the
+  // same-tick double-invocation gap that state alone can't.
+  const isVerifyingExitRef = useRef(false);
 
   const [schedulePin, setSchedulePin] = useState('');
   const [scheduleError, setScheduleError] = useState(false);
@@ -300,6 +330,17 @@ export default function KioskScreen({ navigation }: Props) {
     configureCheckinAudio();
   }, []);
 
+  // showFeedback's own setTimeout (see above) was never cleared on unmount --
+  // harmless most of the time, but this screen CAN unmount with one still
+  // pending (a successful check-in's feedback card is still showing when
+  // Admin -> exit PIN -> navigation.reset() tears this screen down), and the
+  // timer firing after that calls setFeedback on an already-unmounted instance.
+  useEffect(() => {
+    return () => {
+      if (feedbackTimerRef.current) clearTimeout(feedbackTimerRef.current);
+    };
+  }, []);
+
   // Shared kiosk: if someone looks themselves up and walks away without
   // confirming, don't leave their name on screen for the next person.
   useEffect(() => {
@@ -333,59 +374,81 @@ export default function KioskScreen({ navigation }: Props) {
   };
 
   const lookupPin = async (value: string) => {
-    if (!isConnected) {
-      if (await tryLocalLookup(value)) return;
-      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      showFeedback({ kind: 'error', message: "Code not recognized offline. Connect to the internet and try again." });
-      setPin('');
-      return;
-    }
-
-    // Always try the on-device PIN directory first -- instant, no network
-    // wait either way, and it's what tells a wrong/mistyped code apart
-    // instantly instead of leaving the employee waiting on a round trip just
-    // to find out. The local PIN directory refreshes every 30s while
-    // connected (see useOfflineSync), so a miss here is rare (mistyped code,
-    // or someone whose PIN was generated/changed in roughly the last 30
-    // seconds) -- falls through to the live lookup below for that case,
-    // which is what actually tells a mistyped code apart from a merely-stale
-    // cache. During a peak window (see PEAK_OFFLINE_WINDOWS above) a local
-    // hit also locks the whole visit to skip the network entirely at
-    // Confirm; outside peak, a local hit still shows the name immediately
-    // but Confirm goes on to try the network normally, same as before.
-    // isPeak is read BEFORE the await (not after), so a submission right at
-    // a window's edge is judged by the clock at PIN-submission time, not
-    // whatever moment the AsyncStorage read happens to finish at.
-    const isPeak = isPeakOfflineWindowNow();
-    if (await tryLocalLookup(value)) {
-      setForcedOffline(isPeak);
-      return;
-    }
-    setForcedOffline(false);
-
-    setLookupIssue(null);
+    // Set synchronously as the very first thing, and only ever cleared in
+    // the `finally` below -- covers the ENTIRE lookup, including the local
+    // on-device check below, not just the live network call. Without this,
+    // onPinKeyPress's `if (isLookingUp) return;` guard didn't actually
+    // block anything during the tryLocalLookup await (isLookingUp used to
+    // only flip true right before the network call), so a stray extra
+    // keypad tap while that AsyncStorage read was still in flight could
+    // grow `pin` past 4 digits -- the on-screen name would still be right
+    // (driven by this function's own captured `value`), but Confirm later
+    // submits using the corrupted, now-longer `pin` state instead.
+    //
+    // Also self-guards (unlike relying solely on onPinKeyPress's check) --
+    // the "Try Again" button on a failed lookup calls this directly with no
+    // disabled state of its own, so without this a bounced double-tap there
+    // could fire two overlapping lookups and let whichever happened to
+    // resolve last (not necessarily the more current one) win.
+    if (isLookingUpRef.current) return;
+    isLookingUpRef.current = true;
     setIsLookingUp(true);
-    const res = await kioskLookupPin(value);
-    setIsLookingUp(false);
+    try {
+      if (!isConnected) {
+        if (await tryLocalLookup(value)) return;
+        await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+        showFeedback({ kind: 'error', message: "Code not recognized offline. Connect to the internet and try again." });
+        setPin('');
+        return;
+      }
 
-    if (res.success) {
-      setLookupName(res.name);
-      applyShiftChoices(res.shifts);
-    } else if (res.error === 'timeout' || res.error === 'network_error') {
-      // Connection dropped mid-request -- try the local copy again in case
-      // the directory refreshed in the meantime (see useOfflineSync).
-      if (await tryLocalLookup(value)) return;
-      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      setLookupIssue(res.message);
-    } else {
-      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      showFeedback({ kind: 'error', message: res.message });
-      setPin('');
+      // Always try the on-device PIN directory first -- instant, no network
+      // wait either way, and it's what tells a wrong/mistyped code apart
+      // instantly instead of leaving the employee waiting on a round trip just
+      // to find out. The local PIN directory refreshes every 30s while
+      // connected (see useOfflineSync), so a miss here is rare (mistyped code,
+      // or someone whose PIN was generated/changed in roughly the last 30
+      // seconds) -- falls through to the live lookup below for that case,
+      // which is what actually tells a mistyped code apart from a merely-stale
+      // cache. During a peak window (see PEAK_OFFLINE_WINDOWS above) a local
+      // hit also locks the whole visit to skip the network entirely at
+      // Confirm; outside peak, a local hit still shows the name immediately
+      // but Confirm goes on to try the network normally, same as before.
+      // isPeak is read BEFORE the await (not after), so a submission right at
+      // a window's edge is judged by the clock at PIN-submission time, not
+      // whatever moment the AsyncStorage read happens to finish at.
+      const isPeak = isPeakOfflineWindowNow();
+      if (await tryLocalLookup(value)) {
+        setForcedOffline(isPeak);
+        return;
+      }
+      setForcedOffline(false);
+
+      setLookupIssue(null);
+      const res = await kioskLookupPin(value);
+
+      if (res.success) {
+        setLookupName(res.name);
+        applyShiftChoices(res.shifts);
+      } else if (res.error === 'timeout' || res.error === 'network_error') {
+        // Connection dropped mid-request -- try the local copy again in case
+        // the directory refreshed in the meantime (see useOfflineSync).
+        if (await tryLocalLookup(value)) return;
+        await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+        setLookupIssue(res.message);
+      } else {
+        await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+        showFeedback({ kind: 'error', message: res.message });
+        setPin('');
+      }
+    } finally {
+      isLookingUpRef.current = false;
+      setIsLookingUp(false);
     }
   };
 
   const onPinKeyPress = (key: string) => {
-    if (isLookingUp) return;
+    if (isLookingUpRef.current) return;
     setLookupIssue(null);
     if (key === 'back') return setPin((p) => p.slice(0, -1));
     if (key === 'clear') return setPin('');
@@ -432,57 +495,96 @@ export default function KioskScreen({ navigation }: Props) {
     // called some other way, matching the Confirm button's own disabled
     // condition rather than trusting it alone.
     if (type === 'IN' && !selectedShift) return;
-    const shift = type === 'IN' ? selectedShift : null;
-    const branch = await getDeviceBranch();
-
-    if (!isConnected || forcedOffline) {
-      setIsProcessing(true);
-      await queueOffline(type, ot, branch, shift);
-      setIsProcessing(false);
-      return;
-    }
-
+    if (isConfirmingRef.current) return;
+    // Set synchronously, before any await -- state (isProcessing) doesn't
+    // land until the next render, so a fast double-tap could otherwise have
+    // both calls still read isConfirmingRef.current/isProcessing as false
+    // through the getDeviceBranch() gap below and both go on to submit,
+    // producing a duplicate IN/OUT record. isProcessing itself only drives
+    // the UI (disabling/animating Confirm); this ref is the actual guard.
+    isConfirmingRef.current = true;
     setIsProcessing(true);
-    const res = await kioskCheckin(pin, type, ot, branch, shift ?? undefined);
+    try {
+      const shift = type === 'IN' ? selectedShift : null;
+      const branch = await getDeviceBranch();
 
-    if (res.success) {
+      if (!isConnected || forcedOffline) {
+        await queueOffline(type, ot, branch, shift);
+        return;
+      }
+
+      const res = await kioskCheckin(pin, type, ot, branch, shift ?? undefined);
+
+      if (res.success) {
+        resetCheckin();
+        if (res.type === 'IN') playCheckinSound(); else playCheckoutSound();
+        await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        showFeedback({ kind: 'success', type: res.type, name: res.name, timestamp: res.timestamp, late: res.late, ot: res.ot });
+      } else if (res.error === 'timeout' || res.error === 'network_error') {
+        // Connection dropped mid-request -- queue it rather than making them retry manually.
+        await queueOffline(type, ot, branch, shift);
+      } else {
+        resetCheckin();
+        await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+        showFeedback({ kind: 'error', message: res.message });
+      }
+    } finally {
+      isConfirmingRef.current = false;
       setIsProcessing(false);
-      resetCheckin();
-      if (res.type === 'IN') playCheckinSound(); else playCheckoutSound();
-      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      showFeedback({ kind: 'success', type: res.type, name: res.name, timestamp: res.timestamp, late: res.late, ot: res.ot });
-    } else if (res.error === 'timeout' || res.error === 'network_error') {
-      // Connection dropped mid-request -- queue it rather than making them retry manually.
-      await queueOffline(type, ot, branch, shift);
-      setIsProcessing(false);
-    } else {
-      setIsProcessing(false);
-      resetCheckin();
-      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      showFeedback({ kind: 'error', message: res.message });
     }
   };
 
   const submitExitPin = async (value: string) => {
-    const res = await verifyKioskExitPin(value);
-    if (res.success) {
-      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      setMode('checkin');
-      setExitPin('');
-      await setKioskLocked(false);
-      // Kiosk may be the stack's initial route (see RootNavigator, used to
-      // survive the app being killed while locked), in which case there's no
-      // previous screen for goBack() to return to -- reset explicitly instead.
-      navigation.reset({ index: 0, routes: [{ name: 'Admin' }] });
-    } else {
-      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      setExitError(true);
-      setExitPin('');
-      setTimeout(() => setExitError(false), ERROR_FLASH_DURATION_MS);
+    if (isVerifyingExitRef.current) return; // self-guard, same reasoning as lookupPin above -- don't rely solely on the caller checking first
+    // Set synchronously before the network await (same reasoning as
+    // lookupPin/onConfirm above) -- verifyKioskExitPin has no local
+    // fallback and uses the full 15s REQUEST_TIMEOUT_MS, so without this
+    // the keypad stayed fully tappable and gave no feedback for up to 15s,
+    // letting a re-entered PIN fire a second concurrent verify call.
+    const requestId = ++exitRequestIdRef.current;
+    isVerifyingExitRef.current = true;
+    setIsVerifyingExit(true);
+    try {
+      const res = await verifyKioskExitPin(value);
+      // Superseded by Cancel (which bumps exitRequestIdRef itself) -- don't
+      // unlock/navigate out from under whatever's on screen now.
+      if (exitRequestIdRef.current !== requestId) return;
+      if (res.success) {
+        await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        // Re-check -- Cancel could have fired during the Haptics await just above.
+        if (exitRequestIdRef.current !== requestId) return;
+        setMode('checkin');
+        setExitPin('');
+        await setKioskLocked(false);
+        if (exitRequestIdRef.current !== requestId) return;
+        // Kiosk may be the stack's initial route (see RootNavigator, used to
+        // survive the app being killed while locked), in which case there's no
+        // previous screen for goBack() to return to -- reset explicitly instead.
+        navigation.reset({ index: 0, routes: [{ name: 'Admin' }] });
+      } else {
+        await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+        if (exitRequestIdRef.current !== requestId) return;
+        setExitError(true);
+        setExitPin('');
+        setTimeout(() => setExitError(false), ERROR_FLASH_DURATION_MS);
+      }
+    } finally {
+      // Only clear the guard/spinner if THIS request is still the current
+      // one -- otherwise a stale request's finally (e.g. one Cancel already
+      // superseded) would clobber a newer submit's still-legitimately-in-
+      // flight state. Covers the whole function, not just the network call
+      // -- otherwise the keypad was briefly unguarded again during the
+      // awaited Haptics/AsyncStorage calls above, right up until
+      // navigation.reset actually unmounts this screen.
+      if (exitRequestIdRef.current === requestId) {
+        isVerifyingExitRef.current = false;
+        setIsVerifyingExit(false);
+      }
     }
   };
 
   const onExitKeyPress = (key: string) => {
+    if (isVerifyingExitRef.current) return;
     if (key === 'back') return setExitPin((p) => p.slice(0, -1));
     if (key === 'clear') return setExitPin('');
 
@@ -697,11 +799,27 @@ export default function KioskScreen({ navigation }: Props) {
         </View>
 
         <Dots length={PIN_LENGTH} filled={exitPin.length} error={exitError} danger />
-        <Keypad onPress={onExitKeyPress} danger />
-        {exitError && <Text style={styles.errorText}>Incorrect PIN</Text>}
+        <Keypad onPress={onExitKeyPress} disabled={isVerifyingExit} danger />
+        {isVerifyingExit && (
+          <View style={styles.checkingRow}>
+            <ActivityIndicator color={EXIT_ACCENT_DARK} />
+            <Text style={styles.checkingText}>Checking...</Text>
+          </View>
+        )}
+        {exitError && !isVerifyingExit && <Text style={styles.errorText}>Incorrect PIN</Text>}
         <Pressable
           style={[styles.cornerButton, styles.cornerButtonExit]}
           onPress={() => {
+            // Invalidate whatever submitExitPin call may still be in
+            // flight (see exitRequestIdRef above) and clear the
+            // guard/spinner right away, rather than waiting on that
+            // request's own `finally` -- otherwise re-opening this screen
+            // before the stale request resolves would show a "Checking..."
+            // spinner the admin never triggered and an unresponsive keypad.
+            exitRequestIdRef.current++;
+            isVerifyingExitRef.current = false;
+            setIsVerifyingExit(false);
+            setExitError(false); // a pending error flash from the cancelled attempt shouldn't resurface on the next visit to this screen
             setMode('checkin');
             setExitPin('');
           }}
@@ -1367,7 +1485,7 @@ const styles = StyleSheet.create({
   calendarDot: { width: 7, height: 7, borderRadius: 3.5 },
   calendarDotLate: { backgroundColor: '#c0392b' },
   calendarDotOt: {
-    backgroundColor: BUTTER // matches the OT=amber semantic used everywhere else now, was a plain green before
+    backgroundColor: SAGE // green -- amber (BUTTER, matching the OT check-in button) read too close to Late's red at this dot's small size
   },
   calendarLegend: { flexDirection: 'row', gap: 20, marginTop: 12 },
   legendItem: { flexDirection: 'row', alignItems: 'center', gap: 6 },

@@ -3,7 +3,7 @@
  */
 
 var DUPLICATE_GUARD_MS = 60 * 1000; // reject re-scans within 60s of the last log for the same employee
-var SHIFTS = ['7:00-16:00', '7:30-16:30', '8:00-17:00', '8:30-17:30', '7:00-17:00', 'Event 8:00-17:00', 'Annual Leave', 'Sick Leave', 'Unpaid Leave', 'Paid Special Leave', 'Half Day Annual Leave', 'Half Day Sick Leave', 'Half Day Unpaid Leave', 'Holiday'];
+var SHIFTS = ['7:00-16:00', '7:30-16:30', '8:00-17:00', '8:30-17:30', '7:00-17:00', '8:00-18:30', 'Event 8:00-17:00', 'Annual Leave', 'Sick Leave', 'Unpaid Leave', 'Paid Special Leave', 'Half Day Annual Leave', 'Half Day Sick Leave', 'Half Day Unpaid Leave', 'Holiday'];
 // Shift values that mean "nobody's expected in at all that day" -- as
 // opposed to a blank cell (not scheduled yet) or "Half Day Annual
 // Leave"/"Half Day Sick Leave"/"Half Day Unpaid Leave" (still expected in
@@ -30,10 +30,11 @@ function normalizePunchBranch_(branch) {
 }
 
 // Every employee can pick from these 3 at the Kiosk; a handful of people
-// also have one more of their own (Employees.ExtraShift, blank for
-// everyone else) -- e.g. Kahana's 8:30-17:30, Shunya's 7:00-17:00. Kept
-// separate from SHIFTS (which also lists every Leave/Holiday value, none of
-// which an employee should ever pick for themselves at check-in).
+// also have one or more of their own (Employees.ExtraShift, blank for
+// everyone else) -- e.g. Kahana's 8:30-17:30, Shunya's 7:00-17:00 AND
+// 8:00-18:30 (comma-separated in the one cell -- see shiftChoicesFor_).
+// Kept separate from SHIFTS (which also lists every Leave/Holiday value,
+// none of which an employee should ever pick for themselves at check-in).
 var STANDARD_SHIFT_CHOICES = ['7:00-16:00', '7:30-16:30', '8:00-17:00'];
 
 /**
@@ -52,11 +53,29 @@ function isValidShiftChoice_(value) {
   return /^\d{1,2}:\d{2}-\d{1,2}:\d{2}$/.test(value) && SHIFTS.indexOf(value) !== -1;
 }
 
-/** The list a given employee sees on the Kiosk's shift picker -- the 3 standard choices, plus their own ExtraShift if they have one and it's valid (see isValidShiftChoice_ -- an invalid one is silently omitted, not offered broken). Trimmed, so a stray leading/trailing space from a manual Employees-sheet edit doesn't silently break the round-trip match in normalizeShiftChoice_ below. */
+/**
+ * Splits a raw Employees.ExtraShift cell into its individual pieces --
+ * comma-separated when an employee has more than one extra shift (e.g.
+ * Shunya's "7:00-17:00, 8:00-18:30"), trimmed, blanks dropped. Does NOT
+ * validate each piece (see isValidShiftChoice_) -- shared as-is by
+ * shiftChoicesFor_ below (Attendance.gs) and checkEmployeesSheet_
+ * (HealthCheck.gs) so the two can never disagree about how the cell is
+ * split, only about whether a given piece is valid.
+ */
+function parseExtraShifts_(raw) {
+  return String(raw || '')
+    .split(',')
+    .map(function (s) { return s.trim(); })
+    .filter(function (s) { return s; });
+}
+
+/** The list a given employee sees on the Kiosk's shift picker -- the 3 standard choices, plus their own ExtraShift value(s) if valid (see isValidShiftChoice_ -- an invalid one is silently omitted, not offered broken). ExtraShift can hold more than one shift for the same employee, comma-separated in the one cell (see parseExtraShifts_). Trimmed, so a stray leading/trailing space from a manual Employees-sheet edit doesn't silently break the round-trip match in normalizeShiftChoice_ below. */
 function shiftChoicesFor_(emp) {
   var choices = STANDARD_SHIFT_CHOICES.slice();
-  var extra = String(emp.ExtraShift || '').trim();
-  if (extra && isValidShiftChoice_(extra) && choices.indexOf(extra) === -1) choices.push(extra);
+  var extras = parseExtraShifts_(emp.ExtraShift);
+  for (var i = 0; i < extras.length; i++) {
+    if (isValidShiftChoice_(extras[i]) && choices.indexOf(extras[i]) === -1) choices.push(extras[i]);
+  }
   return choices;
 }
 
@@ -187,16 +206,16 @@ function minutesPastShiftEnd_(shiftOrEvent, outTimestamp) {
   return Math.round((outTimestamp.getTime() - shiftEnd.getTime()) / 60000);
 }
 
-// A few shifts cap Japanese OT on their own -- e.g. "7:00-17:00" is an hour
-// longer than the other Japanese shifts, so real OT past that already-long
-// day is capped low on purpose. Keyed by the exact Shift string; combined
-// with capMinutes by taking whichever is STRICTER (see
+// A few shifts cap Japanese OT on their own -- e.g. "7:00-17:00" and
+// "8:00-18:30" are longer than the other Japanese shifts, so real OT past
+// that already-long day is capped low on purpose. Keyed by the exact Shift
+// string; combined with capMinutes by taking whichever is STRICTER (see
 // computeJapaneseOtMinutes_) -- this is a ceiling, not a replacement, so it
 // can only lower an employee's own tighter OTMaxMinutes further, never
 // loosen it back up past what the employee's own cap already restricts.
 // Thai OT never reads this -- it has no cap at all (see
 // computeThaiOtQuarters_).
-var SHIFT_OT_CAP_MINUTES_OVERRIDE = { '7:00-17:00': 15 };
+var SHIFT_OT_CAP_MINUTES_OVERRIDE = { '7:00-17:00': 15, '8:00-18:30': 15 };
 
 /**
  * Japanese OT, in minutes: always auto-computed from actual clock-out vs the
