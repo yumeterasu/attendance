@@ -502,6 +502,7 @@ function checkMissingAttendance_(findings, activeEmployees, year, month) {
     for (var day = 1; day <= lastDayToCheck; day++) {
       var shift = shiftsByDay[day];
       if (!shift || FULL_DAY_OFF_SHIFTS.indexOf(shift) !== -1) continue; // "Half Day Annual/Sick Leave" stays checked -- still expected in for half the day
+      if (isEventShift_(shift)) continue; // an Event day is designed to need no real punch at all -- see eventShiftOverrideTimestamp_/isEventShift_ and the same exclusion in Report.gs's own attendance totals
       if (hasInByKey[String(emp.EmployeeID) + '|' + day]) continue;
       findings.push({
         sheetName: sheetName,

@@ -47,7 +47,8 @@ function menuWhoIsAbsentToday_() {
       var shift = (scheduledShiftsForMonth[emp.EmployeeID] && scheduledShiftsForMonth[emp.EmployeeID][today]) || '';
       return { employee: emp, shift: shift };
     })
-    .filter(function (s) { return s.shift && FULL_DAY_OFF_SHIFTS.indexOf(s.shift) === -1; }); // Leave/Holiday mean intentionally off, not "not scheduled yet" -- exclude from this list ("Half Day Annual/Sick Leave" stays in -- still expected in for half the day)
+    .filter(function (s) { return s.shift && FULL_DAY_OFF_SHIFTS.indexOf(s.shift) === -1; }) // Leave/Holiday mean intentionally off, not "not scheduled yet" -- exclude from this list ("Half Day Annual/Sick Leave" stays in -- still expected in for half the day)
+    .filter(function (s) { return !isEventShift_(s.shift); }); // an Event day is designed to count as a full day worked with no real punch needed -- see isEventShift_/eventShiftOverrideTimestamp_ in Attendance.gs
 
   if (scheduled.length === 0) {
     ui.alert('No one is scheduled today (or the Schedule sheet for this month is not filled in yet).');
@@ -918,13 +919,16 @@ function menuFillMissedPunches_() {
   // "missing" half would write a real timed OUT row with that Leave/Holiday
   // label as its Shift, fabricating a full workday on someone's day off --
   // a stray tap on a day off is a different problem to fix by hand, not
-  // something this tool should offer to complete.
+  // something this tool should offer to complete. An "Event ..." shift is
+  // excluded the same unconditional way -- it's designed to count as a full
+  // day worked with no real punch needed at all (see isEventShift_).
   var findings = [];
   activeEmployees.forEach(function (emp) {
     var shiftsByDay = scheduledShiftsForMonth[emp.EmployeeID] || {};
     for (var day = 1; day <= lastDayToCheck; day++) {
       var shift = shiftsByDay[day] || '';
       if (FULL_DAY_OFF_SHIFTS.indexOf(shift) !== -1) continue;
+      if (isEventShift_(shift)) continue; // designed to need no real punch at all -- offering to "fill in" one here would fabricate a punch for a day that's already complete by design (see isEventShift_/eventShiftOverrideTimestamp_)
 
       var key = emp.EmployeeID + '|' + day;
       var hasIn = !!hasInByKey[key];
