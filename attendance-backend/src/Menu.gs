@@ -8,22 +8,22 @@
  */
 function onOpen() {
   SpreadsheetApp.getUi()
-    .createMenu('แอดมินระบบเช็คชื่อ')
-    .addItem('ตรวจสอบความผิดปกติของระบบ', 'menuHealthCheck_')
-    .addItem('เติมเวลาที่ลืมตอก (ทีละคน)', 'menuFillMissedPunches_')
-    .addItem('ใครยังไม่เข้างานวันนี้', 'menuWhoIsAbsentToday_')
-    .addItem('แก้ไข IN ที่กดผิดหลัง 16:00 (→ OUT)', 'menuFixLateInAsOut_')
-    .addItem('เพิ่มพนักงานใหม่', 'menuAddNewEmployee_')
-    .addItem('ปิดสถานะพนักงาน (ลาออก)', 'menuDeactivateEmployee_')
-    .addItem('เพิ่มเวลาเข้า-ออกงานย้อนหลัง', 'menuAddBackdatedAttendance_')
-    .addItem('บันทึกเข้างานทีเดียวทั้งวัน', 'menuBulkMarkAttendance_')
-    .addItem('สร้าง/อัปเดตตารางกะ', 'menuCreateScheduleSheet_')
-    .addItem('ไฮไลต์ Shift ที่อาจไม่ตรงกับเวลาจริง', 'menuHighlightShiftMismatches_')
-    .addItem('คำนวณ Late/OT ใหม่ (เลือกเดือน)', 'menuRecomputeLateOtOneMonth_')
-    .addItem('พิมพ์รายงานพนักงาน (เลือกคน/เดือน/ปี)', 'menuPrintEmployeeReport_')
+    .createMenu('Attendance Admin')
+    .addItem('Health Check', 'menuHealthCheck_')
+    .addItem('Fill Missed Punches (One at a Time)', 'menuFillMissedPunches_')
+    .addItem('Who Hasn\'t Checked In Today', 'menuWhoIsAbsentToday_')
+    .addItem('Fix Mis-tapped IN After 16:00 (→ OUT)', 'menuFixLateInAsOut_')
+    .addItem('Add New Employee', 'menuAddNewEmployee_')
+    .addItem('Deactivate Employee (Resignation)', 'menuDeactivateEmployee_')
+    .addItem('Add Backdated Check-in/Check-out', 'menuAddBackdatedAttendance_')
+    .addItem('Bulk Mark Attendance for a Day', 'menuBulkMarkAttendance_')
+    .addItem('Create / Update Schedule Sheet', 'menuCreateScheduleSheet_')
+    .addItem('Highlight Shift Mismatches', 'menuHighlightShiftMismatches_')
+    .addItem('Recompute Late/OT for One Month', 'menuRecomputeLateOtOneMonth_')
+    .addItem('Print Employee Report (Choose Person/Month/Year)', 'menuPrintEmployeeReport_')
     .addSeparator()
-    .addItem('ออกรหัสตั้งค่าแอดมินใหม่', 'menuIssueSetupCode_')
-    .addItem('ตั้งรหัส PIN ออกจากโหมด Kiosk', 'menuSetKioskExitPin_')
+    .addItem('Issue New Setup Code', 'menuIssueSetupCode_')
+    .addItem('Set Kiosk Exit PIN', 'menuSetKioskExitPin_')
     .addToUi();
 }
 
@@ -475,7 +475,7 @@ function menuCreateScheduleSheet_() {
  * Highlights Schedule cells where the actual check-in looks like it belongs
  * to a different shift than what's entered -- see highlightShiftMismatches_
  * in Report.gs for the matching rule. Run this first to see what needs
- * fixing, fix those cells, then run "Recompute Late/OT (เลือกเดือน)" for
+ * fixing, fix those cells, then run "Recompute Late/OT for One Month" for
  * that month to update the Late/OT numbers to match.
  */
 function menuHighlightShiftMismatches_() {
@@ -591,32 +591,32 @@ function menuRecomputeLateOtOneMonth_() {
  */
 function menuPrintEmployeeReport_() {
   var ui = SpreadsheetApp.getUi();
-  var title = 'พิมพ์รายงานพนักงาน';
+  var title = 'Print Employee Report';
 
-  var employeeResp = ui.prompt(title, 'ชื่อหรือรหัสพนักงาน:', ui.ButtonSet.OK_CANCEL);
+  var employeeResp = ui.prompt(title, 'Employee name or ID:', ui.ButtonSet.OK_CANCEL);
   if (employeeResp.getSelectedButton() !== ui.Button.OK) return;
   var employee = findEmployeeByNameOrId_(employeeResp.getResponseText().trim());
   if (!employee) {
-    ui.alert(title, 'ไม่พบพนักงานที่ตรงกับ "' + employeeResp.getResponseText().trim() + '"', ui.ButtonSet.OK);
+    ui.alert(title, 'No employee found matching "' + employeeResp.getResponseText().trim() + '"', ui.ButtonSet.OK);
     return;
   }
 
   // Same extra confirmation step menuAddBackdatedAttendance_ uses -- a
   // partial-name match could resolve to the wrong person.
-  var confirmEmployee = ui.alert(title, 'พบ: ' + employee.Name + ' (' + employee.EmployeeID + ') ใช่คนนี้หรือไม่?', ui.ButtonSet.YES_NO);
+  var confirmEmployee = ui.alert(title, 'Found: ' + employee.Name + ' (' + employee.EmployeeID + '). Is this the right person?', ui.ButtonSet.YES_NO);
   if (confirmEmployee !== ui.Button.YES) return;
 
   var now = new Date();
-  var yearResp = ui.prompt(title, 'ปี (เช่น ' + now.getFullYear() + '):', ui.ButtonSet.OK_CANCEL);
+  var yearResp = ui.prompt(title, 'Year (e.g. ' + now.getFullYear() + '):', ui.ButtonSet.OK_CANCEL);
   if (yearResp.getSelectedButton() !== ui.Button.OK) return;
   var year = Number(yearResp.getResponseText().trim());
 
-  var monthResp = ui.prompt(title, 'เดือน (1-12):', ui.ButtonSet.OK_CANCEL);
+  var monthResp = ui.prompt(title, 'Month (1-12):', ui.ButtonSet.OK_CANCEL);
   if (monthResp.getSelectedButton() !== ui.Button.OK) return;
   var month = Number(monthResp.getResponseText().trim());
 
   if (!year || !month || month < 1 || month > 12) {
-    ui.alert(title, 'กรุณาใส่ปีและเดือน (1-12) ให้ถูกต้อง', ui.ButtonSet.OK);
+    ui.alert(title, 'Enter a valid year and a month between 1 and 12.', ui.ButtonSet.OK);
     return;
   }
 
@@ -624,15 +624,15 @@ function menuPrintEmployeeReport_() {
   try {
     pdfFile = generateEmployeeReportPdf_(employee, year, month);
   } catch (err) {
-    ui.alert(title, 'สร้าง PDF ไม่สำเร็จ: ' + err.message, ui.ButtonSet.OK);
+    ui.alert(title, 'Could not generate the PDF: ' + err.message, ui.ButtonSet.OK);
     return;
   }
 
   var html = HtmlService.createHtmlOutput(
     '<div style="font-family:Arial,sans-serif;padding:6px;">' +
-    '<p>PDF พร้อมแล้ว!</p>' +
-    '<p><a href="' + pdfFile.getUrl() + '" target="_blank" style="font-size:16px;">📄 เปิด / ดาวน์โหลด PDF</a></p>' +
-    '<p style="color:#666;font-size:12px;">ลิงก์นี้เปิดได้จากใครก็ตามที่มีลิงก์ ส่งต่อให้พนักงานหรือคนอื่นได้เลย</p>' +
+    '<p>PDF is ready!</p>' +
+    '<p><a href="' + pdfFile.getUrl() + '" target="_blank" style="font-size:16px;">📄 Open / Download PDF</a></p>' +
+    '<p style="color:#666;font-size:12px;">Anyone with this link can open it -- feel free to forward it to the employee or anyone else.</p>' +
     '</div>'
   ).setWidth(340).setHeight(160);
   ui.showModalDialog(html, title);
@@ -871,20 +871,20 @@ function menuAddBackdatedAttendance_() {
  */
 function menuFillMissedPunches_() {
   var ui = SpreadsheetApp.getUi();
-  var title = 'เติมเวลาที่ลืมตอก';
+  var title = 'Fill Missed Punches';
   var now = new Date();
   var year = now.getFullYear();
   var month = now.getMonth() + 1;
   var lastDayToCheck = now.getDate() - 1;
 
   if (lastDayToCheck < 1) {
-    ui.alert(title, 'ยังไม่มีวันที่ผ่านไปแล้วในเดือนนี้ให้ตรวจสอบ', ui.ButtonSet.OK);
+    ui.alert(title, 'No days have passed yet this month to check.', ui.ButtonSet.OK);
     return;
   }
 
   var sheetName = 'Schedule ' + year + '-' + (month < 10 ? '0' + month : month);
   if (!SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName)) {
-    ui.alert(title, 'ไม่พบชีท "' + sheetName + '"', ui.ButtonSet.OK);
+    ui.alert(title, 'No "' + sheetName + '" sheet found.', ui.ButtonSet.OK);
     return;
   }
 
@@ -945,7 +945,7 @@ function menuFillMissedPunches_() {
   });
 
   if (findings.length === 0) {
-    ui.alert(title, 'ไม่พบวันที่ลืมตอกเลยในเดือนนี้ (จนถึงเมื่อวาน)', ui.ButtonSet.OK);
+    ui.alert(title, 'No missed punches found this month (through yesterday).', ui.ButtonSet.OK);
     return;
   }
 
@@ -968,8 +968,8 @@ function menuFillMissedPunches_() {
       var type = punchTypes[p];
       var resp = ui.prompt(
         progress,
-        dateLabel + ' -- กะ: ' + (finding.shift || '(ยังไม่ได้ลงกะ)') + '\nขาด: ' + type +
-        '\n\nใส่เวลา' + (type === 'IN' ? 'เข้างาน' : 'ออกงาน') + ' (HH:MM) หรือเว้นว่างเพื่อข้าม:',
+        dateLabel + ' -- Shift: ' + (finding.shift || '(not scheduled)') + '\nMissing: ' + type +
+        '\n\nEnter ' + (type === 'IN' ? 'check-in' : 'check-out') + ' time (HH:MM), or leave blank to skip:',
         ui.ButtonSet.OK_CANCEL
       );
       if (resp.getSelectedButton() !== ui.Button.OK) { stopped = true; break outer; }
@@ -982,7 +982,7 @@ function menuFillMissedPunches_() {
       var minute = timeParts.length === 2 ? Number(timeParts[1]) : NaN;
       var validRange = !isNaN(hour) && !isNaN(minute) && hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59;
       if (!validRange) {
-        ui.alert(title, 'รูปแบบเวลาไม่ถูกต้อง ("' + text + '") -- ต้องเป็น HH:MM ชั่วโมง 00-23 นาที 00-59 -- ข้าม ' + type + ' ของ ' + finding.name + ' วันที่ ' + dateLabel, ui.ButtonSet.OK);
+        ui.alert(title, 'Invalid time format ("' + text + '") -- must be HH:MM, hour 00-23, minute 00-59 -- skipping ' + type + ' for ' + finding.name + ' on ' + dateLabel, ui.ButtonSet.OK);
         skipped++;
         continue;
       }
@@ -995,9 +995,9 @@ function menuFillMissedPunches_() {
       // appending a duplicate row.
       var existing = findLogEntryForDate_(finding.employeeId, type, dayStart);
       if (existing) {
-        ui.alert(title, finding.name + ' มี ' + type + ' บันทึกไว้แล้ว (เวลา ' +
+        ui.alert(title, finding.name + ' already has a ' + type + ' recorded (at ' +
           Utilities.formatDate(existing.timestamp, Session.getScriptTimeZone(), 'HH:mm') +
-          ') วันที่ ' + dateLabel + ' -- ข้าม', ui.ButtonSet.OK);
+          ') on ' + dateLabel + ' -- skipping', ui.ButtonSet.OK);
         skipped++;
         if (type === 'IN') enteredInTimestamp = existing.timestamp;
         continue;
@@ -1008,9 +1008,9 @@ function menuFillMissedPunches_() {
       if (type === 'OUT') {
         var inTimestamp = enteredInTimestamp || (findLogEntryForDate_(finding.employeeId, 'IN', dayStart) || {}).timestamp;
         if (inTimestamp && timestamp.getTime() <= inTimestamp.getTime()) {
-          ui.alert(title, 'เวลา OUT (' + text + ') ต้องอยู่หลังเวลา IN (' +
+          ui.alert(title, 'OUT time (' + text + ') must be after IN time (' +
             Utilities.formatDate(inTimestamp, Session.getScriptTimeZone(), 'HH:mm') +
-            ') -- ข้าม OUT ของ ' + finding.name + ' วันที่ ' + dateLabel, ui.ButtonSet.OK);
+            ') -- skipping OUT for ' + finding.name + ' on ' + dateLabel, ui.ButtonSet.OK);
           skipped++;
           continue;
         }
@@ -1026,8 +1026,8 @@ function menuFillMissedPunches_() {
   refreshLiveSummarySheet_();
 
   ui.alert(
-    title + ' เสร็จสิ้น',
-    'เติมไปแล้ว ' + filled + ' รายการ, ข้าม ' + skipped + ' รายการ' + (stopped ? ' (กด Cancel หยุดกลางทาง -- ที่เติมไปแล้วยังถูกบันทึกอยู่)' : ''),
+    title + ' Done',
+    'Filled ' + filled + ' entry(ies), skipped ' + skipped + (stopped ? ' (stopped partway via Cancel -- whatever was already filled in is still saved)' : ''),
     ui.ButtonSet.OK
   );
 }

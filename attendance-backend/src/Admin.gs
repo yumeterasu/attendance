@@ -346,7 +346,7 @@ function migrateToPairingAuth() {
 
 /**
  * ONE-OFF cleanup: recomputes Late/OT for every "Schedule YYYY-MM" sheet
- * that exists, same underlying engine as "Recompute Late/OT (เลือกเดือน)" in
+ * that exists, same underlying engine as "Recompute Late/OT for One Month" in
  * the menu (recomputeLateAndOt_), just looped across every month in one
  * run instead of one at a time. Written to clear out historical OT values
  * left over from the "OT requires a matching IN" fix (see Kahana investi-
