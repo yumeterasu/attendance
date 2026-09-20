@@ -117,10 +117,18 @@ function writeMonthlyReportData_(sheet, startRow, year, month, precomputedLogsBy
         // obvious at a glance that nothing was actually recorded that day.
         shift = scheduledShift;
       }
-      var isLateDay = !!(dayEntry && dayEntry.late);
+      // isEventShift_ overrides a stale stored Late/OT the same way
+      // sumMonthTotals_ already does unconditionally from the CURRENT
+      // schedule -- without this, a day relabeled Event AFTER a late/OT
+      // punch would still show Late or an OT number here (straight off the
+      // stored AttendanceLog columns) until an admin remembers to run
+      // "Recompute Late/OT for One Month", disagreeing with the Days
+      // Worked/Late/OT totals below in the meantime.
+      var isEventDay = isEventShift_(scheduledShift);
+      var isLateDay = !!(dayEntry && dayEntry.late) && !isEventDay;
       var late = isLateDay ? 'Late' : '';
-      var otMinutes = dayEntry && dayEntry.otMinutes ? dayEntry.otMinutes : '';
-      var otQuarters = dayEntry && dayEntry.otQuarters ? dayEntry.otQuarters : '';
+      var otMinutes = (dayEntry && dayEntry.otMinutes && !isEventDay) ? dayEntry.otMinutes : '';
+      var otQuarters = (dayEntry && dayEntry.otQuarters && !isEventDay) ? dayEntry.otQuarters : '';
       rows.push([
         Utilities.formatDate(date, tz, 'dd/MM/yyyy'),
         Utilities.formatDate(date, tz, 'EEEE'),
@@ -1415,11 +1423,14 @@ function handleDashboardSummary_(params) {
  * reading as one undifferentiated "present":
  *   - onTime / late: tapped IN today, regardless of what (if anything) was
  *     scheduled -- a real IN is never excluded just because nothing was
- *     scheduled, being present is unambiguous evidence either way. Which
- *     of the two comes straight from that IN row's own Late column
- *     (already computed at check-in time / by recomputeLateAndOt_ -- see
- *     isLate_), not recomputed here, so it can never quietly drift from
- *     the Monthly Late count for the same day. Both listed with the
+ *     scheduled, being present is unambiguous evidence either way. Which of
+ *     the two comes straight from that IN row's own Late column (already
+ *     computed at check-in time / by recomputeLateAndOt_ -- see isLate_),
+ *     EXCEPT when the day is currently scheduled as an "Event ..." shift --
+ *     that always overrides to onTime regardless of the stored flag (see
+ *     the Event paragraph below), so a stale Late=TRUE left over from
+ *     before a day got relabeled Event can't leak into this endpoint
+ *     without waiting on a recompute run first. Both listed with the
  *     person's check-in time (earliest IN of the day, if more than one).
  *   - absent: a genuine scheduled shift (not blank, not a full day off --
  *     see FULL_DAY_OFF_SHIFTS) but never tapped in.
@@ -1430,6 +1441,17 @@ function handleDashboardSummary_(params) {
  * off" from here, so this can't responsibly call it a no-show. This mirrors
  * the exact same rule menuFillMissedPunches_ (Menu.gs) uses for the same
  * reason.
+ *
+ * An "Event ..." shift is a fifth case, checked before absent/onLeave and
+ * overriding onTime/late above: no matter whether the person taps IN, taps
+ * OUT only, taps both, or never taps at all, and no matter whether the day
+ * was scheduled Event from the start or relabeled Event afterward, it
+ * always reads as onTime, immediately, with no recompute needed first --
+ * same "counts as a full day worked, never late/absent" rule
+ * sumMonthTotals_ and the Report grid already apply unconditionally from
+ * the current schedule (see isEventShift_), kept in parity with this
+ * endpoint on purpose so the Daily and Monthly views can never disagree
+ * about the same employee/day.
  */
 function handleDashboardDaily_(params) {
   var access = requireDashboardAccess_(params);
@@ -1523,7 +1545,37 @@ function handleDashboardDaily_(params) {
         // "OUT tap exists but its own branch is unknown".
         outPunchBranch: outRow ? outRow.punchBranch : null
       };
-      (inRow.late ? late : onTime).push(punchEntry);
+      // isEventShift_(shift) overrides a stale stored Late=TRUE the same way
+      // sumMonthTotals_ already does unconditionally from the CURRENT
+      // schedule -- without this, a day relabeled Event AFTER a late punch
+      // would show late here but not-late in the Monthly view until an
+      // admin remembers to run "Recompute Late/OT for One Month", the two
+      // silently disagreeing on the same employee/day in the meantime.
+      var isLateNow = inRow.late && !isEventShift_(shift);
+      (isLateNow ? late : onTime).push(punchEntry);
+      return;
+    }
+    if (isEventShift_(shift)) {
+      // An Event day always counts as present/on-time even with no real IN
+      // tap at all -- same rule sumMonthTotals_ and the Report grid already
+      // apply; without this the Dashboard would show someone at an
+      // off-site event as a no-show. Synthetic in-time from the shift's own
+      // official start, matching the "clean official hours" behavior
+      // eventShiftOverrideTimestamp_ already gives a REAL punch on an Event
+      // day. There's still no real IN here, so punchBranch stays blank
+      // rather than claiming a branch nobody actually tapped at -- but a
+      // stray OUT-only punch (no matching IN, same real case
+      // sumMonthTotals_'s own comment calls out) is real data and must
+      // still surface its own branch/mismatch info, not get silently
+      // dropped just because this is the Event branch.
+      var eventOutRow = outRowByEmployee[emp.EmployeeID];
+      var eventStartMinutes = getShiftStartMinutes_(shift);
+      onTime.push({
+        employeeId: emp.EmployeeID, name: emp.Name, department: emp.Department, branch: emp.Branch || '',
+        inTime: eventStartMinutes !== null ? minutesToHHMM_(eventStartMinutes) : '',
+        punchBranch: '',
+        outPunchBranch: eventOutRow ? eventOutRow.punchBranch : null
+      });
       return;
     }
     var entry = { employeeId: emp.EmployeeID, name: emp.Name, department: emp.Department, branch: emp.Branch || '', shift: shift };

@@ -367,15 +367,73 @@ function buildMyAttendanceDays_(year, month, dayLogs, scheduledShiftsForMonth, t
   var days = [];
   for (var d = 1; d <= daysInMonth; d++) {
     var entry = dayLogs[d];
+    var scheduled = scheduledShiftsForMonth[d];
+    var isEventDay = isEventShift_(scheduled);
+    // Real IN required here, not just "an entry exists" -- a stray OUT-only
+    // row (no matching IN) still produces a truthy dayLogs[d] with
+    // timeIn: null and shift: '' (Shift is only ever written on the IN
+    // row), and on an Event day that case must fall through to the isEventDay
+    // branch below instead, same gating Report.gs's writeMonthlyReportData_
+    // already uses (`!dayEntry || !dayEntry.timeIn`) -- otherwise this and
+    // the Report sheet would show different things for the same employee/day.
+    if (entry && entry.timeIn) {
+      days.push({
+        day: d,
+        date: Utilities.formatDate(new Date(year, month - 1, d), tz, 'yyyy-MM-dd'),
+        timeIn: Utilities.formatDate(entry.timeIn, tz, 'HH:mm'),
+        timeOut: entry.timeOut ? Utilities.formatDate(entry.timeOut, tz, 'HH:mm') : '',
+        shift: entry.shift || '',
+        note: '',
+        // isEventDay overrides a stale stored Late/OT the same way
+        // sumMonthTotals_/handleDashboardDaily_ already do unconditionally
+        // from the CURRENT schedule -- without this, a day relabeled Event
+        // AFTER a late/OT punch would still show Late/OT to the employee
+        // here until an admin remembers to run "Recompute Late/OT for One
+        // Month".
+        late: !!entry.late && !isEventDay,
+        ot: !isEventDay && !!(entry.otMinutes || entry.otQuarters)
+      });
+      continue;
+    }
+
+    // An Event day always shows as a clean, complete worked day whenever
+    // there's no real IN to show -- whether nobody clocked at all, or only
+    // a stray OUT landed that day with no matching IN -- same rule
+    // sumMonthTotals_/the Report grid/handleDashboardDaily_ already apply;
+    // without this the employee's own calendar would show this day blank
+    // (or, for the stray-OUT case, the actual OUT time with a blank shift),
+    // even though the whole point of an Event shift is that nobody's
+    // expected to tap the kiosk for it.
+    if (isEventDay) {
+      var eventStart = getShiftStartTime_(scheduled);
+      var eventEnd = getShiftEndTime_(scheduled);
+      days.push({
+        day: d,
+        date: Utilities.formatDate(new Date(year, month - 1, d), tz, 'yyyy-MM-dd'),
+        timeIn: eventStart ? minutesToHHMM_(eventStart.hour * 60 + eventStart.minute) : '',
+        timeOut: eventEnd ? minutesToHHMM_(eventEnd.hour * 60 + eventEnd.minute) : '',
+        shift: scheduled,
+        note: '',
+        late: false,
+        ot: false
+      });
+      continue;
+    }
+
+    // Non-Event day with a stray OUT-only row (no matching IN) -- same case
+    // as above, just without an Event day's synthetic official hours to
+    // fall back on. Preserves the pre-existing behavior: the real OUT time
+    // shows, Shift stays blank (it's only ever recorded on the IN row), and
+    // there's nothing to be "late" or earn OT against without a real IN.
     if (entry) {
       days.push({
         day: d,
         date: Utilities.formatDate(new Date(year, month - 1, d), tz, 'yyyy-MM-dd'),
-        timeIn: entry.timeIn ? Utilities.formatDate(entry.timeIn, tz, 'HH:mm') : '',
+        timeIn: '',
         timeOut: entry.timeOut ? Utilities.formatDate(entry.timeOut, tz, 'HH:mm') : '',
         shift: entry.shift || '',
         note: '',
-        late: !!entry.late,
+        late: false,
         ot: !!(entry.otMinutes || entry.otQuarters)
       });
       continue;
@@ -389,7 +447,6 @@ function buildMyAttendanceDays_(year, month, dayLogs, scheduledShiftsForMonth, t
     // so a brand new option (e.g. "Sick Leave") works here the moment it's
     // added to the Shift dropdown -- nothing in this function needs to
     // change for it.
-    var scheduled = scheduledShiftsForMonth[d];
     if (scheduled && !/\d{1,2}:\d{2}/.test(scheduled)) {
       days.push({
         day: d,
