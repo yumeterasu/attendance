@@ -541,6 +541,99 @@ function handleKioskMyAttendanceBulk_(params) {
 }
 
 /**
+ * Every active employee's CURRENT month, in one call -- the device-wide
+ * daily background sync (see useScheduleSync in the app) that runs once a
+ * day so every employee's My Schedule is already cached on-device before
+ * anyone ever opens it, instead of only caching it after someone happens to
+ * open it live (see cacheCurrentScheduleSnapshot in the app). No PIN --
+ * unlike handleKioskMyAttendance_/handleKioskMyAttendanceBulk_, this isn't
+ * one employee looking themselves up, it's the device itself syncing
+ * everyone at once, same auth shape as handleKioskDirectory_.
+ *
+ * Reads Employees, AttendanceLog and this month's Schedule sheet exactly
+ * ONCE each (getRecentMonthLogsByEmployee_/getScheduledShiftsForMonth_
+ * already return every employee's data in one pass -- see their own doc
+ * comments; Employees is read directly below, in raw sheet-row order,
+ * rather than via getAllEmployees_(), which would mean a SECOND full read
+ * of the same sheet plus losing the row order this needs -- see the PIN
+ * tie-break note below), then builds each employee's day list from that
+ * same in-memory data, so this costs the same one-time reads no matter how
+ * many employees there are. Bounded-tail AttendanceLog read (not the
+ * full-history one Report/Recompute use) is correct and intentional here --
+ * same reasoning as handleKioskMyAttendance_'s current-month case, which
+ * this mirrors for every employee at once instead of just one.
+ */
+function handleKioskScheduleSyncAll_(params) {
+  if (!checkApiKey_(params.apiKey)) return fail_('unauthorized', 'Invalid API key');
+
+  var now = new Date();
+  var year = now.getFullYear();
+  var month = now.getMonth() + 1;
+  var tz = Session.getScriptTimeZone();
+
+  var logsByEmployee = getRecentMonthLogsByEmployee_(year, month);
+  var scheduledShiftsByEmployee = getScheduledShiftsForMonth_(year, month);
+
+  // getCachedEmployees_ (Utils.gs) rather than a fresh sheet.getDataRange()
+  // read or getAllEmployees_() -- same raw row order findEmployeeByKioskPin_
+  // resolves PINs by (needed for the tie-break below), already cached for
+  // 5 minutes specifically to spare the Employees sheet repeated reads.
+  var employeeData = getCachedEmployees_();
+  var headers = employeeData.headers;
+  var idCol = headers.indexOf('EmployeeID');
+  var nameCol = headers.indexOf('Name');
+  var activeCol = headers.indexOf('Active');
+  var pinCol = headers.indexOf('KioskPIN');
+
+  var seenPins = {};
+  var employees = [];
+  for (var i = 0; i < employeeData.rows.length; i++) {
+    var row = employeeData.rows[i];
+    var rawPin = String(row[pinCol] || '').trim();
+    if (!rawPin) continue;
+    var pin = pad4_(rawPin);
+    // First match in row order wins the PIN -- same tie-break
+    // findEmployeeByKioskPin_ itself uses (Utils.gs), checked BEFORE the
+    // Active filter below so it matches live resolution exactly: even an
+    // Inactive row earlier in the sheet still "claims" a shared PIN,
+    // because that's genuinely who the live Kiosk would resolve it to too
+    // (findEmployeeByKioskPin_ doesn't check Active either). A later
+    // Active employee stuck behind a duplicated PIN is already unreachable
+    // at the Kiosk today, not a state this sync should paper over by
+    // caching them under a PIN that doesn't actually reach them live --
+    // checkEmployeesSheet_ is what surfaces that mistake for an admin to fix.
+    if (seenPins[pin]) continue;
+    seenPins[pin] = true;
+    if (!isTrue_(row[activeCol])) continue;
+
+    var employeeId = String(row[idCol]);
+    var name = row[nameCol];
+    // One employee's malformed Schedule cell (or anything else
+    // buildMyAttendanceDays_ might choke on) must not fail the whole batch
+    // -- unlike handleKioskMyAttendance_, where a throw only ever affects
+    // that one person's own live lookup, an uncaught throw here would fail
+    // this entire response and silently cancel today's sync for every
+    // other employee too. Skipped (not included with empty/wrong days) on
+    // failure -- that employee just falls back to a live fetch only, same
+    // as before this feature existed, rather than caching something
+    // misleading for them.
+    try {
+      var dayLogs = logsByEmployee[employeeId] || {};
+      var scheduledShiftsForMonth = scheduledShiftsByEmployee[employeeId] || {};
+      employees.push({
+        pin: pin,
+        name: name,
+        days: buildMyAttendanceDays_(year, month, dayLogs, scheduledShiftsForMonth, tz)
+      });
+    } catch (e) {
+      Logger.log('handleKioskScheduleSyncAll_: skipped ' + employeeId + ' (' + name + '): ' + e.message);
+    }
+  }
+
+  return ok_({ year: year, month: month, employees: employees });
+}
+
+/**
  * One-off repair: recomputes Shift + Late (from the current Schedule sheet)
  * for every IN row, and OTMinutes for every Japanese OUT row, within
  * [startDay, endDay] of the given month. Fixes rows recorded when the

@@ -270,6 +270,11 @@ function checkEmployeesSheet_(findings) {
   var otEligibleCol = headers.indexOf('OTEligible'); // -1 until the admin adds this column -- skip the check until then
   var extraShiftCol = headers.indexOf('ExtraShift'); // -1 until the admin adds this column -- skip the check until then
 
+  // Accumulated inside the same pass as every other per-row check below
+  // (not a second loop over `values`) -- see the duplicate-PIN reporting
+  // block after the loop for why this has to include Inactive rows too.
+  var pinRows = {};
+
   for (var i = 1; i < values.length; i++) {
     var row = values[i];
     var name = row[nameCol];
@@ -281,6 +286,13 @@ function checkEmployeesSheet_(findings) {
         a1: sheet.getRange(i + 1, activeCol + 1).getA1Notation(),
         message: name + ': Active column has an unexpected value ("' + rawActive + '") -- should be TRUE or FALSE.'
       });
+    }
+
+    var rawPinForDupCheck = String(row[pinCol] || '').trim();
+    if (rawPinForDupCheck) {
+      var dupPinKey = pad4_(rawPinForDupCheck);
+      if (!pinRows[dupPinKey]) pinRows[dupPinKey] = [];
+      pinRows[dupPinKey].push({ row: i + 1, name: name, active: isTrue_(rawActive) });
     }
 
     if (!isTrue_(rawActive)) continue;
@@ -353,6 +365,30 @@ function checkEmployeesSheet_(findings) {
       }
     }
   }
+
+  // Duplicate Kiosk PINs (pinRows built above, inside the main loop) --
+  // findEmployeeByKioskPin_ (used by every live Kiosk path: check-in,
+  // lookup, My Schedule, and the device-wide daily schedule sync too)
+  // matches on PIN alone, first match in raw sheet row order, with NO
+  // Active check of its own -- so this compares ALL rows, not just Active
+  // ones: an Inactive employee's leftover PIN sitting earlier in the sheet
+  // can silently shadow an Active employee assigned the same PIN later,
+  // exactly as if two Active employees shared it. Only reported when at
+  // least one row in the group is Active, though (two Inactive rows
+  // sharing a stale PIN affects nobody).
+  Object.keys(pinRows).forEach(function (dupPin) {
+    var rows = pinRows[dupPin];
+    if (rows.length < 2) return;
+    if (!rows.some(function (r) { return r.active; })) return;
+    var names = rows.map(function (r) { return r.name + (r.active ? '' : ' (inactive)'); }).join(', ');
+    rows.forEach(function (r) {
+      findings.push({
+        sheetName: 'Employees',
+        a1: sheet.getRange(r.row, pinCol + 1).getA1Notation(),
+        message: r.name + ': Kiosk PIN "' + dupPin + '" is shared with: ' + names + ' -- PINs must be unique, or one person\'s taps get attributed to the other (whichever row comes first in the sheet wins live, active or not).'
+      });
+    });
+  });
 }
 
 /** Active employees missing from this month's Schedule, and shift cells that don't match the SHIFTS dropdown. */

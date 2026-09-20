@@ -8,6 +8,7 @@ import { RootStackParamList } from '../navigation/types';
 import { kioskCheckin, kioskLookupPin, kioskMyAttendance, kioskMyAttendanceBulk, verifyKioskExitPin, ScheduleDay } from '../api/client';
 import { useNetworkStatus } from '../hooks/useNetworkStatus';
 import { useOfflineSync } from '../hooks/useOfflineSync';
+import { useScheduleSync } from '../hooks/useScheduleSync';
 import { useSession } from '../context/SessionContext';
 import { lookupPinLocally } from '../utils/employeeDirectory';
 import { enqueueCheckin } from '../utils/offlineQueue';
@@ -200,6 +201,7 @@ function Dots({
 export default function KioskScreen({ navigation }: Props) {
   const isConnected = useNetworkStatus();
   useOfflineSync(isConnected);
+  useScheduleSync(isConnected);
   const { setKioskLocked } = useSession();
   const [mode, setMode] = useState<Mode>('checkin');
 

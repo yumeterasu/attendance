@@ -114,6 +114,20 @@ export function kioskDirectory() {
   return postAction<{ employees: { pin: string; name: string; shifts: string[] }[] }>('kioskDirectory', {});
 }
 
+// Device-wide daily background sync (see useScheduleSync) -- every active
+// employee's current month in one call, no PIN. Same budget as
+// SCHEDULE_BULK_SYNC_TIMEOUT_MS above and the same reasoning: a background,
+// best-effort fetch nothing on screen is waiting on, covering every
+// employee instead of just one -- reuses that constant rather than
+// defining a second one that could silently drift out of sync with it.
+export function kioskScheduleSyncAll() {
+  return postAction<{
+    year: number;
+    month: number;
+    employees: { pin: string; name: string; days: ScheduleDay[] }[];
+  }>('kioskScheduleSyncAll', {}, SCHEDULE_BULK_SYNC_TIMEOUT_MS);
+}
+
 export function kioskSyncOffline(pin: string, type: 'IN' | 'OUT', ot: boolean, timestamp: string, clientId: string, branch: string | null | undefined, shift: string | undefined) {
   return postAction<{ alreadySynced: boolean; name: string }>('kioskSyncOffline', {
     pin,

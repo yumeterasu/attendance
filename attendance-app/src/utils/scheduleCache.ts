@@ -66,3 +66,37 @@ export async function getCurrentScheduleSnapshot(pin: string): Promise<CurrentSn
     return null;
   }
 }
+
+/**
+ * Same slot as cacheCurrentScheduleSnapshot above, but for the device-wide
+ * daily sync (see useScheduleSync) writing every employee's snapshot in one
+ * pass -- one multiSet call instead of one setItem per employee, cheaper on
+ * a large roster. Unlike cacheCurrentScheduleSnapshot, a storage failure
+ * here is NOT swallowed (returns false instead of silently doing nothing):
+ * the caller uses this as an all-or-nothing signal for whether today's sync
+ * actually landed, so it can decide whether to mark the day done or retry
+ * the whole batch later -- silently losing that signal would leave some
+ * employees permanently stuck on a stale cache until the next calendar day.
+ * year/month are one shared value for the whole batch (the sync is always
+ * "everyone, this same month"), not per employee -- takes them once instead
+ * of duplicated onto every array element, which also rules out a batch ever
+ * silently mixing employees from two different months.
+ */
+export async function cacheCurrentScheduleSnapshots(
+  year: number,
+  month: number,
+  employees: { pin: string; name: string; days: ScheduleDay[] }[]
+): Promise<boolean> {
+  if (employees.length === 0) return true;
+  try {
+    const fetchedAt = Date.now();
+    const pairs: [string, string][] = employees.map((e) => [
+      currentKeyFor(e.pin),
+      JSON.stringify({ name: e.name, year, month, days: e.days, fetchedAt })
+    ]);
+    await AsyncStorage.multiSet(pairs);
+    return true;
+  } catch {
+    return false;
+  }
+}

@@ -16,6 +16,8 @@ function doPost(e) {
       return handleKioskMyAttendance_(params);
     case 'kioskMyAttendanceBulk':
       return handleKioskMyAttendanceBulk_(params);
+    case 'kioskScheduleSyncAll':
+      return handleKioskScheduleSyncAll_(params);
     case 'kioskDirectory':
       return handleKioskDirectory_(params);
     case 'kioskSyncOffline':
