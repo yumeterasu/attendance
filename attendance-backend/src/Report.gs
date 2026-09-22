@@ -53,7 +53,7 @@ function writeMonthlyReportData_(sheet, startRow, year, month, precomputedLogsBy
     return String(a.EmployeeID).localeCompare(String(b.EmployeeID));
   });
 
-  var COLS = 8; // Date, Day, Time In, Time Out, Shift, Late, OT (min), OT (Quarter)
+  var COLS = 9; // Date, Day, Time In, Time Out, Shift, Late, OT (min), OT (Quarter), Break (min)
   var rows = [];
   var backgrounds = [];
   var fontColors = [];
@@ -71,11 +71,11 @@ function writeMonthlyReportData_(sheet, startRow, year, month, precomputedLogsBy
   employees.forEach(function (emp) {
     var blockStartRow = startRow + rows.length;
 
-    rows.push([emp.Name + ' (' + emp.EmployeeID + ')', emp.Department, '', '', '', '', '', '']);
+    rows.push([emp.Name + ' (' + emp.EmployeeID + ')', emp.Department, '', '', '', '', '', '', '']);
     backgrounds.push(nameRowBackgrounds.slice());
     fontColors.push(blankRowColors.slice());
     fontWeights.push(nameRowFontWeights.slice());
-    rows.push(['Date', 'Day', 'Time In', 'Time Out', 'Shift', 'Late', 'OT (min)', 'OT (Quarter)']);
+    rows.push(['Date', 'Day', 'Time In', 'Time Out', 'Shift', 'Late', 'OT (min)', 'OT (Quarter)', 'Break (min)']);
     backgrounds.push(headerRowColors.slice());
     fontColors.push(blankRowColors.slice());
     fontWeights.push(blankRowColors.slice());
@@ -129,6 +129,12 @@ function writeMonthlyReportData_(sheet, startRow, year, month, precomputedLogsBy
       var late = isLateDay ? 'Late' : '';
       var otMinutes = (dayEntry && dayEntry.otMinutes && !isEventDay) ? dayEntry.otMinutes : '';
       var otQuarters = (dayEntry && dayEntry.otQuarters && !isEventDay) ? dayEntry.otQuarters : '';
+      // Visibility only, same as the Kiosk Break feature itself -- real
+      // total minutes across every completed break that day (see
+      // aggregateMonthLogs_'s breakMinutes pairing), never adjusted by
+      // isEventDay/Late/OT the way the columns above are, since break time
+      // was never part of the Late/OT/Event rules to begin with.
+      var breakMinutes = (dayEntry && dayEntry.breakMinutes) ? dayEntry.breakMinutes : '';
       rows.push([
         Utilities.formatDate(date, tz, 'dd/MM/yyyy'),
         Utilities.formatDate(date, tz, 'EEEE'),
@@ -137,7 +143,8 @@ function writeMonthlyReportData_(sheet, startRow, year, month, precomputedLogsBy
         shift,
         late,
         otMinutes,
-        otQuarters
+        otQuarters,
+        breakMinutes
       ]);
 
       // Same weekend tint as the Schedule sheet: Saturday #cfe2f3, Sunday #f4cccc.
@@ -308,7 +315,7 @@ function refreshLiveReportSheet_() {
  */
 function writeYearlyReportData_(sheet, startRow, year) {
   var tz = Session.getScriptTimeZone();
-  var COLS = 8; // same column count as writeMonthlyReportData_'s table
+  var COLS = 9; // same column count as writeMonthlyReportData_'s table
   var row = startRow;
 
   var attendanceLogValues = getSheet_('AttendanceLog').getDataRange().getValues();
@@ -1241,6 +1248,20 @@ function aggregateMonthLogs_(values, year, month) {
   var otQuartersCol = headers.indexOf('OTQuarters');
 
   var result = {};
+  // Break events (BREAK_START/BREAK_END) collected per EMPLOYEE (not per
+  // employee+day) here and paired into breakMinutes AFTER the main loop
+  // below -- unlike IN/OUT (which only ever need the earliest/latest row),
+  // a break TOTAL needs every event in chronological order to pair
+  // correctly, and rows aren't guaranteed to arrive in that order from a
+  // plain sheet scan. Deliberately NOT bucketed by day up front: a break
+  // that starts before midnight and ends after it (BREAK_START 23:50,
+  // BREAK_END 00:10) would otherwise land in two different day buckets and
+  // never find its match in either one, silently vanishing from both days'
+  // totals. Pairing per-employee across the whole month first, then
+  // attributing each completed pair to the day it STARTED (see below),
+  // avoids that.
+  var breakEventsByEmployee = {};
+
   for (var i = 1; i < values.length; i++) {
     var ts = new Date(values[i][tsCol]);
     if (ts.getFullYear() !== year || ts.getMonth() + 1 !== month) continue;
@@ -1251,7 +1272,7 @@ function aggregateMonthLogs_(values, year, month) {
 
     if (!result[employeeId]) result[employeeId] = {};
     if (!result[employeeId][day]) {
-      result[employeeId][day] = { timeIn: null, timeOut: null, shift: '', late: false, otMinutes: 0, otQuarters: 0 };
+      result[employeeId][day] = { timeIn: null, timeOut: null, shift: '', late: false, otMinutes: 0, otQuarters: 0, breakMinutes: 0 };
     }
 
     if (type === 'IN') {
@@ -1266,8 +1287,40 @@ function aggregateMonthLogs_(values, year, month) {
         result[employeeId][day].otMinutes = otMinutesCol !== -1 ? Number(values[i][otMinutesCol]) || 0 : 0;
         result[employeeId][day].otQuarters = otQuartersCol !== -1 ? Number(values[i][otQuartersCol]) || 0 : 0;
       }
+    } else if (type === 'BREAK_START' || type === 'BREAK_END') {
+      if (!breakEventsByEmployee[employeeId]) breakEventsByEmployee[employeeId] = [];
+      breakEventsByEmployee[employeeId].push({ ts: ts, type: type });
     }
   }
+
+  // Pair each employee's break events chronologically across the whole
+  // month -- same rule sumCompletedBreakMinutesToday_ (Attendance.gs) uses
+  // for "today": sum every COMPLETE BREAK_START->BREAK_END pair; an
+  // unmatched trailing BREAK_START (a forgotten Back from Break) contributes
+  // nothing. Each completed pair's minutes are added to the day the
+  // BREAK_START happened (not BREAK_END -- matters only for the rare
+  // midnight-crossing case, and attributing to the start is the more
+  // intuitive "which day was this break part of" answer).
+  Object.keys(breakEventsByEmployee).forEach(function (employeeId) {
+    var events = breakEventsByEmployee[employeeId];
+    events.sort(function (a, b) { return a.ts.getTime() - b.ts.getTime(); });
+    var openStart = null;
+    for (var e = 0; e < events.length; e++) {
+      if (events[e].type === 'BREAK_START') {
+        openStart = events[e].ts;
+      } else if (openStart) {
+        var minutes = Math.round((events[e].ts.getTime() - openStart.getTime()) / 60000);
+        var startDay = openStart.getDate();
+        if (!result[employeeId]) result[employeeId] = {};
+        if (!result[employeeId][startDay]) {
+          result[employeeId][startDay] = { timeIn: null, timeOut: null, shift: '', late: false, otMinutes: 0, otQuarters: 0, breakMinutes: 0 };
+        }
+        result[employeeId][startDay].breakMinutes += minutes;
+        openStart = null;
+      }
+    }
+  });
+
   return result;
 }
 

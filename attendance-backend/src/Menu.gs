@@ -666,7 +666,7 @@ function generateEmployeeReportPdf_(employee, year, month) {
     // the table below it -- writeMonthlyReportData_'s own autoResizeColumns
     // call measures column A across the whole sheet, header row included,
     // and an unwrapped long single line would otherwise win that measurement.
-    sheet.getRange(1, 1, 1, 8).merge().setValue(headerLabel).setFontWeight('bold').setFontSize(14).setWrap(true);
+    sheet.getRange(1, 1, 1, 9).merge().setValue(headerLabel).setFontWeight('bold').setFontSize(14).setWrap(true); // 9 = writeMonthlyReportData_'s COLS
 
     writeMonthlyReportData_(sheet, 3, year, month, undefined, employee.EmployeeID);
     SpreadsheetApp.flush(); // commit the sheet's real content/sizing before exporting it

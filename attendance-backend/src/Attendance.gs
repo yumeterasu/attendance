@@ -377,7 +377,12 @@ function currentShiftBreakState_(employeeId, now, log) {
   return {
     onShift: !clockedOut,
     onBreak: !clockedOut && lastBreakType === 'BREAK_START',
-    todayIn: todayIn
+    todayIn: todayIn,
+    // Timestamp of the most recent BREAK_START/BREAK_END event found (null
+    // if none today) -- when onBreak is true this IS the open session's own
+    // BREAK_START timestamp, which recordBreak_/recordOfflineSyncedBreak_
+    // need to compute how long that session lasted once it ends.
+    lastBreakTs: lastBreakTs
   };
 }
 
@@ -385,6 +390,73 @@ function currentShiftBreakState_(employeeId, now, log) {
 // informational (see BreakPlannedMinutes below), never compared against the
 // actual elapsed time or used to flag/auto-end anything.
 var VALID_BREAK_DURATIONS = [15, 30, 45, 60];
+
+// Total real break minutes allowed per employee per day -- used ONLY for the
+// "remaining" number shown back to the employee on Back from Break (see
+// recordBreak_/recordOfflineSyncedBreak_ below); never affects Late/OT/
+// absent, and is completely independent of whichever VALID_BREAK_DURATIONS
+// value was picked at Start Break (that pick stays purely informational).
+var DAILY_BREAK_BUDGET_MINUTES = 60;
+
+/** Midnight (00:00:00) of the same calendar day as `date`, local time. */
+function startOfDay_(date) {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate(), 0, 0, 0);
+}
+
+/**
+ * Sums real elapsed minutes across every COMPLETE BREAK_START->BREAK_END
+ * pair for one employee within (sinceTs, now] -- used to compute how much of
+ * DAILY_BREAK_BUDGET_MINUTES is left after a break ends. `now` here is
+ * always strictly after the just-appended BREAK_END's own timestamp would
+ * be (callers run this BEFORE appending that row), so an open/unmatched
+ * trailing BREAK_START (the just-ending session itself, or a still-earlier
+ * forgotten one) naturally contributes nothing -- callers add the
+ * just-ending session's own duration separately.
+ *
+ * `sinceTs` should be startOfDay_(now) (midnight), NOT state.todayIn.timestamp
+ * -- DAILY_BREAK_BUDGET_MINUTES is a whole-CALENDAR-DAY budget, and an
+ * employee can clock OUT and back IN again the same day (findTodayInLog_
+ * always returns the LATEST IN); scoping from todayIn would silently drop
+ * break minutes taken during an earlier stint that same day.
+ *
+ * Known accepted bound: `log` comes from getRecentAttendanceLog_, capped at
+ * RECENT_LOG_ROWS (1000) most recent rows ACROSS EVERY EMPLOYEE, not just
+ * this one -- on an implausibly high-volume day (1000+ combined punches
+ * before this employee's second same-day break ends) an early-morning pair
+ * from their first stint could theoretically scroll out of that window,
+ * under-counting priorMinutes and over-stating remainingMinutes. Not
+ * fixed here: reaching further back would mean an unbounded/full-sheet read
+ * on this latency-sensitive live check-in path (KIOSK_TIMEOUT_MS), which is
+ * exactly what RECENT_LOG_ROWS exists to avoid -- and at this org's actual
+ * staff size, a single day's combined event count is nowhere near 1000.
+ */
+function sumCompletedBreakMinutesToday_(employeeId, sinceTs, now, log) {
+  var idCol = log.headers.indexOf('EmployeeID');
+  var tsCol = log.headers.indexOf('Timestamp');
+  var typeCol = log.headers.indexOf('Type');
+
+  var events = [];
+  for (var i = 0; i < log.rows.length; i++) {
+    if (String(log.rows[i][idCol]) !== String(employeeId)) continue;
+    var ts = new Date(log.rows[i][tsCol]);
+    if (ts.getTime() <= sinceTs.getTime() || ts.getTime() > now.getTime()) continue;
+    var rowType = log.rows[i][typeCol];
+    if (rowType === 'BREAK_START' || rowType === 'BREAK_END') events.push({ ts: ts, type: rowType });
+  }
+  events.sort(function (a, b) { return a.ts.getTime() - b.ts.getTime(); });
+
+  var totalMinutes = 0;
+  var openStart = null;
+  for (var j = 0; j < events.length; j++) {
+    if (events[j].type === 'BREAK_START') {
+      openStart = events[j].ts;
+    } else if (openStart) {
+      totalMinutes += Math.round((events[j].ts.getTime() - openStart.getTime()) / 60000);
+      openStart = null;
+    }
+  }
+  return totalMinutes;
+}
 
 /**
  * Records a Start Break / Back from Break tap from the live Kiosk. Requires
@@ -462,6 +534,18 @@ function recordBreak_(employeeId, type, durationMinutes) {
     return fail_('duplicate', 'Already recorded, please wait a moment before scanning again');
   }
 
+  // Computed BEFORE appendRow_ below (from the `log` snapshot already read,
+  // which doesn't include the row about to be written) -- see
+  // sumCompletedBreakMinutesToday_'s own doc comment for why that's exactly
+  // right: it naturally excludes the just-ending session (no BREAK_END row
+  // for it yet), so its own duration is added on separately here.
+  var remainingMinutes;
+  if (type === 'BREAK_END') {
+    var priorMinutes = sumCompletedBreakMinutesToday_(employeeId, startOfDay_(now), now, log);
+    var thisSessionMinutes = Math.round((now.getTime() - state.lastBreakTs.getTime()) / 60000);
+    remainingMinutes = Math.max(0, DAILY_BREAK_BUDGET_MINUTES - (priorMinutes + thisSessionMinutes));
+  }
+
   // Same conditional-ensureColumns_ pattern as recordAttendance_'s own
   // PunchBranch/ShiftPicked columns -- only pays for the extra write the
   // first time this sheet has ever seen a BreakPlannedMinutes value.
@@ -482,7 +566,13 @@ function recordBreak_(employeeId, type, durationMinutes) {
     BreakPlannedMinutes: type === 'BREAK_START' ? durationMinutes : ''
   }, appendHeaders);
 
-  return ok_({ type: type, timestamp: now.toISOString(), name: emp.Name, durationMinutes: type === 'BREAK_START' ? durationMinutes : undefined });
+  return ok_({
+    type: type,
+    timestamp: now.toISOString(),
+    name: emp.Name,
+    durationMinutes: type === 'BREAK_START' ? durationMinutes : undefined,
+    remainingMinutes: remainingMinutes
+  });
 }
 
 /**
@@ -1498,6 +1588,15 @@ function recordOfflineSyncedBreak_(employeeId, type, timestamp, clientId, durati
     return { duplicate: true, name: emp.Name };
   }
 
+  // Same "computed from the pre-append log snapshot" reasoning as
+  // recordBreak_'s own remainingMinutes -- see its comment.
+  var remainingMinutes;
+  if (type === 'BREAK_END') {
+    var priorMinutes = sumCompletedBreakMinutesToday_(employeeId, startOfDay_(timestamp), timestamp, log);
+    var thisSessionMinutes = Math.round((timestamp.getTime() - state.lastBreakTs.getTime()) / 60000);
+    remainingMinutes = Math.max(0, DAILY_BREAK_BUDGET_MINUTES - (priorMinutes + thisSessionMinutes));
+  }
+
   appendRow_('AttendanceLog', {
     Timestamp: timestamp,
     EmployeeID: emp.EmployeeID,
@@ -1512,7 +1611,8 @@ function recordOfflineSyncedBreak_(employeeId, type, timestamp, clientId, durati
 
   return {
     alreadySynced: false, type: type, timestamp: timestamp.toISOString(), name: emp.Name,
-    durationMinutes: type === 'BREAK_START' ? durationMinutes : undefined
+    durationMinutes: type === 'BREAK_START' ? durationMinutes : undefined,
+    remainingMinutes: remainingMinutes
   };
 }
 

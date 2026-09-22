@@ -71,9 +71,12 @@ export function kioskCheckin(pin: string, type: 'IN' | 'OUT', ot: boolean | unde
 // involved, so no ot/branch/shift params (see handleKioskBreak_ server-side).
 // durationMinutes is the employee's own pick of how long they intend to be
 // gone (one of VALID_BREAK_DURATIONS server-side) -- required for
-// BREAK_START, ignored for BREAK_END.
+// BREAK_START, ignored for BREAK_END. remainingMinutes (BREAK_END only) is
+// how much of the employee's DAILY_BREAK_BUDGET_MINUTES is left today after
+// this break, server-computed from real elapsed time across every break
+// taken so far -- independent of whatever duration was picked at Start Break.
 export function kioskBreak(pin: string, type: 'BREAK_START' | 'BREAK_END', durationMinutes?: number) {
-  return postAction<{ type: 'BREAK_START' | 'BREAK_END'; timestamp: string; name: string; durationMinutes?: number }>(
+  return postAction<{ type: 'BREAK_START' | 'BREAK_END'; timestamp: string; name: string; durationMinutes?: number; remainingMinutes?: number }>(
     'kioskBreak',
     { pin, type, durationMinutes },
     KIOSK_TIMEOUT_MS

@@ -109,7 +109,7 @@ function buildCalendarWeeks(year: number, month: number, days: ScheduleDay[]): C
 
 type Feedback =
   | { kind: 'success'; type: 'IN' | 'OUT'; name: string; timestamp: string; late?: boolean; ot?: boolean; queued?: boolean }
-  | { kind: 'break'; type: 'BREAK_START' | 'BREAK_END'; name: string; timestamp: string; durationMinutes?: number; queued?: boolean }
+  | { kind: 'break'; type: 'BREAK_START' | 'BREAK_END'; name: string; timestamp: string; durationMinutes?: number; remainingMinutes?: number; queued?: boolean }
   | { kind: 'error'; message: string };
 
 // Same shape scheduleCache.ts's CachedMonth uses -- kept as one type so a
@@ -579,7 +579,7 @@ export default function KioskScreen({ navigation }: Props) {
           // awaited -- same reasoning as queueOffline's own calls.
           setLocalOnBreak(currentPin, res.type === 'BREAK_START');
           await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-          showFeedback({ kind: 'break', type: res.type, name: res.name, timestamp: res.timestamp, durationMinutes: res.durationMinutes });
+          showFeedback({ kind: 'break', type: res.type, name: res.name, timestamp: res.timestamp, durationMinutes: res.durationMinutes, remainingMinutes: res.remainingMinutes });
         } else if (res.error === 'timeout' || res.error === 'network_error') {
           await queueOffline(breakType, false, null, null, breakDuration);
         } else {
@@ -1159,9 +1159,21 @@ export default function KioskScreen({ navigation }: Props) {
           <Text style={styles.feedbackName}>{feedback.name}</Text>
           <Text style={styles.feedbackTime}>{new Date(feedback.timestamp).toLocaleTimeString()}</Text>
           {feedback.type === 'BREAK_START' && feedback.durationMinutes != null && (
-            <Text style={styles.feedbackLate}>
-              Back by {new Date(new Date(feedback.timestamp).getTime() + feedback.durationMinutes * 60000).toLocaleTimeString()}
-            </Text>
+            <>
+              <Text style={styles.feedbackBigLabel}>BACK BY</Text>
+              <Text style={styles.feedbackBigValue}>
+                {new Date(new Date(feedback.timestamp).getTime() + feedback.durationMinutes * 60000).toLocaleTimeString([], {
+                  hour: '2-digit',
+                  minute: '2-digit'
+                })}
+              </Text>
+            </>
+          )}
+          {feedback.type === 'BREAK_END' && feedback.remainingMinutes != null && (
+            <>
+              <Text style={styles.feedbackBigLabel}>BREAK TIME LEFT TODAY</Text>
+              <Text style={styles.feedbackBigValue}>{feedback.remainingMinutes} min</Text>
+            </>
           )}
           {feedback.queued && <Text style={styles.feedbackLate}>Saved offline — will sync automatically</Text>}
         </View>
@@ -1490,11 +1502,13 @@ const styles = StyleSheet.create({
     borderWidth: 2
   },
   breakButton: {
-    alignSelf: 'stretch',
-    marginTop: 4,
+    alignSelf: 'center',
+    width: '60%',
+    marginTop: 28, // extra separation from typeRow above (beyond typeRow's own marginBottom: 8) so this reads as a distinct, secondary action, not a fourth IN/OUT/OUT OT button
     marginBottom: 8,
     borderRadius: 16,
     paddingVertical: 12,
+    paddingHorizontal: 12,
     borderWidth: 2,
     borderColor: TEAL_BORDER,
     backgroundColor: TEAL_BG,
@@ -1633,6 +1647,18 @@ const styles = StyleSheet.create({
   feedbackType: { color: '#fff', fontSize: 22, fontFamily: FONT_DISPLAY_EXTRABOLD, letterSpacing: 2 },
   feedbackName: { color: '#fff', fontSize: 17, fontFamily: FONT_DISPLAY_BOLD, marginTop: 4, textAlign: 'center' },
   feedbackTime: { color: 'rgba(255,255,255,0.8)', fontSize: 13, fontFamily: FONT_BODY_MEDIUM, marginTop: 2 },
+  // Used by the Break feedback card only -- "Back by HH:MM" (Start Break)
+  // and "N min left today" (Back from Break) are the whole point of that
+  // card, so they get the same visual weight as a stopwatch readout instead
+  // of the small feedbackLate pill every other tag on this card uses.
+  feedbackBigLabel: {
+    color: 'rgba(255,255,255,0.85)',
+    fontSize: 12,
+    fontFamily: FONT_DISPLAY_BOLD,
+    letterSpacing: 1.5,
+    marginTop: 10
+  },
+  feedbackBigValue: { color: '#fff', fontSize: 40, fontFamily: FONT_DISPLAY_EXTRABOLD, marginTop: 2 },
   feedbackLate: {
     color: '#fff',
     backgroundColor: 'rgba(0,0,0,0.25)',
