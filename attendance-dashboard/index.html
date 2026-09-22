@@ -474,6 +474,19 @@
     border-radius: 10px;
     padding: 8px 12px;
     min-width: 140px;
+    position: relative; /* anchors .chip-break in the corner without affecting the chip's own size/flow */
+  }
+  /* Real break minutes so far today (visibility only) -- absolutely
+     positioned so it never grows the chip; sits in the empty bottom-right
+     corner next to the short HH:MM note. Omitted entirely (not "0m") when
+     nobody's taken a break yet, the common case for most of the day. */
+  .name-chip .chip-break {
+    position: absolute;
+    right: 12px;
+    bottom: 8px;
+    font-size: 10px;
+    font-weight: 700;
+    color: var(--text-muted);
   }
   .name-chip .chip-name { font-size: 13px; font-weight: 700; }
   /* Name + "Late" pill share one row (space-between pushes the pill to the
@@ -1872,10 +1885,18 @@
       if (mismatch) branchTitle = t('punchMismatchTitle')(branchLabel(emp.punchBranch), branchLabel(emp.outPunchBranch));
     }
 
+    // Real completed break minutes so far today (see handleDashboardDaily_
+    // server-side) -- only entries that actually punched in carry this
+    // field at all (Absent/On Leave chips don't), and 0/undefined stays
+    // hidden rather than showing a "0m" badge on everyone who hasn't taken
+    // a break yet.
+    var breakHtml = emp.breakMinutes ? '<span class="chip-break">' + escapeHtml(String(emp.breakMinutes)) + 'm</span>' : '';
+
     chip.innerHTML =
       '<div class="chip-header"><span class="chip-name">' + escapeHtml(emp.name) + '</span>' + lateHtml + '</div>' +
       branchHtml +
-      noteHtml;
+      noteHtml +
+      breakHtml;
     // Set as a DOM property, not string-concatenated into the innerHTML
     // above -- escapeHtml() only escapes &/</> (safe for text content),
     // not quotes, so building `title="..."` as a string could let a

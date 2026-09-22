@@ -1549,10 +1549,32 @@ function handleDashboardDaily_(params) {
   // -- never affects the onTime/late/absent/onLeave classification itself,
   // which stays IN-only as it already was.
   var outRowByEmployee = {};
+  // Real completed break minutes so far on targetDate, per employee --
+  // collected in the SAME single pass as inRowByEmployee/outRowByEmployee
+  // above (not a separate per-employee call into sumCompletedBreakMinutesToday_
+  // for each of activeEmployees -- that would rescan the whole, unbounded
+  // AttendanceLog once per checked-in employee, O(rows x employees) instead
+  // of O(rows), and this sheet has no archiving so `rows` only grows).
+  // Paired into breakMinutesByEmployee after the loop, below.
+  var breakEventsByEmployee = {};
+  var now = new Date();
+  // Exclusive upper bound: start of the NEXT calendar day (not
+  // 23:59:59 -- that misses any event timestamped in the last second of
+  // the target day, e.g. 23:59:59.500). For "today" this is simply `now`.
+  var breakWindowEnd = isSameDay_(targetDate, now) ? now : new Date(year, month - 1, day + 1, 0, 0, 0);
+  var dayStart = startOfDay_(targetDate);
+
   for (var i = 1; i < logValues.length; i++) {
     var rowType = logValues[i][typeCol];
-    if (rowType !== 'IN' && rowType !== 'OUT') continue;
     var ts = new Date(logValues[i][tsCol]);
+    if (rowType === 'BREAK_START' || rowType === 'BREAK_END') {
+      if (ts.getTime() < dayStart.getTime() || ts.getTime() >= breakWindowEnd.getTime()) continue;
+      var breakEmpId = String(logValues[i][idCol]);
+      if (!breakEventsByEmployee[breakEmpId]) breakEventsByEmployee[breakEmpId] = [];
+      breakEventsByEmployee[breakEmpId].push({ ts: ts, type: rowType });
+      continue;
+    }
+    if (rowType !== 'IN' && rowType !== 'OUT') continue;
     if (!isSameDay_(ts, targetDate)) continue;
     var empId = String(logValues[i][idCol]);
     var rowPunchBranch = punchBranchCol !== -1 ? String(logValues[i][punchBranchCol] || '') : '';
@@ -1572,6 +1594,35 @@ function handleDashboardDaily_(params) {
       outRowByEmployee[empId] = { ts: ts, punchBranch: rowPunchBranch };
     }
   }
+
+  // Pair each employee's break events chronologically -- same rule as
+  // sumCompletedBreakMinutesToday_/aggregateMonthLogs_: sum every COMPLETE
+  // BREAK_START->BREAK_END pair; an unmatched trailing BREAK_START (a
+  // forgotten Back from Break, or the just-in-progress one) contributes
+  // nothing. Known accepted gap: a break that starts before dayStart or
+  // ends after breakWindowEnd (crossing midnight) is invisible to THIS
+  // per-day view on both the start and end day, since each day's window is
+  // scanned independently here -- unlike the Monthly Report
+  // (aggregateMonthLogs_), which pairs a whole month at once and can't miss
+  // it. Not fixed here: real shifts at this org run nowhere near midnight,
+  // and attributing a split pair to "today" vs "yesterday" for a single-day
+  // view has no unambiguous right answer anyway.
+  var breakMinutesByEmployee = {};
+  Object.keys(breakEventsByEmployee).forEach(function (empId) {
+    var events = breakEventsByEmployee[empId];
+    events.sort(function (a, b) { return a.ts.getTime() - b.ts.getTime(); });
+    var totalMinutes = 0;
+    var openStart = null;
+    for (var e = 0; e < events.length; e++) {
+      if (events[e].type === 'BREAK_START') {
+        openStart = events[e].ts;
+      } else if (openStart) {
+        totalMinutes += Math.round((events[e].ts.getTime() - openStart.getTime()) / 60000);
+        openStart = null;
+      }
+    }
+    breakMinutesByEmployee[empId] = totalMinutes;
+  });
 
   var onTime = [];
   var late = [];
@@ -1596,7 +1647,11 @@ function handleDashboardDaily_(params) {
         // the frontend only treats a genuine PP/TL-vs-PP/TL disagreement as
         // a real mismatch worth flagging, never "still clocked in" or
         // "OUT tap exists but its own branch is unknown".
-        outPunchBranch: outRow ? outRow.punchBranch : null
+        outPunchBranch: outRow ? outRow.punchBranch : null,
+        // Visibility only, same as everywhere else break minutes show up --
+        // real elapsed time across every COMPLETE break so far today; an
+        // in-progress (not yet ended) break contributes nothing until it ends.
+        breakMinutes: breakMinutesByEmployee[emp.EmployeeID] || 0
       };
       // isEventShift_(shift) overrides a stale stored Late=TRUE the same way
       // sumMonthTotals_ already does unconditionally from the CURRENT
