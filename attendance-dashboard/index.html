@@ -461,6 +461,9 @@
     font-weight: 700;
     color: var(--text-muted);
   }
+  /* Over the 60-min daily break budget (DAILY_BREAK_BUDGET_MINUTES,
+     Attendance.gs) -- same red used for Late elsewhere on this page. */
+  .name-chip .chip-break.over-budget { color: var(--danger-text); }
   .name-chip .chip-name { font-size: 13px; font-weight: 700; }
   /* Name + "Late" pill share one row (space-between pushes the pill to the
      top-right corner) instead of the pill taking its own line below the
@@ -1760,8 +1763,11 @@
     // server-side) -- only entries that actually punched in carry this
     // field at all (Absent/On Leave chips don't), and 0/undefined stays
     // hidden rather than showing a "0m" badge on everyone who hasn't taken
-    // a break yet.
-    var breakHtml = emp.breakMinutes ? '<span class="chip-break">' + escapeHtml(String(emp.breakMinutes)) + 'm</span>' : '';
+    // a break yet. Over the 60-min daily budget (mirrors the backend's
+    // DAILY_BREAK_BUDGET_MINUTES, Attendance.gs) turns red, same as Late.
+    var breakOverBudget = emp.breakMinutes > 60;
+    var breakClass = breakOverBudget ? 'chip-break over-budget' : 'chip-break';
+    var breakHtml = emp.breakMinutes ? '<span class="' + breakClass + '">' + escapeHtml(String(emp.breakMinutes)) + 'm</span>' : '';
 
     chip.innerHTML =
       '<div class="chip-header"><span class="chip-name">' + escapeHtml(emp.name) + '</span>' + lateHtml + '</div>' +
