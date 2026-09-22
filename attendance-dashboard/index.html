@@ -105,10 +105,10 @@
     gap: 16px;
   }
 
-  /* Small pill toggle, same family as .login-tabs/.view-tabs but compact
-     enough to sit in the header bar next to the account controls -- and,
-     unlike those, visible before login too, so the language choice applies
-     to the sign-in screen itself. */
+  /* Small pill toggle, same family as .view-tabs but compact enough to sit
+     in the header bar next to the account controls -- and, unlike that one,
+     visible before login too, so the language choice applies to the sign-in
+     screen itself. */
   .lang-toggle {
     display: inline-flex;
     gap: 2px;
@@ -259,33 +259,6 @@
     display: none;
   }
   .error-msg.show { display: block; }
-
-  .login-tabs {
-    display: flex;
-    gap: 4px;
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 4px;
-    margin-bottom: 20px;
-  }
-  .login-tab {
-    flex: 1;
-    font-family: inherit;
-    font-size: 13px;
-    font-weight: 700;
-    color: var(--text-muted);
-    background: transparent;
-    border: none;
-    border-radius: 8px;
-    padding: 9px 8px;
-    cursor: pointer;
-  }
-  .login-tab.active {
-    background: var(--card);
-    color: var(--text);
-    box-shadow: 0 1px 2px rgba(20,20,20,0.06);
-  }
 
   /* ---------- Dashboard ---------- */
 
@@ -731,27 +704,9 @@
   <div id="loginView">
     <div class="login-card">
       <div class="brand-badge">🔒</div>
-      <h2 id="loginTitle" data-i18n="loginAdminTitle">Admin Sign In</h2>
+      <h2 id="loginTitle" data-i18n="loginViewerTitle">Viewer Access</h2>
 
-      <div class="login-tabs">
-        <button type="button" class="login-tab active" id="tabAdmin" data-i18n="tabAdmin">Admin</button>
-        <button type="button" class="login-tab" id="tabViewer" data-i18n="tabViewer">Viewer Access</button>
-      </div>
-
-      <form id="loginForm">
-        <p class="hint" data-i18n="adminHint">Use the same username and one-time setup code an admin issues for a new device (Admin screen → "Lost Device / New Setup Code").</p>
-        <div class="field">
-          <label for="username" data-i18n="usernameLabel">Username</label>
-          <input id="username" autocomplete="username" placeholder="EMP001" autocapitalize="characters" />
-        </div>
-        <div class="field">
-          <label for="setupCode" data-i18n="setupCodeLabel">Setup Code</label>
-          <input id="setupCode" autocomplete="one-time-code" placeholder="123456" />
-        </div>
-        <button class="primary" type="submit" id="loginBtn" data-i18n="signIn">Sign In</button>
-      </form>
-
-      <form id="viewerForm" style="display:none;">
+      <form id="viewerForm">
         <p class="hint" data-i18n="viewerHint">Enter the viewing password shared with you to see attendance summaries. Read-only — no admin account needed.</p>
         <div class="field">
           <label for="viewerPassword" data-i18n="passwordLabel">Password</label>
@@ -926,22 +881,12 @@
     en: {
       brandTitle: 'Attendance Dashboard',
       logout: 'Log out',
-      loginAdminTitle: 'Admin Sign In',
       loginViewerTitle: 'Viewer Access',
-      tabAdmin: 'Admin',
-      tabViewer: 'Viewer Access',
-      adminHint: 'Use the same username and one-time setup code an admin issues for a new device (Admin screen → "Lost Device / New Setup Code").',
-      usernameLabel: 'Username',
-      setupCodeLabel: 'Setup Code',
-      signIn: 'Sign In',
-      signingIn: 'Signing in…',
       viewerHint: 'Enter the viewing password shared with you to see attendance summaries. Read-only — no admin account needed.',
       passwordLabel: 'Password',
       viewDashboard: 'View Dashboard',
       checking: 'Checking…',
       errIncorrectPassword: 'Incorrect password.',
-      errNotAdmin: 'This account is not an admin. Ask an admin to issue a code for an admin account instead.',
-      errSignInFailed: 'Sign in failed.',
       errGeneric: 'Something went wrong.',
       errNetwork: 'Could not reach the server. Check your connection.',
       errTimeout: 'The server is taking too long to respond. Please try again in a moment.',
@@ -995,22 +940,12 @@
     ja: {
       brandTitle: '勤怠ダッシュボード',
       logout: 'ログアウト',
-      loginAdminTitle: '管理者ログイン',
       loginViewerTitle: '閲覧者アクセス',
-      tabAdmin: '管理者',
-      tabViewer: '閲覧者アクセス',
-      adminHint: '新しい端末には、管理者が発行したユーザー名とワンタイムのセットアップコードを入力してください(管理者画面 →「デバイス紛失/新しいセットアップコード」)。',
-      usernameLabel: 'ユーザー名',
-      setupCodeLabel: 'セットアップコード',
-      signIn: 'サインイン',
-      signingIn: 'サインイン中…',
       viewerHint: '共有された閲覧用パスワードを入力すると、勤怠サマリーを確認できます。閲覧専用 — 管理者アカウントは不要です。',
       passwordLabel: 'パスワード',
       viewDashboard: 'ダッシュボードを見る',
       checking: '確認中…',
       errIncorrectPassword: 'パスワードが違います。',
-      errNotAdmin: 'このアカウントは管理者ではありません。管理者アカウント用のコードを発行してもらってください。',
-      errSignInFailed: 'サインインに失敗しました。',
       errGeneric: 'エラーが発生しました。',
       errNetwork: 'サーバーに接続できません。接続を確認してください。',
       errTimeout: 'サーバーの応答に時間がかかっています。少し待ってからもう一度お試しください。',
@@ -1080,11 +1015,11 @@
   function applyStaticI18n() {
     document.documentElement.lang = currentLang;
     document.querySelectorAll('[data-i18n]').forEach(function (el) {
-      // Skip a disabled control -- loginBtn/viewerBtn both keep their idle
-      // data-i18n label in the HTML but get their text swapped to
-      // "Signing in…"/"Checking…" while a request is in flight (see their
-      // submit handlers); resetting that here would make a still-locked
-      // button look idle and clickable if the language is switched mid-request.
+      // Skip a disabled control -- viewerBtn keeps its idle data-i18n label
+      // in the HTML but gets its text swapped to "Checking…" while a
+      // request is in flight (see its submit handler); resetting that here
+      // would make a still-locked button look idle and clickable if the
+      // language is switched mid-request.
       if (el.disabled) return;
       el.textContent = t(el.getAttribute('data-i18n'));
     });
@@ -1124,7 +1059,6 @@
     // Re-run whatever dynamic text is currently on screen so it picks up
     // the new language too -- static i18n only covers text that's the same
     // every time; these are generated from live data/state.
-    setLoginTab(tabAdmin.classList.contains('active') ? 'admin' : 'viewer', false); // false: don't wipe an error just shown
     if (loginErrorInfo) loginError.textContent = resolveErrorText(loginErrorInfo);
     updateFiscalHint();
     if (lastEmployees.length) applySortAndRender();
@@ -1154,7 +1088,7 @@
       }
     });
     var session = loadSession();
-    if (session) document.getElementById('whoamiName').textContent = session.isViewer ? t('viewerName') : session.name;
+    if (session) document.getElementById('whoamiName').textContent = t('viewerName');
   }
 
   document.querySelectorAll('.lang-btn').forEach(function (btn) {
@@ -1164,9 +1098,9 @@
   // Points at the same Web App the Kiosk app uses -- same apiKey too,
   // already effectively public (shipped inside the distributed APK), so
   // reusing it here doesn't add a new exposure. Auth for what this page can
-  // actually see is enforced by the sessionToken (see login()), same as the
-  // in-app Admin screen -- checkApiKey_ alone never gates anything sensitive
-  // on the backend.
+  // actually see is enforced by the shared viewer password (see
+  // requireDashboardAccess_/checkViewerPassword_ in Report.gs/Auth.gs) --
+  // checkApiKey_ alone never gates anything sensitive on the backend.
   var API_URL = 'https://script.google.com/macros/s/AKfycbyfAUriIwgQlRjUv6cC1UKSazFW-KOrFd8a251bodchsBIa4On5ZZhji72Cjwsb-rYq/exec';
   var API_KEY = 'UgeFNcfax1LES5RhzPQ9XqG7OiHZwoYJ';
 
@@ -1190,7 +1124,7 @@
   // avoids the preflight requirement entirely.
   // Without this, a slow/cold-starting Apps Script backend (or a request
   // that never comes back at all) just leaves fetch() pending forever --
-  // "Loading…"/"Signing in…" stays on screen indefinitely with no error and
+  // "Loading…"/"Checking…" stays on screen indefinitely with no error and
   // nothing to act on. 20s is generous enough not to trip on an ordinary
   // request, short enough that a stuck one turns into a clear, recoverable
   // error message instead of a silent hang. dashboardSummary's "All (fiscal
@@ -1219,24 +1153,16 @@
     return fetch(url.toString(), { signal: controller.signal, cache: 'no-store' })
       .then(function (res) { return res.json(); })
       .catch(function () {
-        // A timeout here is usually the backend's Apps Script Web App
-        // still cold-starting, not a real outage -- one silent automatic
-        // retry (same action/params/budget) quietly resolves that instead
-        // of making the admin read an error and click Refresh themselves.
+        // A timeout here is usually the backend's Apps Script Web App still
+        // cold-starting, not a real outage -- one silent automatic retry
+        // (same action/params/budget) quietly resolves that instead of
+        // making the viewer read an error and click Refresh themselves.
         // Only for a timeout, and only once: a genuine network_error (never
         // even reached the server) or a second timeout in a row falls
-        // through to the error below as before.
-        //
-        // Never for 'pair' (admin sign-in): it consumes a one-time setup
-        // code server-side. A timeout there doesn't mean the request never
-        // arrived -- the server may have already marked the code used and
-        // handed back a session token that got lost when the client gave up
-        // waiting. Resubmitting would hit handlePair_'s "already used"
-        // rejection and strand the admin with a burned code, even though
-        // sign-in genuinely succeeded. Read-only actions (dashboardSummary/
-        // dashboardDaily) have no such side effect, so a duplicate request
-        // there is harmless.
-        if (timedOut && !isRetry && action !== 'pair') {
+        // through to the error below as before. Safe to always retry here --
+        // this page's only two actions (dashboardSummary/dashboardDaily) are
+        // both read-only, so a duplicate request has no side effect.
+        if (timedOut && !isRetry) {
           return apiGet(action, params, timeoutMs, true);
         }
         // messageKey (not a baked-in message string) so this stays
@@ -1386,15 +1312,13 @@
 
   // ---------- Login ----------
 
-  var loginForm = document.getElementById('loginForm');
-  var loginBtn = document.getElementById('loginBtn');
   var loginError = document.getElementById('loginError');
+  var viewerForm = document.getElementById('viewerForm');
 
   // Tracks what's currently in loginError so a language switch can
-  // re-render it correctly instead of either leaving it in the old
-  // language or (setLoginTab's normal job) silently clearing it -- see
-  // showLoginError/clearLoginError and setLanguage() below. `key` is one
-  // of our own translatable strings; `text` is the backend's own message
+  // re-render it correctly instead of leaving it in the old language -- see
+  // showLoginError/clearLoginError and setLanguage() below. `key` is one of
+  // our own translatable strings; `text` is the backend's own message
   // (English only, no client-side way to translate it), used as-is.
   var loginErrorInfo = null;
 
@@ -1408,59 +1332,10 @@
     loginError.classList.remove('show');
   }
 
-  loginForm.addEventListener('submit', function (e) {
-    e.preventDefault();
-    var username = document.getElementById('username').value.trim();
-    var setupCode = document.getElementById('setupCode').value.trim();
-    if (!username || !setupCode) return;
-
-    loginBtn.disabled = true;
-    loginBtn.textContent = t('signingIn');
-    clearLoginError();
-
-    apiGet('pair', { username: username, setupCode: setupCode }).then(function (result) {
-      loginBtn.disabled = false;
-      loginBtn.textContent = t('signIn');
-
-      if (!result.success) {
-        showLoginError(errorInfoFrom(result, 'errSignInFailed'));
-        return;
-      }
-      if (!result.isAdmin) {
-        showLoginError({ key: 'errNotAdmin' });
-        return;
-      }
-      saveSession({ sessionToken: result.sessionToken, name: result.name });
-      showDashboard();
-    });
-  });
-
   document.getElementById('logoutBtn').addEventListener('click', function () {
     clearSession();
     location.reload();
   });
-
-  // ---------- Login tabs (Admin vs. Viewer Access) ----------
-
-  var tabAdmin = document.getElementById('tabAdmin');
-  var tabViewer = document.getElementById('tabViewer');
-  var loginTitle = document.getElementById('loginTitle');
-  var viewerForm = document.getElementById('viewerForm');
-
-  // `resetError` defaults to true (a real tab click starts fresh); pass
-  // false when this is only being re-applied for a language switch (see
-  // setLanguage()) so an error already on screen isn't wiped out by it.
-  function setLoginTab(tab, resetError) {
-    var isAdmin = tab === 'admin';
-    tabAdmin.classList.toggle('active', isAdmin);
-    tabViewer.classList.toggle('active', !isAdmin);
-    loginForm.style.display = isAdmin ? 'block' : 'none';
-    viewerForm.style.display = isAdmin ? 'none' : 'block';
-    loginTitle.textContent = isAdmin ? t('loginAdminTitle') : t('loginViewerTitle');
-    if (resetError !== false) clearLoginError();
-  }
-  tabAdmin.addEventListener('click', function () { setLoginTab('admin'); });
-  tabViewer.addEventListener('click', function () { setLoginTab('viewer'); });
 
   var viewerBtn = document.getElementById('viewerBtn');
 
@@ -1484,19 +1359,16 @@
       viewerBtn.textContent = t('viewDashboard');
 
       if (!result.success) {
-        // Deliberately NOT errorInfoFrom(result, ...) here: with no
-        // sessionToken, a wrong viewer password fails the same backend path
-        // as an unauthenticated admin check and comes back as e.g. "Please
-        // log in again" (session_expired) -- accurate for the admin login
-        // form, nonsensical here. A real network failure is still shown
-        // correctly since apiGet's catch sets messageKey, not message.
+        // Deliberately NOT errorInfoFrom(result, ...) here: a wrong viewer
+        // password fails requireDashboardAccess_ the same way any other
+        // unauthenticated request would (e.g. "Please log in again" /
+        // session_expired) -- not an accurate message for a wrong password,
+        // so this always shows errIncorrectPassword instead unless apiGet's
+        // own catch set a real network-failure messageKey.
         showLoginError(result.messageKey ? { key: result.messageKey } : { key: 'errIncorrectPassword' });
         return;
       }
-      // isViewer:true is what actually drives the "Viewer" display -- see
-      // showDashboard() -- so this stored marker never needs to change with
-      // the language toggle.
-      saveSession({ viewerPassword: password, name: 'Viewer', isViewer: true });
+      saveSession({ viewerPassword: password });
       showDashboard();
     });
   });
@@ -1720,10 +1592,9 @@
     hideStaleBanner('monthlyStaleBanner');
 
     apiGet('dashboardSummary', {
-      // Viewer sessions carry a shared password instead of a personal
-      // sessionToken -- see checkViewerPassword_ in Auth.gs.
-      sessionToken: session.isViewer ? '' : session.sessionToken,
-      viewerPassword: session.isViewer ? session.viewerPassword : '',
+      // Every session here is a viewer session -- see checkViewerPassword_
+      // in Auth.gs.
+      viewerPassword: session.viewerPassword,
       year: yearSelect.value,
       month: monthSelect.value
     }, dashboardSummaryTimeoutMs(monthSelect.value)).then(function (result) {
@@ -2014,8 +1885,7 @@
     hideStaleBanner('dailyStaleBanner');
 
     apiGet('dashboardDaily', {
-      sessionToken: session.isViewer ? '' : session.sessionToken,
-      viewerPassword: session.isViewer ? session.viewerPassword : '',
+      viewerPassword: session.viewerPassword,
       year: parts[0],
       month: parts[1],
       day: parts[2]
@@ -2053,11 +1923,10 @@
   document.getElementById('dailyErrorRetryBtn').addEventListener('click', loadDaily);
 
   function showDashboard() {
-    var session = loadSession();
     document.getElementById('loginView').style.display = 'none';
     document.getElementById('dashboardView').style.display = 'block';
     document.getElementById('whoami').style.display = 'flex';
-    document.getElementById('whoamiName').textContent = session.isViewer ? t('viewerName') : session.name;
+    document.getElementById('whoamiName').textContent = t('viewerName');
     updateFiscalHint();
     setDashboardView('daily'); // Daily opens by default; Monthly is a click away.
   }
