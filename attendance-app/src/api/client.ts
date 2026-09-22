@@ -71,16 +71,22 @@ export function kioskCheckin(pin: string, type: 'IN' | 'OUT', ot: boolean | unde
 // involved, so no ot/branch/shift params (see handleKioskBreak_ server-side).
 // durationMinutes is the employee's own pick of how long they intend to be
 // gone (one of VALID_BREAK_DURATIONS server-side) -- required for
-// BREAK_START, ignored for BREAK_END. remainingMinutes (BREAK_END only) is
-// how much of the employee's DAILY_BREAK_BUDGET_MINUTES is left today after
-// this break, server-computed from real elapsed time across every break
-// taken so far -- independent of whatever duration was picked at Start Break.
+// BREAK_START, ignored for BREAK_END. remainingMinutes/totalMinutesUsedToday
+// (BREAK_END only) are how much of DAILY_BREAK_BUDGET_MINUTES is left today
+// / how many real minutes were used so far, server-computed across every
+// break taken so far today -- independent of whatever duration was picked at
+// Start Break. totalMinutesUsedToday is the raw total (unclamped, unlike
+// remainingMinutes which floors at 0) -- see breakMinutesCache.ts for why
+// the app keeps this around as its offline-estimate correction baseline.
 export function kioskBreak(pin: string, type: 'BREAK_START' | 'BREAK_END', durationMinutes?: number) {
-  return postAction<{ type: 'BREAK_START' | 'BREAK_END'; timestamp: string; name: string; durationMinutes?: number; remainingMinutes?: number }>(
-    'kioskBreak',
-    { pin, type, durationMinutes },
-    KIOSK_TIMEOUT_MS
-  );
+  return postAction<{
+    type: 'BREAK_START' | 'BREAK_END';
+    timestamp: string;
+    name: string;
+    durationMinutes?: number;
+    remainingMinutes?: number;
+    totalMinutesUsedToday?: number;
+  }>('kioskBreak', { pin, type, durationMinutes }, KIOSK_TIMEOUT_MS);
 }
 
 // shifts: the shift strings this specific employee can pick at the Kiosk --
@@ -157,7 +163,11 @@ export function kioskSyncOffline(
   shift: string | undefined,
   durationMinutes?: number
 ) {
-  return postAction<{ alreadySynced: boolean; name: string }>('kioskSyncOffline', {
+  // remainingMinutes/totalMinutesUsedToday only ever come back set for a
+  // synced BREAK_END (see recordOfflineSyncedBreak_ server-side) -- used to
+  // correct the on-device running break-minutes estimate back to ground
+  // truth once this queued entry actually syncs (see breakMinutesCache.ts).
+  return postAction<{ alreadySynced: boolean; name: string; remainingMinutes?: number; totalMinutesUsedToday?: number }>('kioskSyncOffline', {
     pin,
     type,
     ot: ot ? 'true' : undefined,

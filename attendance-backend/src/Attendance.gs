@@ -539,11 +539,18 @@ function recordBreak_(employeeId, type, durationMinutes) {
   // sumCompletedBreakMinutesToday_'s own doc comment for why that's exactly
   // right: it naturally excludes the just-ending session (no BREAK_END row
   // for it yet), so its own duration is added on separately here.
-  var remainingMinutes;
+  var remainingMinutes, totalMinutesUsedToday;
   if (type === 'BREAK_END') {
     var priorMinutes = sumCompletedBreakMinutesToday_(employeeId, startOfDay_(now), now, log);
     var thisSessionMinutes = Math.round((now.getTime() - state.lastBreakTs.getTime()) / 60000);
-    remainingMinutes = Math.max(0, DAILY_BREAK_BUDGET_MINUTES - (priorMinutes + thisSessionMinutes));
+    totalMinutesUsedToday = priorMinutes + thisSessionMinutes;
+    // Sent alongside remainingMinutes (not just derived client-side as
+    // 60-remainingMinutes) because remainingMinutes is clamped at 0 -- if
+    // actual usage ever exceeds the budget, "60 - remainingMinutes" would
+    // silently lie about the true total. The app uses this raw total as the
+    // authoritative baseline to correct its own offline running estimate
+    // against once a sync actually succeeds (see breakMinutesCache.ts).
+    remainingMinutes = Math.max(0, DAILY_BREAK_BUDGET_MINUTES - totalMinutesUsedToday);
   }
 
   // Same conditional-ensureColumns_ pattern as recordAttendance_'s own
@@ -571,7 +578,8 @@ function recordBreak_(employeeId, type, durationMinutes) {
     timestamp: now.toISOString(),
     name: emp.Name,
     durationMinutes: type === 'BREAK_START' ? durationMinutes : undefined,
-    remainingMinutes: remainingMinutes
+    remainingMinutes: remainingMinutes,
+    totalMinutesUsedToday: totalMinutesUsedToday
   });
 }
 
@@ -1590,11 +1598,12 @@ function recordOfflineSyncedBreak_(employeeId, type, timestamp, clientId, durati
 
   // Same "computed from the pre-append log snapshot" reasoning as
   // recordBreak_'s own remainingMinutes -- see its comment.
-  var remainingMinutes;
+  var remainingMinutes, totalMinutesUsedToday;
   if (type === 'BREAK_END') {
     var priorMinutes = sumCompletedBreakMinutesToday_(employeeId, startOfDay_(timestamp), timestamp, log);
     var thisSessionMinutes = Math.round((timestamp.getTime() - state.lastBreakTs.getTime()) / 60000);
-    remainingMinutes = Math.max(0, DAILY_BREAK_BUDGET_MINUTES - (priorMinutes + thisSessionMinutes));
+    totalMinutesUsedToday = priorMinutes + thisSessionMinutes;
+    remainingMinutes = Math.max(0, DAILY_BREAK_BUDGET_MINUTES - totalMinutesUsedToday);
   }
 
   appendRow_('AttendanceLog', {
@@ -1612,7 +1621,8 @@ function recordOfflineSyncedBreak_(employeeId, type, timestamp, clientId, durati
   return {
     alreadySynced: false, type: type, timestamp: timestamp.toISOString(), name: emp.Name,
     durationMinutes: type === 'BREAK_START' ? durationMinutes : undefined,
-    remainingMinutes: remainingMinutes
+    remainingMinutes: remainingMinutes,
+    totalMinutesUsedToday: totalMinutesUsedToday
   };
 }
 

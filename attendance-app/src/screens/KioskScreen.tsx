@@ -12,7 +12,8 @@ import { useScheduleSync } from '../hooks/useScheduleSync';
 import { useSession } from '../context/SessionContext';
 import { lookupPinLocally } from '../utils/employeeDirectory';
 import { enqueueCheckin } from '../utils/offlineQueue';
-import { setLocalOnBreak, getLocalOnBreak } from '../utils/breakState';
+import { setLocalOnBreak, getLocalOnBreak, getLocalBreakStartedAt } from '../utils/breakState';
+import { addEstimatedOfflineBreakMinutes, setConfirmedTotalMinutesToday } from '../utils/breakMinutesCache';
 import { getDeviceBranch } from '../utils/deviceBranch';
 import {
   cacheScheduleMonth,
@@ -50,6 +51,12 @@ const DEFAULT_SHIFT_CHOICES = ['7:00-16:00', '7:30-16:30', '8:00-17:00'];
 // employee's own pick of how long they intend to be gone when starting a
 // break.
 const BREAK_DURATION_CHOICES = [15, 30, 45, 60];
+
+// Mirrors the backend's DAILY_BREAK_BUDGET_MINUTES (Attendance.gs) -- used
+// ONLY to compute the offline ESTIMATE of remaining break minutes (see
+// breakMinutesCache.ts); the online path always uses the server's own
+// authoritative remainingMinutes instead, never this constant.
+const DAILY_BREAK_BUDGET_MINUTES = 60;
 
 // The two busiest windows -- most of the workforce clocks in/out within a
 // couple minutes of each other, so during these, skip the network round-trip
@@ -109,7 +116,19 @@ function buildCalendarWeeks(year: number, month: number, days: ScheduleDay[]): C
 
 type Feedback =
   | { kind: 'success'; type: 'IN' | 'OUT'; name: string; timestamp: string; late?: boolean; ot?: boolean; queued?: boolean }
-  | { kind: 'break'; type: 'BREAK_START' | 'BREAK_END'; name: string; timestamp: string; durationMinutes?: number; remainingMinutes?: number; queued?: boolean }
+  | {
+      kind: 'break';
+      type: 'BREAK_START' | 'BREAK_END';
+      name: string;
+      timestamp: string;
+      durationMinutes?: number;
+      // remainingMinutes: server-confirmed (online success only).
+      // estimatedRemainingMinutes: on-device best-effort guess, offline only
+      // -- always rendered with an "estimate" marker, never both set at once.
+      remainingMinutes?: number;
+      estimatedRemainingMinutes?: number;
+      queued?: boolean;
+    }
   | { kind: 'error'; message: string };
 
 // Same shape scheduleCache.ts's CachedMonth uses -- kept as one type so a
@@ -517,7 +536,20 @@ export default function KioskScreen({ navigation }: Props) {
   ) => {
     const name = lookupName ?? '';
     const currentPin = pin; // captured before resetCheckin below clears it -- setLocalOnBreak needs the real PIN
-    const result = await enqueueCheckin(pin, type, ot, branch, shift, breakDurationMinutes);
+    // Computed BEFORE enqueueCheckin (not after) so the session's own
+    // minutes can be stored ON the queued entry itself (breakSessionMinutes)
+    // -- flushQueue needs that exact figure later to precisely undo this
+    // entry's contribution to the estimate if it's ever permanently rejected
+    // (see offlineQueue.ts). Absent startedAt (no reliable local start time)
+    // means no session-minutes estimate at all, same as before.
+    let breakSessionMinutes: number | undefined;
+    if (type === 'BREAK_END') {
+      const startedAt = await getLocalBreakStartedAt(currentPin);
+      if (startedAt) {
+        breakSessionMinutes = Math.max(0, Math.round((Date.now() - new Date(startedAt).getTime()) / 60000));
+      }
+    }
+    const result = await enqueueCheckin(pin, type, ot, branch, shift, breakDurationMinutes, breakSessionMinutes);
     if (!result.success) {
       // Could not actually persist this locally (e.g. device storage full
       // or corrupted) -- must never show the "saved offline" success below
@@ -531,21 +563,40 @@ export default function KioskScreen({ navigation }: Props) {
       return;
     }
     resetCheckin();
-    if (type === 'BREAK_START' || type === 'BREAK_END') {
-      // Best-effort local marker so the offline lookup fallback (see
-      // tryLocalLookup) knows to show "Back from Break" without needing a
-      // live round trip -- server is still the source of truth once online.
+    if (type === 'BREAK_START') {
+      // Best-effort local marker (with a start timestamp, not just a
+      // boolean) so the offline lookup fallback (see tryLocalLookup) knows
+      // to show "Back from Break", AND so a later offline Back from Break
+      // can estimate this session's own duration (see breakMinutesCache.ts).
       // Not awaited -- it already swallows its own errors internally and
       // has no correctness reason to delay the tap-to-feedback path.
-      setLocalOnBreak(currentPin, type === 'BREAK_START');
+      const nowIso = new Date().toISOString();
+      setLocalOnBreak(currentPin, nowIso);
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      showFeedback({ kind: 'break', type, name, timestamp: new Date().toISOString(), durationMinutes: breakDurationMinutes, queued: true });
+      showFeedback({ kind: 'break', type, name, timestamp: nowIso, durationMinutes: breakDurationMinutes, queued: true });
+      return;
+    }
+    if (type === 'BREAK_END') {
+      const nowIso = new Date().toISOString();
+      setLocalOnBreak(currentPin, null);
+      // breakSessionMinutes (computed above, before enqueueCheckin) is
+      // undefined when there was no reliable local start time -- no
+      // estimate shown at all in that case, rather than guessing from
+      // nothing. addEstimatedOfflineBreakMinutes returns the new running
+      // total directly, so no second AsyncStorage read is needed here.
+      let estimatedRemainingMinutes: number | undefined;
+      if (breakSessionMinutes != null) {
+        const totalUsed = await addEstimatedOfflineBreakMinutes(currentPin, breakSessionMinutes);
+        estimatedRemainingMinutes = Math.max(0, DAILY_BREAK_BUDGET_MINUTES - totalUsed);
+      }
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      showFeedback({ kind: 'break', type, name, timestamp: nowIso, estimatedRemainingMinutes, queued: true });
       return;
     }
     if (type === 'OUT') {
       // Same reasoning as the online OUT path above -- a clock-out ends any
       // in-progress break server-side, so clear the local marker too.
-      setLocalOnBreak(currentPin, false);
+      setLocalOnBreak(currentPin, null);
     }
     if (type === 'IN') playCheckinSound(); else playCheckoutSound();
     await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -577,7 +628,15 @@ export default function KioskScreen({ navigation }: Props) {
           // -- otherwise the next lookup (see lookupPin's live branch above)
           // reads a stale marker and shows the wrong button label. Not
           // awaited -- same reasoning as queueOffline's own calls.
-          setLocalOnBreak(currentPin, res.type === 'BREAK_START');
+          setLocalOnBreak(currentPin, res.type === 'BREAK_START' ? res.timestamp : null);
+          if (res.type === 'BREAK_END' && res.totalMinutesUsedToday != null) {
+            // Ground truth known -- keep the offline-estimate cache
+            // (breakMinutesCache.ts) correct even when this tap itself was
+            // online, so a LATER offline break's estimate starts from an
+            // accurate baseline instead of drifting from whatever was there
+            // before. Not awaited, same reasoning as every cache write here.
+            setConfirmedTotalMinutesToday(currentPin, res.totalMinutesUsedToday);
+          }
           await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
           showFeedback({ kind: 'break', type: res.type, name: res.name, timestamp: res.timestamp, durationMinutes: res.durationMinutes, remainingMinutes: res.remainingMinutes });
         } else if (res.error === 'timeout' || res.error === 'network_error') {
@@ -634,7 +693,7 @@ export default function KioskScreen({ navigation }: Props) {
           // on-device marker in sync so a stale "Back from Break" doesn't
           // linger into tomorrow's first lookup for this PIN. Not awaited --
           // same reasoning as queueOffline's own calls.
-          setLocalOnBreak(currentPin, false);
+          setLocalOnBreak(currentPin, null);
         }
         if (res.type === 'IN') playCheckinSound(); else playCheckoutSound();
         await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -1173,6 +1232,16 @@ export default function KioskScreen({ navigation }: Props) {
             <>
               <Text style={styles.feedbackBigLabel}>BREAK TIME LEFT TODAY</Text>
               <Text style={styles.feedbackBigValue}>{feedback.remainingMinutes} min</Text>
+            </>
+          )}
+          {feedback.type === 'BREAK_END' && feedback.remainingMinutes == null && feedback.estimatedRemainingMinutes != null && (
+            <>
+              {/* Offline: no live server number available yet, so this is a
+                  device-side ESTIMATE (see breakMinutesCache.ts) -- always
+                  marked as such, never presented with the same confidence as
+                  the confirmed online figure above. */}
+              <Text style={styles.feedbackBigLabel}>BREAK TIME LEFT TODAY (ESTIMATE)</Text>
+              <Text style={styles.feedbackBigValue}>~{feedback.estimatedRemainingMinutes} min</Text>
             </>
           )}
           {feedback.queued && <Text style={styles.feedbackLate}>Saved offline — will sync automatically</Text>}

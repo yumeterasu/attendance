@@ -1,6 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { kioskSyncOffline } from '../api/client';
 import { setLocalOnBreak } from './breakState';
+import { setConfirmedTotalMinutesToday, addEstimatedOfflineBreakMinutes } from './breakMinutesCache';
 
 const STORAGE_KEY = 'kiosk_offline_queue_v1';
 // Prefix for a best-effort backup of a queue value that failed to
@@ -20,6 +21,12 @@ export type QueuedCheckin = {
   branch: string | null; // this device's configured branch (see deviceBranch.ts) AT THE TIME OF THE TAP -- captured here, not re-read at sync time, in case the device's branch setting changes in between; meaningless for BREAK_START/BREAK_END, always null there
   shift: string | null; // the shift the employee picked (IN only -- always null for OUT/BREAK_START/BREAK_END); server ignores it for OUT and falls back to the admin-set schedule if null
   breakDurationMinutes?: number; // BREAK_START only -- the employee's own pick (15/30/45/60), see handleKioskBreak_ server-side; absent for every other type
+  // BREAK_END only -- this session's own locally-estimated duration, already
+  // added to the on-device running total (see breakMinutesCache.ts) at
+  // enqueue time. Kept here so flushQueue can precisely UNDO exactly this
+  // amount if this specific entry later gets permanently rejected by the
+  // server -- without it there'd be no way to know how much to revert.
+  breakSessionMinutes?: number;
 };
 
 function makeClientId(): string {
@@ -117,9 +124,20 @@ export async function enqueueCheckin(
   ot: boolean,
   branch: string | null,
   shift: string | null,
-  breakDurationMinutes?: number
+  breakDurationMinutes?: number,
+  breakSessionMinutes?: number
 ): Promise<{ success: true; clientId: string } | { success: false }> {
-  const entry: QueuedCheckin = { clientId: makeClientId(), pin, type, ot, timestamp: new Date().toISOString(), branch, shift, breakDurationMinutes };
+  const entry: QueuedCheckin = {
+    clientId: makeClientId(),
+    pin,
+    type,
+    ot,
+    timestamp: new Date().toISOString(),
+    branch,
+    shift,
+    breakDurationMinutes,
+    breakSessionMinutes
+  };
   try {
     await withQueueLock(async () => {
       const queue = await readQueue();
@@ -200,12 +218,32 @@ export async function flushQueue(): Promise<{ synced: number; remaining: number 
             // else (not_found/inactive/bad_request) are left untouched --
             // for duplicate specifically, the marker is already correct from
             // whichever earlier same-type tap actually succeeded. Not
-            // awaited, same as every other setLocalOnBreak call.
+            // awaited, same as every other setLocalOnBreak call. The
+            // already_on_break correction has no real "since when" to set
+            // (some OTHER tap is the one actually on break server-side, and
+            // its true start time isn't known here) -- "now" is the least-
+            // wrong guess available, same accepted-estimate spirit as the
+            // rest of this offline break-minutes design.
             if (res.error === 'already_on_break') {
-              setLocalOnBreak(next.pin, true);
+              setLocalOnBreak(next.pin, new Date().toISOString());
             } else if (res.error === 'not_on_break' || res.error === 'not_clocked_in' || res.error === 'already_clocked_out') {
-              setLocalOnBreak(next.pin, false);
+              setLocalOnBreak(next.pin, null);
             }
+          }
+          if (next.type === 'BREAK_END' && next.breakSessionMinutes != null && res.error !== 'duplicate') {
+            // Same "duplicate" exclusion as the setLocalOnBreak correction
+            // above, and for the same reason: 'duplicate' means an earlier
+            // sibling entry with the same type already synced and IS the
+            // real source of truth (its own totalMinutesUsedToday already
+            // corrected the cache via setConfirmedTotalMinutesToday) --
+            // reverting THIS entry's minutes on top of that would incorrectly
+            // undo real, already-confirmed usage. For every other permanent
+            // rejection, this entry's own session minutes were optimistically
+            // added to the running estimate when it was first queued (see
+            // queueOffline) and will never sync to correct it any other way
+            // -- undo exactly this entry's contribution instead of leaving it
+            // stuck in the estimate for the rest of the day.
+            addEstimatedOfflineBreakMinutes(next.pin, -next.breakSessionMinutes);
           }
           return;
         }
@@ -213,6 +251,13 @@ export async function flushQueue(): Promise<{ synced: number; remaining: number 
         queue.splice(idx, 1);
         synced++;
         await writeQueue(queue);
+        if (next.type === 'BREAK_END' && res.success && res.totalMinutesUsedToday != null) {
+          // Ground truth is now known -- overwrite the on-device running
+          // estimate (see breakMinutesCache.ts) instead of leaving it as
+          // whatever this device guessed while offline. Not awaited, same
+          // as every other best-effort cache write in this file.
+          setConfirmedTotalMinutesToday(next.pin, res.totalMinutesUsedToday);
+        }
       });
     } catch {
       // Couldn't persist the post-sync queue update -- stop rather than
