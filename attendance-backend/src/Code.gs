@@ -10,6 +10,8 @@ function doPost(e) {
       return handlePair_(params);
     case 'kioskCheckin':
       return handleKioskCheckin_(params);
+    case 'kioskBreak':
+      return handleKioskBreak_(params);
     case 'kioskLookupPin':
       return handleKioskLookupPin_(params);
     case 'kioskMyAttendance':

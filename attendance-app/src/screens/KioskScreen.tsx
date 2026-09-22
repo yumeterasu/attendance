@@ -5,13 +5,14 @@ import * as Haptics from 'expo-haptics';
 import Constants from 'expo-constants';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../navigation/types';
-import { kioskCheckin, kioskLookupPin, kioskMyAttendance, kioskMyAttendanceBulk, verifyKioskExitPin, ScheduleDay } from '../api/client';
+import { kioskCheckin, kioskBreak, kioskLookupPin, kioskMyAttendance, kioskMyAttendanceBulk, verifyKioskExitPin, ScheduleDay } from '../api/client';
 import { useNetworkStatus } from '../hooks/useNetworkStatus';
 import { useOfflineSync } from '../hooks/useOfflineSync';
 import { useScheduleSync } from '../hooks/useScheduleSync';
 import { useSession } from '../context/SessionContext';
 import { lookupPinLocally } from '../utils/employeeDirectory';
 import { enqueueCheckin } from '../utils/offlineQueue';
+import { setLocalOnBreak, getLocalOnBreak } from '../utils/breakState';
 import { getDeviceBranch } from '../utils/deviceBranch';
 import {
   cacheScheduleMonth,
@@ -44,6 +45,11 @@ const AUTO_OUT_HOUR = 16; // nobody realistically checks IN this late -- pre-sel
 // to tap. Never includes anyone's ExtraShift -- that always has to come
 // from the server/cache, there's no safe way to guess it here.
 const DEFAULT_SHIFT_CHOICES = ['7:00-16:00', '7:30-16:30', '8:00-17:00'];
+
+// Mirrors the backend's VALID_BREAK_DURATIONS (Attendance.gs) -- the
+// employee's own pick of how long they intend to be gone when starting a
+// break.
+const BREAK_DURATION_CHOICES = [15, 30, 45, 60];
 
 // The two busiest windows -- most of the workforce clocks in/out within a
 // couple minutes of each other, so during these, skip the network round-trip
@@ -103,6 +109,7 @@ function buildCalendarWeeks(year: number, month: number, days: ScheduleDay[]): C
 
 type Feedback =
   | { kind: 'success'; type: 'IN' | 'OUT'; name: string; timestamp: string; late?: boolean; ot?: boolean; queued?: boolean }
+  | { kind: 'break'; type: 'BREAK_START' | 'BREAK_END'; name: string; timestamp: string; durationMinutes?: number; queued?: boolean }
   | { kind: 'error'; message: string };
 
 // Same shape scheduleCache.ts's CachedMonth uses -- kept as one type so a
@@ -113,7 +120,10 @@ type ScheduleData = CachedMonth;
 type Mode = 'checkin' | 'exit' | 'scheduleEntry' | 'scheduleResult';
 // 'OUT_OT' is a regular OUT with the overtime flag set -- a third button so the
 // kiosk can tell a genuine overtime departure apart from a normal one.
-type Selection = 'IN' | 'OUT' | 'OUT_OT';
+// BREAK_START/BREAK_END are visibility-only (see handleKioskBreak_
+// server-side) -- recorded the same way as IN/OUT but never affect
+// Late/OT/duration.
+type Selection = 'IN' | 'OUT' | 'OUT_OT' | 'BREAK_START' | 'BREAK_END';
 
 function Keypad({
   onPress,
@@ -216,11 +226,29 @@ export default function KioskScreen({ navigation }: Props) {
   // must never leave someone stuck unable to pick anything.
   const [shiftChoices, setShiftChoices] = useState<string[]>([]);
   const [selectedShift, setSelectedShift] = useState<string | null>(null);
+  // Picked only for BREAK_START (see BREAK_DURATION_CHOICES) -- purely
+  // informational (BreakPlannedMinutes server-side), never compared against
+  // the real elapsed time or used to flag/auto-end anything.
+  const [selectedBreakDuration, setSelectedBreakDuration] = useState<number | null>(null);
   const [isLookingUp, setIsLookingUp] = useState(false);
   // Same reasoning as isConfirmingRef below -- state alone can't close a
   // same-tick double-invocation (e.g. a bounced touch on the 4th digit).
   const isLookingUpRef = useRef(false);
   const [selection, setSelection] = useState<Selection | null>(null);
+  // Whether this PIN is currently on break right now -- drives the Break
+  // button's label (Start Break vs Back from Break). Comes from the live
+  // lookupPin response when online; falls back to the on-device
+  // kiosk_break_state_v1 marker (see breakState.ts) when the lookup used the
+  // local directory instead. Defaults false (Start Break) -- the safe
+  // default, since recordBreak_/recordOfflineSyncedBreak_ reject a
+  // BREAK_START that's actually invalid (already_on_break) with a clear
+  // error rather than silently corrupting anything, so guessing wrong here
+  // is a UX inconvenience, not a data problem. Deliberately does NOT gate
+  // whether the Break button itself is shown (unlike IN/OUT/OUT_OT, which
+  // have never been gated on shift state either) -- the same
+  // not_clocked_in/already_clocked_out rejection path from the server is
+  // the actual enforcement of "only after IN, before OUT".
+  const [onBreak, setOnBreak] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   // Mirrors isProcessing but read/written synchronously -- same reasoning as
   // isChangingScheduleMonthRef below: state doesn't land until the next
@@ -306,7 +334,9 @@ export default function KioskScreen({ navigation }: Props) {
     setLookupName(null);
     setShiftChoices([]);
     setSelectedShift(null);
+    setSelectedBreakDuration(null);
     setSelection(null);
+    setOnBreak(false);
     setLookupIssue(null);
     setForcedOffline(false);
   };
@@ -322,9 +352,11 @@ export default function KioskScreen({ navigation }: Props) {
   // previously-picked shift -- OUT/OUT OT never use one (see onConfirm),
   // and re-selecting IN after that should make the employee pick again
   // rather than silently keep whatever was picked before switching away.
+  // Same reasoning for BREAK_START's duration pick.
   const selectType = (next: Selection) => {
     setSelection(next);
     setSelectedShift(null);
+    setSelectedBreakDuration(null);
   };
 
   // Prime the audio session once so the first check-in chime isn't delayed.
@@ -372,6 +404,10 @@ export default function KioskScreen({ navigation }: Props) {
     if (!local) return false;
     setLookupName(local.name);
     applyShiftChoices(local.shifts);
+    // No live onBreak here (the local directory only has name/shifts) --
+    // fall back to the on-device marker set by a previous offline
+    // BREAK_START/BREAK_END of this PIN's own (see breakState.ts).
+    setOnBreak(await getLocalOnBreak(value));
     return true;
   };
 
@@ -432,6 +468,11 @@ export default function KioskScreen({ navigation }: Props) {
       if (res.success) {
         setLookupName(res.name);
         applyShiftChoices(res.shifts);
+        // Same on-device marker tryLocalLookup uses below -- kioskLookupPin
+        // deliberately doesn't return onBreak itself (see client.ts), so
+        // this is the one source of truth for both the online and offline
+        // paths, kept correct by every successful BREAK_START/BREAK_END/OUT.
+        setOnBreak(await getLocalOnBreak(value));
       } else if (res.error === 'timeout' || res.error === 'network_error') {
         // Connection dropped mid-request -- try the local copy again in case
         // the directory refreshed in the meantime (see useOfflineSync).
@@ -467,9 +508,16 @@ export default function KioskScreen({ navigation }: Props) {
   // below already have them in hand (onConfirm reads them once up front),
   // so redoing that work on every network-failure fallback would be pure
   // waste.
-  const queueOffline = async (type: 'IN' | 'OUT', ot: boolean, branch: string | null, shift: string | null) => {
+  const queueOffline = async (
+    type: 'IN' | 'OUT' | 'BREAK_START' | 'BREAK_END',
+    ot: boolean,
+    branch: string | null,
+    shift: string | null,
+    breakDurationMinutes?: number
+  ) => {
     const name = lookupName ?? '';
-    const result = await enqueueCheckin(pin, type, ot, branch, shift);
+    const currentPin = pin; // captured before resetCheckin below clears it -- setLocalOnBreak needs the real PIN
+    const result = await enqueueCheckin(pin, type, ot, branch, shift, breakDurationMinutes);
     if (!result.success) {
       // Could not actually persist this locally (e.g. device storage full
       // or corrupted) -- must never show the "saved offline" success below
@@ -483,6 +531,22 @@ export default function KioskScreen({ navigation }: Props) {
       return;
     }
     resetCheckin();
+    if (type === 'BREAK_START' || type === 'BREAK_END') {
+      // Best-effort local marker so the offline lookup fallback (see
+      // tryLocalLookup) knows to show "Back from Break" without needing a
+      // live round trip -- server is still the source of truth once online.
+      // Not awaited -- it already swallows its own errors internally and
+      // has no correctness reason to delay the tap-to-feedback path.
+      setLocalOnBreak(currentPin, type === 'BREAK_START');
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      showFeedback({ kind: 'break', type, name, timestamp: new Date().toISOString(), durationMinutes: breakDurationMinutes, queued: true });
+      return;
+    }
+    if (type === 'OUT') {
+      // Same reasoning as the online OUT path above -- a clock-out ends any
+      // in-progress break server-side, so clear the local marker too.
+      setLocalOnBreak(currentPin, false);
+    }
     if (type === 'IN') playCheckinSound(); else playCheckoutSound();
     await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     showFeedback({ kind: 'success', type, name, timestamp: new Date().toISOString(), queued: true });
@@ -490,6 +554,50 @@ export default function KioskScreen({ navigation }: Props) {
 
   const onConfirm = async () => {
     if (!selection) return;
+
+    if (selection === 'BREAK_START' || selection === 'BREAK_END') {
+      if (selection === 'BREAK_START' && !selectedBreakDuration) return;
+      if (isConfirmingRef.current) return;
+      isConfirmingRef.current = true; // same synchronous-guard reasoning as the IN/OUT path below
+      setIsProcessing(true);
+      const breakType = selection;
+      const breakDuration = breakType === 'BREAK_START' ? selectedBreakDuration ?? undefined : undefined;
+      try {
+        if (!isConnected || forcedOffline) {
+          await queueOffline(breakType, false, null, null, breakDuration);
+          return;
+        }
+
+        const currentPin = pin; // captured before resetCheckin below clears it -- setLocalOnBreak needs the real PIN
+        const res = await kioskBreak(pin, breakType, breakDuration);
+
+        if (res.success) {
+          resetCheckin();
+          // Keeps the on-device marker correct after an ONLINE success too
+          // -- otherwise the next lookup (see lookupPin's live branch above)
+          // reads a stale marker and shows the wrong button label. Not
+          // awaited -- same reasoning as queueOffline's own calls.
+          setLocalOnBreak(currentPin, res.type === 'BREAK_START');
+          await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+          showFeedback({ kind: 'break', type: res.type, name: res.name, timestamp: res.timestamp, durationMinutes: res.durationMinutes });
+        } else if (res.error === 'timeout' || res.error === 'network_error') {
+          await queueOffline(breakType, false, null, null, breakDuration);
+        } else {
+          // Includes not_clocked_in/already_clocked_out/already_on_break/not_on_break
+          // -- the server's actual enforcement of "only after IN, before OUT"
+          // (see recordBreak_) -- shown as a normal error, same as any other
+          // rejected tap on this screen.
+          resetCheckin();
+          await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+          showFeedback({ kind: 'error', message: res.message });
+        }
+      } finally {
+        isConfirmingRef.current = false;
+        setIsProcessing(false);
+      }
+      return;
+    }
+
     const type = selection === 'IN' ? 'IN' : 'OUT';
     const ot = selection === 'OUT_OT';
     // OUT never carries a shift (the picker only shows for IN, see the
@@ -515,10 +623,19 @@ export default function KioskScreen({ navigation }: Props) {
         return;
       }
 
+      const currentPin = pin; // captured before resetCheckin below clears it -- setLocalOnBreak needs the real PIN
       const res = await kioskCheckin(pin, type, ot, branch, shift ?? undefined);
 
       if (res.success) {
         resetCheckin();
+        if (res.type === 'OUT') {
+          // A clock-out always ends any in-progress break server-side (see
+          // currentShiftBreakState_'s clockedOut check) -- keep the
+          // on-device marker in sync so a stale "Back from Break" doesn't
+          // linger into tomorrow's first lookup for this PIN. Not awaited --
+          // same reasoning as queueOffline's own calls.
+          setLocalOnBreak(currentPin, false);
+        }
         if (res.type === 'IN') playCheckinSound(); else playCheckoutSound();
         await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         showFeedback({ kind: 'success', type: res.type, name: res.name, timestamp: res.timestamp, late: res.late, ot: res.ot });
@@ -1036,6 +1153,19 @@ export default function KioskScreen({ navigation }: Props) {
           {feedback.queued && <Text style={styles.feedbackLate}>Saved offline — will sync automatically</Text>}
         </View>
       )}
+      {feedback && feedback.kind === 'break' && (
+        <View style={[styles.feedbackCard, styles.feedbackBreak]}>
+          <Text style={styles.feedbackType}>{feedback.type === 'BREAK_START' ? 'BREAK' : 'BACK'}</Text>
+          <Text style={styles.feedbackName}>{feedback.name}</Text>
+          <Text style={styles.feedbackTime}>{new Date(feedback.timestamp).toLocaleTimeString()}</Text>
+          {feedback.type === 'BREAK_START' && feedback.durationMinutes != null && (
+            <Text style={styles.feedbackLate}>
+              Back by {new Date(new Date(feedback.timestamp).getTime() + feedback.durationMinutes * 60000).toLocaleTimeString()}
+            </Text>
+          )}
+          {feedback.queued && <Text style={styles.feedbackLate}>Saved offline — will sync automatically</Text>}
+        </View>
+      )}
       {feedback && feedback.kind === 'error' && (
         <View style={[styles.feedbackCard, styles.feedbackError]}>
           <Text style={styles.feedbackName}>{feedback.message}</Text>
@@ -1044,10 +1174,12 @@ export default function KioskScreen({ navigation }: Props) {
     </>
   );
 
-  // IN requires a shift pick (see the shift-section render below); OUT and
-  // OUT OT don't use one at all, so any type selection is enough on its
-  // own -- matches onConfirm's own guard exactly.
-  const canConfirm = selection === 'IN' ? !!selectedShift : !!selection;
+  // IN requires a shift pick (see the shift-section render below); BREAK_START
+  // requires a duration pick (see the break-duration render below); OUT,
+  // OUT OT, and BREAK_END don't use either -- matches onConfirm's own
+  // guards exactly.
+  const canConfirm =
+    selection === 'IN' ? !!selectedShift : selection === 'BREAK_START' ? !!selectedBreakDuration : !!selection;
 
   // One continuous screen for the whole check-in flow -- entering the PIN
   // and confirming IN/OUT never feels like a page change, just this same
@@ -1123,6 +1255,24 @@ export default function KioskScreen({ navigation }: Props) {
             </Pressable>
           </View>
 
+          <Pressable
+            style={[
+              styles.breakButton,
+              (selection === 'BREAK_START' || selection === 'BREAK_END') && styles.breakButtonSelected
+            ]}
+            onPress={() => selectType(onBreak ? 'BREAK_END' : 'BREAK_START')}
+            disabled={isProcessing}
+          >
+            <Text
+              style={[
+                styles.breakButtonText,
+                (selection === 'BREAK_START' || selection === 'BREAK_END') && styles.typeButtonTextSelected
+              ]}
+            >
+              {onBreak ? 'Back from Break' : 'Start Break'}
+            </Text>
+          </Pressable>
+
           {selection === 'IN' && (
             <View style={styles.shiftSection}>
               <Text style={styles.shiftLabel}>Choose your shift</Text>
@@ -1135,6 +1285,26 @@ export default function KioskScreen({ navigation }: Props) {
                     disabled={isProcessing}
                   >
                     <Text style={[styles.shiftButtonText, selectedShift === s && styles.shiftButtonTextSelected]}>{s}</Text>
+                  </Pressable>
+                ))}
+              </View>
+            </View>
+          )}
+
+          {selection === 'BREAK_START' && (
+            <View style={styles.shiftSection}>
+              <Text style={styles.shiftLabel}>How long is your break?</Text>
+              <View style={styles.shiftGrid}>
+                {BREAK_DURATION_CHOICES.map((minutes) => (
+                  <Pressable
+                    key={minutes}
+                    style={[styles.shiftButton, selectedBreakDuration === minutes && styles.shiftButtonSelected]}
+                    onPress={() => setSelectedBreakDuration(minutes)}
+                    disabled={isProcessing}
+                  >
+                    <Text style={[styles.shiftButtonText, selectedBreakDuration === minutes && styles.shiftButtonTextSelected]}>
+                      {minutes} min
+                    </Text>
                   </Pressable>
                 ))}
               </View>
@@ -1205,6 +1375,12 @@ const BUTTER_BORDER = '#F3DFA6';
 const ROSE_BG = '#FCE4E1';
 const ROSE_TEXT = '#C2604F';
 const ROSE_BORDER = '#F4C6BD';
+// Break button -- deliberately teal, distinct from IN (sage green), OUT
+// (rose red), and OUT OT (butter amber) so it doesn't read as a fourth
+// variant of "clock in/out" at a glance.
+const TEAL = '#2E8E8E';
+const TEAL_BG = '#E1F2F1';
+const TEAL_BORDER = '#BEE0DE';
 const TEXT = '#503A2E';
 const TEXT_MUTED = '#9C8171';
 
@@ -1313,6 +1489,20 @@ const styles = StyleSheet.create({
     paddingHorizontal: 22,
     borderWidth: 2
   },
+  breakButton: {
+    alignSelf: 'stretch',
+    marginTop: 4,
+    marginBottom: 8,
+    borderRadius: 16,
+    paddingVertical: 12,
+    borderWidth: 2,
+    borderColor: TEAL_BORDER,
+    backgroundColor: TEAL_BG,
+    alignItems: 'center'
+  },
+  breakButtonSelected: { backgroundColor: TEAL, borderColor: TEAL },
+  breakButtonText: { color: TEAL, fontSize: 15, fontFamily: FONT_DISPLAY_EXTRABOLD },
+  feedbackBreak: { backgroundColor: TEAL },
   typeButtonIn: { backgroundColor: SAGE_BG, borderColor: SAGE_BORDER },
   typeButtonOut: { backgroundColor: ROSE_BG, borderColor: ROSE_BORDER },
   typeButtonOt: { backgroundColor: BUTTER_BG, borderColor: BUTTER_BORDER },

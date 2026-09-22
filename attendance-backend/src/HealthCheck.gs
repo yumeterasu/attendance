@@ -132,7 +132,7 @@ var CANONICAL_HEADERS = {
   // an admin's own hand-added extra column sitting past the canonical end
   // for the position-based repair below to clobber, unlike Employees which
   // admins actively hand-edit.
-  AttendanceLog: ['Timestamp', 'EmployeeID', 'Name', 'Department', 'Type', 'Method', 'RawScanValue', 'DurationMinutes', 'Shift', 'Late', 'OT', 'OTMinutes', 'OTQuarters', 'ClientId', 'PunchBranch', 'ShiftPicked']
+  AttendanceLog: ['Timestamp', 'EmployeeID', 'Name', 'Department', 'Type', 'Method', 'RawScanValue', 'DurationMinutes', 'Shift', 'Late', 'OT', 'OTMinutes', 'OTQuarters', 'ClientId', 'PunchBranch', 'ShiftPicked', 'BreakPlannedMinutes']
 };
 
 /**

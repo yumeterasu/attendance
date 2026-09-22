@@ -67,9 +67,25 @@ export function kioskCheckin(pin: string, type: 'IN' | 'OUT', ot: boolean | unde
   );
 }
 
+// Start Break / Back from Break -- visibility only, no Late/OT/duration
+// involved, so no ot/branch/shift params (see handleKioskBreak_ server-side).
+// durationMinutes is the employee's own pick of how long they intend to be
+// gone (one of VALID_BREAK_DURATIONS server-side) -- required for
+// BREAK_START, ignored for BREAK_END.
+export function kioskBreak(pin: string, type: 'BREAK_START' | 'BREAK_END', durationMinutes?: number) {
+  return postAction<{ type: 'BREAK_START' | 'BREAK_END'; timestamp: string; name: string; durationMinutes?: number }>(
+    'kioskBreak',
+    { pin, type, durationMinutes },
+    KIOSK_TIMEOUT_MS
+  );
+}
+
 // shifts: the shift strings this specific employee can pick at the Kiosk --
 // the 3 standard choices everyone gets, plus their own ExtraShift if they
 // have one (see shiftChoicesFor_ server-side). Always non-empty.
+// Deliberately no onBreak field here -- see breakState.ts for why that's
+// driven by an on-device marker instead of a server round trip on this
+// latency-sensitive path (KIOSK_TIMEOUT_MS is only 3000ms).
 export function kioskLookupPin(pin: string) {
   return postAction<{ name: string; shifts: string[] }>('kioskLookupPin', { pin }, KIOSK_TIMEOUT_MS);
 }
@@ -128,7 +144,16 @@ export function kioskScheduleSyncAll() {
   }>('kioskScheduleSyncAll', {}, SCHEDULE_BULK_SYNC_TIMEOUT_MS);
 }
 
-export function kioskSyncOffline(pin: string, type: 'IN' | 'OUT', ot: boolean, timestamp: string, clientId: string, branch: string | null | undefined, shift: string | undefined) {
+export function kioskSyncOffline(
+  pin: string,
+  type: 'IN' | 'OUT' | 'BREAK_START' | 'BREAK_END',
+  ot: boolean,
+  timestamp: string,
+  clientId: string,
+  branch: string | null | undefined,
+  shift: string | undefined,
+  durationMinutes?: number
+) {
   return postAction<{ alreadySynced: boolean; name: string }>('kioskSyncOffline', {
     pin,
     type,
@@ -136,7 +161,8 @@ export function kioskSyncOffline(pin: string, type: 'IN' | 'OUT', ot: boolean, t
     timestamp,
     clientId,
     branch: branch ?? undefined,
-    shift
+    shift,
+    durationMinutes
   });
 }
 

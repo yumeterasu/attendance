@@ -307,7 +307,182 @@ function handleKioskLookupPin_(params) {
     return fail_('inactive', 'Employee is not active');
   }
 
+  // Deliberately no onShift/onBreak here -- an earlier version called
+  // currentShiftBreakState_ (an AttendanceLog read) on every single PIN
+  // lookup, adding real Sheets I/O to the highest-frequency, most
+  // latency-sensitive path in the whole app (KIOSK_TIMEOUT_MS is only
+  // 3000ms) for the sole purpose of labeling the Break button. The app now
+  // gets that label from its own on-device kiosk_break_state_v1 marker
+  // instead (see breakState.ts), kept correct by every successful
+  // BREAK_START/BREAK_END/OUT (see KioskScreen's onConfirm/queueOffline) --
+  // no server round trip needed, and recordBreak_ is still the actual
+  // source of truth/enforcement regardless of what the button says.
   return ok_({ name: found.row.Name, shifts: shiftChoicesFor_(found.row) });
+}
+
+/**
+ * Break (พัก) is punch-based (Start Break / Back from Break), recorded as
+ * ordinary AttendanceLog rows with Type BREAK_START/BREAK_END -- visibility
+ * only, deliberately never feeds Late/OT/duration (Late/OT/Duration columns
+ * are left blank on these rows). Every existing Type-column consumer
+ * (findTodayInLog_, findLogEntryForDate_, getEmployeeIdsWithInOnDate_,
+ * recomputeLateAndOt_, Report.gs's sumMonthTotals_/dashboard readers) filters
+ * on exact Type equality against 'IN'/'OUT', so these new Type values are
+ * inert to all of them without any further changes there.
+ */
+
+/**
+ * Figures out whether an employee is currently clocked in and/or on break,
+ * by scanning today's rows for them. Shared by handleKioskLookupPin_ (so the
+ * kiosk knows which buttons to show) and recordBreak_/recordOfflineSyncedBreak_
+ * (to validate a BREAK_START/BREAK_END request). Pass a pre-fetched `log`
+ * (see getRecentAttendanceLog_) to avoid re-reading the sheet.
+ *
+ * `now` doubles as "as of what moment" -- for the live path it's the actual
+ * current time, but the offline-sync path passes the queued tap's own
+ * (possibly backdated) timestamp instead, so only rows up to and including
+ * `now` are considered. Without this bound, a break/OUT row that already
+ * synced out of real-time order (offline queue has no ordering guarantee)
+ * could make an earlier-timestamped queued tap look like it happened after
+ * an OUT/break that, on the device, hadn't happened yet.
+ */
+function currentShiftBreakState_(employeeId, now, log) {
+  log = log || getRecentAttendanceLog_();
+  var todayIn = findTodayInLog_(employeeId, now, log);
+  if (!todayIn) return { onShift: false, onBreak: false, todayIn: null };
+
+  var idCol = log.headers.indexOf('EmployeeID');
+  var tsCol = log.headers.indexOf('Timestamp');
+  var typeCol = log.headers.indexOf('Type');
+
+  var clockedOut = false;
+  var lastBreakType = null;
+  var lastBreakTs = null;
+  for (var i = 0; i < log.rows.length; i++) {
+    if (String(log.rows[i][idCol]) !== String(employeeId)) continue;
+    var ts = new Date(log.rows[i][tsCol]);
+    if (ts.getTime() <= todayIn.timestamp.getTime()) continue;
+    if (ts.getTime() > now.getTime()) continue;
+    var rowType = log.rows[i][typeCol];
+    if (rowType === 'OUT') {
+      clockedOut = true;
+    } else if (rowType === 'BREAK_START' || rowType === 'BREAK_END') {
+      if (!lastBreakTs || ts.getTime() > lastBreakTs.getTime()) {
+        lastBreakTs = ts;
+        lastBreakType = rowType;
+      }
+    }
+  }
+
+  return {
+    onShift: !clockedOut,
+    onBreak: !clockedOut && lastBreakType === 'BREAK_START',
+    todayIn: todayIn
+  };
+}
+
+// The employee picks one of these when starting a break -- purely
+// informational (see BreakPlannedMinutes below), never compared against the
+// actual elapsed time or used to flag/auto-end anything.
+var VALID_BREAK_DURATIONS = [15, 30, 45, 60];
+
+/**
+ * Records a Start Break / Back from Break tap from the live Kiosk. Requires
+ * the employee to already be clocked in (a real IN today, no OUT since) and
+ * enforces alternating BREAK_START/BREAK_END -- see currentShiftBreakState_.
+ * durationMinutes is required for BREAK_START (one of VALID_BREAK_DURATIONS
+ * -- the employee's own pick of how long they intend to be gone) and ignored
+ * for BREAK_END.
+ */
+function handleKioskBreak_(params) {
+  if (!checkApiKey_(params.apiKey)) return fail_('unauthorized', 'Invalid API key');
+  if (!params.pin) return fail_('bad_request', 'pin is required');
+  if (params.type !== 'BREAK_START' && params.type !== 'BREAK_END') return fail_('bad_request', 'type must be BREAK_START or BREAK_END');
+
+  var durationMinutes = null;
+  if (params.type === 'BREAK_START') {
+    durationMinutes = Number(params.durationMinutes);
+    if (VALID_BREAK_DURATIONS.indexOf(durationMinutes) === -1) {
+      return fail_('bad_request', 'durationMinutes must be one of ' + VALID_BREAK_DURATIONS.join(', '));
+    }
+  }
+
+  var found = findEmployeeByKioskPin_(params.pin);
+  if (!found) return fail_('not_found', 'Code not recognized');
+  if (found.row.Active !== true && found.row.Active !== 'TRUE') {
+    return fail_('inactive', 'Employee is not active');
+  }
+
+  return recordBreak_(found.row.EmployeeID, params.type, durationMinutes);
+}
+
+/**
+ * Shared duplicate-tap guard for every AttendanceLog writer (recordBreak_,
+ * recordOfflineSyncedBreak_, recordAttendance_, recordOfflineSyncedAttendance_)
+ * -- true if lastLog exists and referenceTime lands within DUPLICATE_GUARD_MS
+ * after (never before) its own Timestamp.
+ *
+ * `options.ignoreTypes`: treat lastLog as if it doesn't exist when its Type
+ * is in this list -- used by the IN/OUT callers so a Break row (a
+ * completely different action) can never block a genuine IN/OUT tap just by
+ * having happened moments earlier; the IN-vs-OUT/OUT-vs-IN blocking those
+ * callers already did before Break existed is otherwise unchanged.
+ *
+ * `options.sameTypeOnly` + `options.type`: only match when lastLog.Type
+ * equals `type` -- used by the Break callers so a BREAK_END right after its
+ * own BREAK_START (or vice versa) is never rejected as "duplicate"; that's
+ * a deliberate state transition (often someone correcting a mis-tap), not
+ * an accidental double-tap. Genuine state conflicts (e.g. starting a break
+ * while already on one) are caught separately by currentShiftBreakState_'s
+ * own already_on_break/not_on_break checks.
+ */
+function isWithinDuplicateGuard_(lastLog, referenceTime, options) {
+  if (!lastLog || !lastLog.Timestamp) return false;
+  if (options.ignoreTypes && options.ignoreTypes.indexOf(lastLog.Type) !== -1) return false;
+  if (options.sameTypeOnly && lastLog.Type !== options.type) return false;
+  var delta = referenceTime.getTime() - new Date(lastLog.Timestamp).getTime();
+  return delta >= 0 && delta < DUPLICATE_GUARD_MS;
+}
+
+function recordBreak_(employeeId, type, durationMinutes) {
+  var found = findEmployeeRow_(employeeId);
+  if (!found) return fail_('not_found', 'Employee not found');
+  var emp = found.row;
+
+  var now = new Date(); // one instant for the whole request -- shared by the state check, the duplicate guard, and the row itself, same reasoning recordAttendance_ already follows
+  var log = getRecentAttendanceLog_();
+  var state = currentShiftBreakState_(employeeId, now, log);
+  if (!state.todayIn) return fail_('not_clocked_in', 'Not clocked in yet today');
+  if (!state.onShift) return fail_('already_clocked_out', 'Already clocked out today');
+  if (type === 'BREAK_START' && state.onBreak) return fail_('already_on_break', 'Already on break');
+  if (type === 'BREAK_END' && !state.onBreak) return fail_('not_on_break', 'Not currently on break');
+
+  var lastLog = findLastLogForEmployee_(employeeId, log);
+  if (isWithinDuplicateGuard_(lastLog, now, { sameTypeOnly: true, type: type })) {
+    return fail_('duplicate', 'Already recorded, please wait a moment before scanning again');
+  }
+
+  // Same conditional-ensureColumns_ pattern as recordAttendance_'s own
+  // PunchBranch/ShiftPicked columns -- only pays for the extra write the
+  // first time this sheet has ever seen a BreakPlannedMinutes value.
+  var appendHeaders = log.headers;
+  if (log.headers.indexOf('BreakPlannedMinutes') === -1) {
+    ensureColumns_('AttendanceLog', ['BreakPlannedMinutes']);
+    appendHeaders = null; // log.rows/headers were read before this column existed -- let appendRow_ re-read headers fresh
+  }
+
+  appendRow_('AttendanceLog', {
+    Timestamp: now,
+    EmployeeID: emp.EmployeeID,
+    Name: emp.Name,
+    Department: emp.Department,
+    Type: type,
+    Method: 'KioskPIN',
+    RawScanValue: '',
+    BreakPlannedMinutes: type === 'BREAK_START' ? durationMinutes : ''
+  }, appendHeaders);
+
+  return ok_({ type: type, timestamp: now.toISOString(), name: emp.Name, durationMinutes: type === 'BREAK_START' ? durationMinutes : undefined });
 }
 
 /**
@@ -335,9 +510,20 @@ function handleKioskDirectory_(params) {
 function handleKioskSyncOffline_(params) {
   if (!checkApiKey_(params.apiKey)) return fail_('unauthorized', 'Invalid API key');
   if (!params.pin) return fail_('bad_request', 'pin is required');
-  if (params.type !== 'IN' && params.type !== 'OUT') return fail_('bad_request', 'type must be IN or OUT');
+  var isBreakType = params.type === 'BREAK_START' || params.type === 'BREAK_END';
+  if (params.type !== 'IN' && params.type !== 'OUT' && !isBreakType) {
+    return fail_('bad_request', 'type must be IN, OUT, BREAK_START, or BREAK_END');
+  }
   if (!params.clientId) return fail_('bad_request', 'clientId is required');
   if (!params.timestamp) return fail_('bad_request', 'timestamp is required');
+
+  var breakDurationMinutes = null;
+  if (params.type === 'BREAK_START') {
+    breakDurationMinutes = Number(params.durationMinutes);
+    if (VALID_BREAK_DURATIONS.indexOf(breakDurationMinutes) === -1) {
+      return fail_('bad_request', 'durationMinutes must be one of ' + VALID_BREAK_DURATIONS.join(', '));
+    }
+  }
 
   var found = findEmployeeByKioskPin_(params.pin);
   if (!found) return fail_('not_found', 'Code not recognized');
@@ -347,6 +533,13 @@ function handleKioskSyncOffline_(params) {
 
   var timestamp = new Date(params.timestamp);
   if (isNaN(timestamp.getTime())) return fail_('bad_request', 'timestamp did not parse');
+
+  if (isBreakType) {
+    var breakResult = recordOfflineSyncedBreak_(found.row.EmployeeID, params.type, timestamp, params.clientId, breakDurationMinutes);
+    if (breakResult.error) return fail_(breakResult.error, breakResult.message);
+    if (breakResult.duplicate) return fail_('duplicate', 'Already recorded around this time, skipped as a duplicate');
+    return ok_(breakResult);
+  }
 
   var result = recordOfflineSyncedAttendance_(
     found.row.EmployeeID, params.type, timestamp, params.ot === 'true', params.clientId, params.branch, params.shift
@@ -640,13 +833,17 @@ function handleKioskScheduleSyncAll_(params) {
  * Schedule cell was still blank at check-in time -- Late/Shift/OT get frozen
  * in then and are never re-checked automatically.
  *
- * Never touches an IN row whose Shift came from the employee's own Kiosk
- * pick (ShiftPicked=TRUE) -- that row is already correct by definition (see
- * writeScheduleShiftCell_), and blindly trusting the Schedule sheet for it
- * here would run the feature backwards: an unrelated later edit to that
- * month's Schedule sheet (e.g. Create/Update Schedule Sheet backfilling a
- * blank row for a different employee) must never overwrite an
- * already-correct picked shift back to blank/wrong.
+ * The Schedule sheet is authoritative whenever it holds an explicit value
+ * for that employee/day -- INCLUDING over an IN row whose Shift came from
+ * the employee's own Kiosk pick (ShiftPicked=TRUE), so an admin correcting a
+ * wrong shift (either in the Schedule sheet, or by fixing what the employee
+ * mistakenly picked at the Kiosk) always takes effect on the next Recompute.
+ * A ShiftPicked row is left untouched ONLY while the Schedule cell is still
+ * genuinely blank -- there's nothing to correct it against yet, and blindly
+ * writing blank there would run writeScheduleShiftCell_ backwards: an
+ * unrelated later edit to that month's Schedule sheet (e.g. Create/Update
+ * Schedule Sheet backfilling a blank row for a different employee) must
+ * never overwrite an already-correct picked shift back to blank/wrong.
  *
  * "Japanese" is decided from each employee's *current* Employees sheet
  * Department, not the Department value frozen onto the old row -- old rows
@@ -752,25 +949,42 @@ function recomputeLateAndOt_(year, month, startDay, endDay) {
     var key = employeeId + '|' + day;
     var isLatestSoFar = !(key in latestInTsByKey) || ts.getTime() >= latestInTsByKey[key];
 
+    var scheduledShift = (shiftsForMonth[employeeId] && shiftsForMonth[employeeId][day]) || '';
+
     // A row whose Shift came from the employee's own Kiosk pick (see
     // ShiftPicked/writeScheduleShiftCell_ in the live/offline check-in
-    // paths) is already correct BY DEFINITION -- recomputing it from the
-    // Schedule sheet would run this feature backwards: the point of
-    // writeScheduleShiftCell_ is that the Schedule sheet catches up to
-    // what was picked, not the other way around. Left completely
-    // untouched (Shift/Late never rewritten here); its already-correct
-    // shift only feeds shiftByEmployeeDay (for the OUT-row loop's OT calc
-    // below) when it's also the latest-so-far IN for that key, same rule
-    // as every other row.
-    if (shiftPickedCol !== -1 && isTrue_(sliceValues[i][shiftPickedCol])) {
+    // paths) is left untouched ONLY while the Schedule sheet still has
+    // nothing to correct it against (scheduledShift blank) -- that's the
+    // case writeScheduleShiftCell_'s own comment describes: the Schedule
+    // sheet catches up to what was picked, not the other way around, and an
+    // unrelated bulk Schedule-sheet operation touching a still-blank cell
+    // must never erase an already-correct picked shift back to blank.
+    // Once the Schedule sheet DOES hold an explicit value, though, it wins
+    // even over a picked row -- an admin correcting a wrong shift the
+    // employee picked at the Kiosk (e.g. they picked 8:00-17:00 instead of
+    // their real 8:30-17:30) must take effect on the next Recompute, not be
+    // silently skipped forever just because ShiftPicked is set.
+    //
+    // Known accepted risk: this assumes the Schedule cell reflects reality
+    // whenever it's non-blank. writeScheduleShiftCell_ (the live check-in
+    // path's best-effort sync of a picked shift back to the Schedule sheet)
+    // is deliberately fail-open -- a transient Sheets error there is
+    // swallowed so it can never take the check-in itself down with it (see
+    // its own doc comment) -- so in the rare case that write silently fails
+    // AND the Schedule cell already held some other non-blank value before
+    // the employee's pick, this rule would treat that stale value as
+    // authoritative on a later Recompute instead of the employee's
+    // (correct) pick. Not fixed here: distinguishing "admin deliberately
+    // corrected this" from "sync-back silently failed" would need its own
+    // tracking column, and the failure this depends on is already logged
+    // (Logger.log) and rare enough that a full redesign isn't justified yet.
+    if (shiftPickedCol !== -1 && isTrue_(sliceValues[i][shiftPickedCol]) && !scheduledShift) {
       if (isLatestSoFar) {
         latestInTsByKey[key] = ts.getTime();
         shiftByEmployeeDay[key] = sliceValues[i][shiftCol];
       }
       continue;
     }
-
-    var scheduledShift = (shiftsForMonth[employeeId] && shiftsForMonth[employeeId][day]) || '';
     // An Event day is always on time, no matter when the actual tap
     // happened -- same rule eventShiftOverrideTimestamp_ enforces live at
     // check-in time. Recompute has to enforce it too, since it works from
@@ -1138,14 +1352,12 @@ function recordOfflineSyncedAttendance_(employeeId, type, timestamp, ot, clientI
   // apart -- e.g. someone unsure the first one registered, since offline
   // mode shows no instant Late/OT confirmation -- both land as real rows
   // once synced. Compared against the queued tap's own timestamp, not
-  // "now" (which is meaningless here, sync can happen minutes later); the
-  // `timestamp > lastTimestamp` half guards against the queue syncing
-  // slightly out of real-time order, which recordAttendance_ never has to
-  // worry about since it always runs at the real "now".
+  // "now" (which is meaningless here, sync can happen minutes later).
+  // ignoreTypes: a Break row must never block a genuine IN/OUT tap just by
+  // having happened moments earlier -- see isWithinDuplicateGuard_.
   var log = getRecentAttendanceLog_();
   var lastLog = findLastLogForEmployee_(employeeId, log);
-  var lastTimestamp = lastLog && lastLog.Timestamp ? new Date(lastLog.Timestamp) : null;
-  if (lastTimestamp && timestamp.getTime() > lastTimestamp.getTime() && timestamp.getTime() - lastTimestamp.getTime() < DUPLICATE_GUARD_MS) {
+  if (isWithinDuplicateGuard_(lastLog, timestamp, { ignoreTypes: ['BREAK_START', 'BREAK_END'] })) {
     return { duplicate: true, name: emp.Name };
   }
 
@@ -1251,6 +1463,59 @@ function recordOfflineSyncedAttendance_(employeeId, type, timestamp, ot, clientI
   };
 }
 
+/**
+ * Break counterpart to recordOfflineSyncedAttendance_ -- same ClientId
+ * dedupe/idempotency, but validated with currentShiftBreakState_ (must be
+ * clocked in, not already clocked out, alternating BREAK_START/BREAK_END)
+ * using the queued tap's own timestamp rather than "now", same reasoning as
+ * recordOfflineSyncedAttendance_'s backdated Shift/Late/OT computation.
+ * Returns { error, message } instead of throwing/fail_ directly so the
+ * caller (handleKioskSyncOffline_) can turn it into the same fail_() shape
+ * it already uses for the IN/OUT path.
+ */
+function recordOfflineSyncedBreak_(employeeId, type, timestamp, clientId, durationMinutes) {
+  ensureColumns_('AttendanceLog', ['ClientId', 'PunchBranch', 'ShiftPicked', 'BreakPlannedMinutes']);
+
+  var existing = findLogEntryByClientId_(clientId);
+  if (existing) {
+    var foundForName = findEmployeeRow_(employeeId);
+    return { alreadySynced: true, name: foundForName ? foundForName.row.Name : employeeId };
+  }
+
+  var found = findEmployeeRow_(employeeId);
+  if (!found) throw new Error('Employee not found: ' + employeeId);
+  var emp = found.row;
+
+  var log = getRecentAttendanceLog_();
+  var state = currentShiftBreakState_(employeeId, timestamp, log);
+  if (!state.todayIn) return { error: 'not_clocked_in', message: 'Not clocked in yet today' };
+  if (!state.onShift) return { error: 'already_clocked_out', message: 'Already clocked out today' };
+  if (type === 'BREAK_START' && state.onBreak) return { error: 'already_on_break', message: 'Already on break' };
+  if (type === 'BREAK_END' && !state.onBreak) return { error: 'not_on_break', message: 'Not currently on break' };
+
+  var lastLog = findLastLogForEmployee_(employeeId, log);
+  if (isWithinDuplicateGuard_(lastLog, timestamp, { sameTypeOnly: true, type: type })) {
+    return { duplicate: true, name: emp.Name };
+  }
+
+  appendRow_('AttendanceLog', {
+    Timestamp: timestamp,
+    EmployeeID: emp.EmployeeID,
+    Name: emp.Name,
+    Department: emp.Department,
+    Type: type,
+    Method: 'KioskOfflineSync',
+    RawScanValue: '',
+    ClientId: clientId,
+    BreakPlannedMinutes: type === 'BREAK_START' ? durationMinutes : ''
+  });
+
+  return {
+    alreadySynced: false, type: type, timestamp: timestamp.toISOString(), name: emp.Name,
+    durationMinutes: type === 'BREAK_START' ? durationMinutes : undefined
+  };
+}
+
 function recordAttendance_(employeeId, method, rawScanValue, type, ot, punchBranch, shift) {
   var found = findEmployeeRow_(employeeId);
   if (!found) return fail_('not_found', 'Employee not found');
@@ -1279,9 +1544,10 @@ function recordAttendance_(employeeId, method, rawScanValue, type, ot, punchBran
 
   var lastLog = findLastLogForEmployee_(employeeId, log);
   var now = new Date();
-  var lastTimestamp = lastLog && lastLog.Timestamp ? new Date(lastLog.Timestamp) : null;
 
-  if (lastTimestamp && now.getTime() - lastTimestamp.getTime() < DUPLICATE_GUARD_MS) {
+  // ignoreTypes: a Break row must never block a genuine IN/OUT tap just by
+  // having happened moments earlier -- see isWithinDuplicateGuard_.
+  if (isWithinDuplicateGuard_(lastLog, now, { ignoreTypes: ['BREAK_START', 'BREAK_END'] })) {
     return fail_('duplicate', 'Already recorded, please wait a moment before scanning again');
   }
 

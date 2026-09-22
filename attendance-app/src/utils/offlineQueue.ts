@@ -1,5 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { kioskSyncOffline } from '../api/client';
+import { setLocalOnBreak } from './breakState';
 
 const STORAGE_KEY = 'kiosk_offline_queue_v1';
 // Prefix for a best-effort backup of a queue value that failed to
@@ -13,11 +14,12 @@ const CORRUPTED_BACKUP_KEY_PREFIX = 'kiosk_offline_queue_v1_corrupted_backup_';
 export type QueuedCheckin = {
   clientId: string;
   pin: string;
-  type: 'IN' | 'OUT';
+  type: 'IN' | 'OUT' | 'BREAK_START' | 'BREAK_END';
   ot: boolean;
   timestamp: string; // ISO -- the real moment the employee tapped, not whenever this eventually syncs
-  branch: string | null; // this device's configured branch (see deviceBranch.ts) AT THE TIME OF THE TAP -- captured here, not re-read at sync time, in case the device's branch setting changes in between
-  shift: string | null; // the shift the employee picked (IN only -- always null for OUT); server ignores it for OUT and falls back to the admin-set schedule if null
+  branch: string | null; // this device's configured branch (see deviceBranch.ts) AT THE TIME OF THE TAP -- captured here, not re-read at sync time, in case the device's branch setting changes in between; meaningless for BREAK_START/BREAK_END, always null there
+  shift: string | null; // the shift the employee picked (IN only -- always null for OUT/BREAK_START/BREAK_END); server ignores it for OUT and falls back to the admin-set schedule if null
+  breakDurationMinutes?: number; // BREAK_START only -- the employee's own pick (15/30/45/60), see handleKioskBreak_ server-side; absent for every other type
 };
 
 function makeClientId(): string {
@@ -111,12 +113,13 @@ function withQueueLock<T>(fn: () => Promise<T>): Promise<T> {
  */
 export async function enqueueCheckin(
   pin: string,
-  type: 'IN' | 'OUT',
+  type: 'IN' | 'OUT' | 'BREAK_START' | 'BREAK_END',
   ot: boolean,
   branch: string | null,
-  shift: string | null
+  shift: string | null,
+  breakDurationMinutes?: number
 ): Promise<{ success: true; clientId: string } | { success: false }> {
-  const entry: QueuedCheckin = { clientId: makeClientId(), pin, type, ot, timestamp: new Date().toISOString(), branch, shift };
+  const entry: QueuedCheckin = { clientId: makeClientId(), pin, type, ot, timestamp: new Date().toISOString(), branch, shift, breakDurationMinutes };
   try {
     await withQueueLock(async () => {
       const queue = await readQueue();
@@ -164,7 +167,7 @@ export async function flushQueue(): Promise<{ synced: number; remaining: number 
     }
     if (!next) break;
 
-    const res = await kioskSyncOffline(next.pin, next.type, next.ot, next.timestamp, next.clientId, next.branch, next.shift ?? undefined);
+    const res = await kioskSyncOffline(next.pin, next.type, next.ot, next.timestamp, next.clientId, next.branch, next.shift ?? undefined, next.breakDurationMinutes);
     let stop = false;
 
     try {
@@ -183,6 +186,27 @@ export async function flushQueue(): Promise<{ synced: number; remaining: number 
           if (res.error === 'network_error' || res.error === 'timeout') { stop = true; return; } // still offline or server issue -- stop, keep the rest queued in order
           queue.splice(idx, 1); // permanent rejection (e.g. employee deactivated since) -- will never succeed, drop it instead of blocking everyone behind it
           await writeQueue(queue);
+          if (next.type === 'BREAK_START' || next.type === 'BREAK_END') {
+            // A dropped Break entry must not leave the on-device marker (see
+            // breakState.ts) stuck on whatever queueOffline optimistically
+            // guessed when it was first enqueued -- correct it from the
+            // rejection reason instead of blindly resetting to false:
+            // already_on_break means the TRUE state is on-break (some other
+            // BREAK_START already won), so the marker must become true, not
+            // false, or the button would keep showing "Start Break" to
+            // someone who actually needs "Back from Break". The other
+            // rejections (not_on_break/not_clocked_in/already_clocked_out)
+            // all genuinely mean "not on break". "duplicate" and anything
+            // else (not_found/inactive/bad_request) are left untouched --
+            // for duplicate specifically, the marker is already correct from
+            // whichever earlier same-type tap actually succeeded. Not
+            // awaited, same as every other setLocalOnBreak call.
+            if (res.error === 'already_on_break') {
+              setLocalOnBreak(next.pin, true);
+            } else if (res.error === 'not_on_break' || res.error === 'not_clocked_in' || res.error === 'already_clocked_out') {
+              setLocalOnBreak(next.pin, false);
+            }
+          }
           return;
         }
 
