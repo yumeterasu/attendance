@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { todayKey } from './localDate';
 
 // Per-PIN "how many real break minutes has this employee used today" running
 // ESTIMATE, kept on-device so an offline Back from Break can still show a
@@ -13,11 +14,6 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 const KEY = 'kiosk_break_minutes_estimate_v1';
 
 type Entry = { date: string; totalMinutes: number }; // date: device-local YYYY-MM-DD
-
-function todayKey(): string {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-}
 
 async function readMap(): Promise<Record<string, Entry>> {
   try {

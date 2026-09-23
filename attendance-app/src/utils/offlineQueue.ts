@@ -2,6 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { kioskSyncOffline } from '../api/client';
 import { setLocalOnBreak } from './breakState';
 import { setConfirmedTotalMinutesToday, addEstimatedOfflineBreakMinutes } from './breakMinutesCache';
+import { clearLocalCheckedInToday } from './checkinState';
 
 const STORAGE_KEY = 'kiosk_offline_queue_v1';
 // Prefix for a best-effort backup of a queue value that failed to
@@ -244,6 +245,28 @@ export async function flushQueue(): Promise<{ synced: number; remaining: number 
             // -- undo exactly this entry's contribution instead of leaving it
             // stuck in the estimate for the rest of the day.
             addEstimatedOfflineBreakMinutes(next.pin, -next.breakSessionMinutes);
+          }
+          if (next.type === 'IN' && res.error !== 'duplicate') {
+            // Any permanent rejection OTHER than duplicate (not_found/
+            // inactive/bad_request) means this IN never actually landed --
+            // revert the optimistic marker queueOffline set at enqueue time,
+            // so the morning auto-select doesn't keep silently skipping IN
+            // for a check-in that never really happened. The IN button
+            // itself was never blocked either way.
+            //
+            // 'duplicate' is left alone deliberately, NOT because it proves
+            // an earlier same-type IN synced -- unlike the Break guard above
+            // (sameTypeOnly), recordAttendance_'s duplicate guard is
+            // type-agnostic (rejects within 60s of the employee's last log
+            // row of ANY type), so a rejected IN's "duplicate" could equally
+            // mean some unrelated OUT/Break row landed moments earlier. That
+            // makes the true state genuinely undecidable from this response
+            // alone; clearing here would be just as likely to wrongly erase
+            // a real check-in (a genuine accidental double-tap where the
+            // first IN did succeed) as leaving it is to wrongly keep a
+            // phantom one. Left as-is as the least-surprising default --
+            // still only ever a wrong PRE-SELECTION, never a blocked tap.
+            clearLocalCheckedInToday(next.pin);
           }
           return;
         }

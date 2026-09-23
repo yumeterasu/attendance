@@ -14,6 +14,7 @@ import { lookupPinLocally } from '../utils/employeeDirectory';
 import { enqueueCheckin } from '../utils/offlineQueue';
 import { setLocalOnBreak, getLocalOnBreak, getLocalBreakStartedAt } from '../utils/breakState';
 import { addEstimatedOfflineBreakMinutes, setConfirmedTotalMinutesToday } from '../utils/breakMinutesCache';
+import { setLocalCheckedInToday, getLocalCheckedInToday } from '../utils/checkinState';
 import { getDeviceBranch } from '../utils/deviceBranch';
 import {
   cacheScheduleMonth,
@@ -268,6 +269,11 @@ export default function KioskScreen({ navigation }: Props) {
   // not_clocked_in/already_clocked_out rejection path from the server is
   // the actual enforcement of "only after IN, before OUT".
   const [onBreak, setOnBreak] = useState(false);
+  // Resolved once per lookup, right alongside onBreak above (same source --
+  // checkinState.ts) -- lets the morning auto-select effect below read this
+  // synchronously instead of doing its own AsyncStorage round trip with
+  // manual cancellation bookkeeping on every lookupName change.
+  const [alreadyCheckedInToday, setAlreadyCheckedInToday] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   // Mirrors isProcessing but read/written synchronously -- same reasoning as
   // isChangingScheduleMonthRef below: state doesn't land until the next
@@ -356,6 +362,7 @@ export default function KioskScreen({ navigation }: Props) {
     setSelectedBreakDuration(null);
     setSelection(null);
     setOnBreak(false);
+    setAlreadyCheckedInToday(false);
     setLookupIssue(null);
     setForcedOffline(false);
   };
@@ -411,7 +418,15 @@ export default function KioskScreen({ navigation }: Props) {
   useEffect(() => {
     if (lookupName === null) return;
     const hour = new Date().getHours();
-    if (hour >= AUTO_IN_START_HOUR && hour < AUTO_IN_END_HOUR) setSelection('IN');
+    // alreadyCheckedInToday (see checkinState.ts) is resolved together with
+    // lookupName itself (see tryLocalLookup/lookupPin above), so it's
+    // already correct by the time this effect sees the new lookupName --
+    // no separate async read needed here. Skips the IN default specifically
+    // when this PIN already clocked IN today, so looking the same PIN up
+    // again later in the same morning window doesn't re-default to IN even
+    // though they already tapped it. The IN button itself is never hidden
+    // or disabled by this, only which button starts pre-selected.
+    if (hour >= AUTO_IN_START_HOUR && hour < AUTO_IN_END_HOUR && !alreadyCheckedInToday) setSelection('IN');
     else if (hour >= AUTO_OUT_HOUR) setSelection('OUT');
   }, [lookupName]);
 
@@ -421,12 +436,21 @@ export default function KioskScreen({ navigation }: Props) {
   const tryLocalLookup = async (value: string): Promise<boolean> => {
     const local = await lookupPinLocally(value);
     if (!local) return false;
+    // Both reads resolved BEFORE any state is set (not sequential awaits
+    // interleaved with setLookupName) -- otherwise lookupName would commit
+    // and re-render (the auto-select effect below is keyed on it) one tick
+    // before alreadyCheckedInToday's own await resolves, so that effect
+    // could fire once against a stale "not checked in yet" default and
+    // never get a second chance to correct itself. Setting everything
+    // together here lands it all in the same render instead.
+    const [onBreakNow, checkedInNow] = await Promise.all([getLocalOnBreak(value), getLocalCheckedInToday(value)]);
     setLookupName(local.name);
     applyShiftChoices(local.shifts);
     // No live onBreak here (the local directory only has name/shifts) --
     // fall back to the on-device marker set by a previous offline
     // BREAK_START/BREAK_END of this PIN's own (see breakState.ts).
-    setOnBreak(await getLocalOnBreak(value));
+    setOnBreak(onBreakNow);
+    setAlreadyCheckedInToday(checkedInNow);
     return true;
   };
 
@@ -485,13 +509,19 @@ export default function KioskScreen({ navigation }: Props) {
       const res = await kioskLookupPin(value);
 
       if (res.success) {
+        // Both reads resolved together before any state is set -- same
+        // reasoning as tryLocalLookup above (avoids a stale intermediate
+        // render between lookupName committing and alreadyCheckedInToday
+        // landing, which the auto-select effect below is sensitive to).
+        const [onBreakNow, checkedInNow] = await Promise.all([getLocalOnBreak(value), getLocalCheckedInToday(value)]);
         setLookupName(res.name);
         applyShiftChoices(res.shifts);
         // Same on-device marker tryLocalLookup uses below -- kioskLookupPin
         // deliberately doesn't return onBreak itself (see client.ts), so
         // this is the one source of truth for both the online and offline
         // paths, kept correct by every successful BREAK_START/BREAK_END/OUT.
-        setOnBreak(await getLocalOnBreak(value));
+        setOnBreak(onBreakNow);
+        setAlreadyCheckedInToday(checkedInNow);
       } else if (res.error === 'timeout' || res.error === 'network_error') {
         // Connection dropped mid-request -- try the local copy again in case
         // the directory refreshed in the meantime (see useOfflineSync).
@@ -598,7 +628,15 @@ export default function KioskScreen({ navigation }: Props) {
       // in-progress break server-side, so clear the local marker too.
       setLocalOnBreak(currentPin, null);
     }
-    if (type === 'IN') playCheckinSound(); else playCheckoutSound();
+    if (type === 'IN') {
+      // Best-effort marker so the morning auto-select doesn't default to IN
+      // again on a later lookup this same day (see checkinState.ts). Not
+      // awaited, same convention as every other local-cache write here.
+      setLocalCheckedInToday(currentPin);
+      playCheckinSound();
+    } else {
+      playCheckoutSound();
+    }
     await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     showFeedback({ kind: 'success', type, name, timestamp: new Date().toISOString(), queued: true });
   };
@@ -695,7 +733,15 @@ export default function KioskScreen({ navigation }: Props) {
           // same reasoning as queueOffline's own calls.
           setLocalOnBreak(currentPin, null);
         }
-        if (res.type === 'IN') playCheckinSound(); else playCheckoutSound();
+        if (res.type === 'IN') {
+          // Best-effort marker so the morning auto-select doesn't default to
+          // IN again on a later lookup this same day (see checkinState.ts).
+          // Not awaited, same convention as every other local-cache write.
+          setLocalCheckedInToday(currentPin);
+          playCheckinSound();
+        } else {
+          playCheckoutSound();
+        }
         await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         showFeedback({ kind: 'success', type: res.type, name: res.name, timestamp: res.timestamp, late: res.late, ot: res.ot });
       } else if (res.error === 'timeout' || res.error === 'network_error') {
@@ -1350,7 +1396,7 @@ export default function KioskScreen({ navigation }: Props) {
                 (selection === 'BREAK_START' || selection === 'BREAK_END') && styles.typeButtonTextSelected
               ]}
             >
-              {onBreak ? 'Back from Break' : 'Start Break'}
+              {onBreak ? '💪 Back from Break' : '☕ Start Break'}
             </Text>
           </Pressable>
 
