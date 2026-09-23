@@ -786,6 +786,7 @@
               <th class="sortable" data-sort="department" data-i18n="tableDepartment">Department</th>
               <th class="sortable" data-sort="daysWorked" data-i18n="tableDaysWorked">Days Worked</th>
               <th class="sortable" data-sort="lateCount" data-i18n="tableLate">Late</th>
+              <th class="sortable" data-sort="overCount" data-i18n="tableOver">Over</th>
               <th class="sortable" data-sort="otMinutes" data-i18n="tableOtMin">OT (min)</th>
               <th class="sortable" data-sort="otQuarters" data-i18n="tableOtQtr">OT (qtr)</th>
               <th class="sortable" data-sort="otPay" data-i18n="tableOtPay">OT Pay</th>
@@ -910,6 +911,7 @@
       tableDepartment: 'Department',
       tableDaysWorked: 'Days Worked',
       tableLate: 'Late',
+      tableOver: 'Over',
       tableOtMin: 'OT (min)',
       tableOtQtr: 'OT (qtr)',
       tableOtPay: 'OT Pay',
@@ -969,6 +971,7 @@
       tableDepartment: '部署',
       tableDaysWorked: '出勤日数',
       tableLate: '遅刻',
+      tableOver: '休憩超過',
       tableOtMin: '残業(分)',
       tableOtQtr: '残業(15分単位)',
       tableOtPay: '残業代',
@@ -1447,6 +1450,12 @@
         ? '<span class="pill late">' + emp.lateCount + '</span>'
         : '<span class="pill zero">0</span>';
 
+      // Same pill styling as lateCount above -- same table/style family, not
+      // the Daily view's separate .chip-break.over-budget treatment.
+      var overHtml = emp.overCount > 0
+        ? '<span class="pill late">' + emp.overCount + '</span>'
+        : '<span class="pill zero">0</span>';
+
       var otPayHtml = emp.otPay === null
         ? '<span class="pill zero">—</span>'
         : (emp.otPay > 0 ? '<span class="pill otpay">฿' + otPayFormatter.format(emp.otPay) + '</span>' : '<span class="pill zero">฿0.00</span>');
@@ -1457,6 +1466,7 @@
         '<td class="dept">' + escapeHtml(emp.department || '') + '</td>' +
         '<td class="num">' + emp.daysWorked + '</td>' +
         '<td class="num">' + lateHtml + '</td>' +
+        '<td class="num">' + overHtml + '</td>' +
         '<td class="num">' + emp.otMinutes + '</td>' +
         '<td class="num">' + emp.otQuarters + '</td>' +
         '<td class="num">' + otPayHtml + '</td>' +
@@ -1512,6 +1522,7 @@
       case 'department': return emp.department || '';
       case 'daysWorked': return emp.daysWorked;
       case 'lateCount': return emp.lateCount;
+      case 'overCount': return emp.overCount;
       case 'otMinutes': return emp.otMinutes;
       case 'otQuarters': return emp.otQuarters;
       case 'otPay': return emp.otPay; // can be null (Thai employees have no OT pay rate)

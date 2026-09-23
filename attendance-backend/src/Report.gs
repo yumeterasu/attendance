@@ -53,7 +53,7 @@ function writeMonthlyReportData_(sheet, startRow, year, month, precomputedLogsBy
     return String(a.EmployeeID).localeCompare(String(b.EmployeeID));
   });
 
-  var COLS = 9; // Date, Day, Time In, Time Out, Shift, Late, OT (min), OT (Quarter), Break (min)
+  var COLS = 10; // Date, Day, Time In, Time Out, Shift, Late, OT (min), OT (Quarter), Break (min), Over
   var rows = [];
   var backgrounds = [];
   var fontColors = [];
@@ -71,11 +71,11 @@ function writeMonthlyReportData_(sheet, startRow, year, month, precomputedLogsBy
   employees.forEach(function (emp) {
     var blockStartRow = startRow + rows.length;
 
-    rows.push([emp.Name + ' (' + emp.EmployeeID + ')', emp.Department, '', '', '', '', '', '', '']);
+    rows.push([emp.Name + ' (' + emp.EmployeeID + ')', emp.Department, '', '', '', '', '', '', '', '']);
     backgrounds.push(nameRowBackgrounds.slice());
     fontColors.push(blankRowColors.slice());
     fontWeights.push(nameRowFontWeights.slice());
-    rows.push(['Date', 'Day', 'Time In', 'Time Out', 'Shift', 'Late', 'OT (min)', 'OT (Quarter)', 'Break (min)']);
+    rows.push(['Date', 'Day', 'Time In', 'Time Out', 'Shift', 'Late', 'OT (min)', 'OT (Quarter)', 'Break (min)', 'Over']);
     backgrounds.push(headerRowColors.slice());
     fontColors.push(blankRowColors.slice());
     fontWeights.push(blankRowColors.slice());
@@ -135,6 +135,11 @@ function writeMonthlyReportData_(sheet, startRow, year, month, precomputedLogsBy
       // isEventDay/Late/OT the way the columns above are, since break time
       // was never part of the Late/OT/Event rules to begin with.
       var breakMinutes = (dayEntry && dayEntry.breakMinutes) ? dayEntry.breakMinutes : '';
+      // Same "visibility only, never Event-adjusted" reasoning as
+      // breakMinutes above -- a break over budget is a break over budget
+      // regardless of what the day was scheduled as.
+      var isOverDay = !!(dayEntry && dayEntry.breakMinutes > DAILY_BREAK_BUDGET_MINUTES);
+      var over = isOverDay ? 'Over' : '';
       rows.push([
         Utilities.formatDate(date, tz, 'dd/MM/yyyy'),
         Utilities.formatDate(date, tz, 'EEEE'),
@@ -144,7 +149,8 @@ function writeMonthlyReportData_(sheet, startRow, year, month, precomputedLogsBy
         late,
         otMinutes,
         otQuarters,
-        breakMinutes
+        breakMinutes,
+        over
       ]);
 
       // Same weekend tint as the Schedule sheet: Saturday #cfe2f3, Sunday #f4cccc.
@@ -156,6 +162,11 @@ function writeMonthlyReportData_(sheet, startRow, year, month, precomputedLogsBy
         // Late (column F) stands out red-on-white regardless of weekend tint.
         rowBg[5] = '#c0392b';
         rowFont[5] = '#ffffff';
+      }
+      if (isOverDay) {
+        // Over (column J, the 10th) gets the same red-on-white treatment.
+        rowBg[9] = '#c0392b';
+        rowFont[9] = '#ffffff';
       }
       backgrounds.push(rowBg);
       fontColors.push(rowFont);
@@ -315,7 +326,7 @@ function refreshLiveReportSheet_() {
  */
 function writeYearlyReportData_(sheet, startRow, year) {
   var tz = Session.getScriptTimeZone();
-  var COLS = 9; // same column count as writeMonthlyReportData_'s table
+  var COLS = 10; // same column count as writeMonthlyReportData_'s table
   var row = startRow;
 
   var attendanceLogValues = getSheet_('AttendanceLog').getDataRange().getValues();
@@ -509,23 +520,29 @@ function autoResizeColumnsWithPadding_(sheet, numCols) {
  * is scheduledShiftsForMonth[employeeId] (may be undefined).
  */
 function sumMonthTotals_(dayLogs, scheduledShiftsForEmployee, daysInMonth) {
-  var daysWorked = 0, lateCount = 0, otMinutesTotal = 0, otQuartersTotal = 0;
+  var daysWorked = 0, lateCount = 0, overCount = 0, otMinutesTotal = 0, otQuartersTotal = 0;
   for (var day = 1; day <= daysInMonth; day++) {
-    // Checked first and unconditionally: an Event day always counts as a
-    // full day worked, never late, no OT, no matter what (or how little) of
-    // it got actually logged -- including the edge case of a stray OUT-only
-    // row with no matching IN (e.g. a backdated OUT, or a forgotten clock-in
-    // that day), which would otherwise silently fail the `entry.timeIn`
-    // check below and drop the day from Days Worked despite being an Event
-    // day. A real Event punch already has entry.timeIn forced to the
-    // shift's own start time (see eventShiftOverrideTimestamp_) and would
-    // count either way, so this never double-counts against the entry-based
-    // path below -- the two are mutually exclusive per day (continue).
+    var entry = dayLogs[day];
+    // Checked before the Event-day branch below and regardless of it: break
+    // punches are independent, real taps that happen no matter what the day
+    // was scheduled as, so an over-budget break on an Event day must still
+    // count -- unlike Late/OT, which the Event-day branch's `continue`
+    // deliberately overrides because those are about official clock times.
+    if (entry && entry.breakMinutes > DAILY_BREAK_BUDGET_MINUTES) overCount++;
+    // Checked next: an Event day always counts as a full day worked, never
+    // late, no OT, no matter what (or how little) of it got actually logged
+    // -- including the edge case of a stray OUT-only row with no matching IN
+    // (e.g. a backdated OUT, or a forgotten clock-in that day), which would
+    // otherwise silently fail the `entry.timeIn` check below and drop the
+    // day from Days Worked despite being an Event day. A real Event punch
+    // already has entry.timeIn forced to the shift's own start time (see
+    // eventShiftOverrideTimestamp_) and would count either way, so this
+    // never double-counts against the entry-based path below -- the two are
+    // mutually exclusive per day (continue).
     if (isEventShift_(scheduledShiftsForEmployee && scheduledShiftsForEmployee[day])) {
       daysWorked++;
       continue;
     }
-    var entry = dayLogs[day];
     if (entry) {
       if (entry.timeIn) daysWorked++;
       if (entry.late) lateCount++;
@@ -533,7 +550,7 @@ function sumMonthTotals_(dayLogs, scheduledShiftsForEmployee, daysInMonth) {
       otQuartersTotal += entry.otQuarters || 0;
     }
   }
-  return { daysWorked: daysWorked, lateCount: lateCount, otMinutesTotal: otMinutesTotal, otQuartersTotal: otQuartersTotal };
+  return { daysWorked: daysWorked, lateCount: lateCount, overCount: overCount, otMinutesTotal: otMinutesTotal, otQuartersTotal: otQuartersTotal };
 }
 
 /**
@@ -559,24 +576,27 @@ function writeMonthlySummaryData_(sheet, startRow, year, month) {
     return String(a.EmployeeID).localeCompare(String(b.EmployeeID));
   });
 
-  var COLS = 7 + LEAVE_COUNT_TYPES.length; // Employee, Department, Days Worked, Late Count, OT (min), OT (Quarter), OT Pay (Baht), then one column per LEAVE_COUNT_TYPES entry
+  var COLS = 8 + LEAVE_COUNT_TYPES.length; // Employee, Department, Days Worked, Late Count, Over Count, OT (min), OT (Quarter), OT Pay (Baht), then one column per LEAVE_COUNT_TYPES entry
   var LATE_COUNT_COL = 4;
-  var OT_PAY_COL = 7;
-  var rows = [['Employee', 'Department', 'Days Worked', 'Late Count', 'OT (min)', 'OT (Quarter)', 'OT Pay (Baht)'].concat(LEAVE_COUNT_TYPES)];
+  var OVER_COUNT_COL = 5;
+  var OT_PAY_COL = 8;
+  var rows = [['Employee', 'Department', 'Days Worked', 'Late Count', 'Over Count', 'OT (min)', 'OT (Quarter)', 'OT Pay (Baht)'].concat(LEAVE_COUNT_TYPES)];
   var lateHighlightRows = []; // sheet row numbers (1-indexed) where Late Count > 0, for the red highlight below
+  var overHighlightRows = []; // sheet row numbers (1-indexed) where Over Count > 0, for the red highlight below
   var otPayHighlightRows = []; // sheet row numbers (1-indexed) where OT Pay > 0, for the light-green highlight below
 
   employees.forEach(function (emp) {
     var dayLogs = logsByEmployee[emp.EmployeeID] || {};
     var totals = sumMonthTotals_(dayLogs, scheduledShiftsForMonth[emp.EmployeeID], daysInMonth);
-    var daysWorked = totals.daysWorked, lateCount = totals.lateCount;
+    var daysWorked = totals.daysWorked, lateCount = totals.lateCount, overCount = totals.overCount;
     var otMinutesTotal = totals.otMinutesTotal, otQuartersTotal = totals.otQuartersTotal;
 
     var otPay = computeOtPay_(emp, otMinutesTotal, otQuartersTotal);
     var leaveCounts = countLeavesForEmployee_(scheduledShiftsForMonth, emp.EmployeeID);
     var leaveCountValues = LEAVE_COUNT_TYPES.map(function (t) { return leaveCounts[t]; });
-    rows.push([emp.Name + ' (' + emp.EmployeeID + ')', emp.Department, daysWorked, lateCount, otMinutesTotal, otQuartersTotal, otPay].concat(leaveCountValues));
+    rows.push([emp.Name + ' (' + emp.EmployeeID + ')', emp.Department, daysWorked, lateCount, overCount, otMinutesTotal, otQuartersTotal, otPay].concat(leaveCountValues));
     if (lateCount > 0) lateHighlightRows.push(startRow + rows.length - 1);
+    if (overCount > 0) overHighlightRows.push(startRow + rows.length - 1);
     if (otPay > 0) otPayHighlightRows.push(startRow + rows.length - 1);
   });
 
@@ -588,6 +608,13 @@ function writeMonthlySummaryData_(sheet, startRow, year, month) {
     var lateRangeList = sheet.getRangeList(lateA1Notations);
     lateRangeList.setBackground('#c0392b');
     lateRangeList.setFontColor('#ffffff');
+  }
+
+  if (overHighlightRows.length > 0) {
+    var overA1Notations = overHighlightRows.map(function (r) { return sheet.getRange(r, OVER_COUNT_COL).getA1Notation(); });
+    var overRangeList = sheet.getRangeList(overA1Notations);
+    overRangeList.setBackground('#c0392b');
+    overRangeList.setFontColor('#ffffff');
   }
 
   if (otPayHighlightRows.length > 0) {
@@ -624,23 +651,26 @@ function writeYearlySummaryData_(sheet, startRow, year) {
     return String(a.EmployeeID).localeCompare(String(b.EmployeeID));
   });
 
-  var COLS = 7 + LEAVE_COUNT_TYPES.length; // Employee, Department, Days Worked, Late Count, OT (min), OT (Quarter), OT Pay (Baht), then one column per LEAVE_COUNT_TYPES entry
+  var COLS = 8 + LEAVE_COUNT_TYPES.length; // Employee, Department, Days Worked, Late Count, Over Count, OT (min), OT (Quarter), OT Pay (Baht), then one column per LEAVE_COUNT_TYPES entry
   var LATE_COUNT_COL = 4;
-  var OT_PAY_COL = 7;
-  var rows = [['Employee', 'Department', 'Days Worked', 'Late Count', 'OT (min)', 'OT (Quarter)', 'OT Pay (Baht)'].concat(LEAVE_COUNT_TYPES)];
+  var OVER_COUNT_COL = 5;
+  var OT_PAY_COL = 8;
+  var rows = [['Employee', 'Department', 'Days Worked', 'Late Count', 'Over Count', 'OT (min)', 'OT (Quarter)', 'OT Pay (Baht)'].concat(LEAVE_COUNT_TYPES)];
   var lateHighlightRows = [];
+  var overHighlightRows = [];
   var otPayHighlightRows = [];
 
   var zeroLeaveCounts = {};
   LEAVE_COUNT_TYPES.forEach(function (t) { zeroLeaveCounts[t] = 0; });
 
   employees.forEach(function (emp) {
-    var totals = totalsByEmployee[emp.EmployeeID] || { daysWorked: 0, lateCount: 0, otMinutesTotal: 0, otQuartersTotal: 0 };
+    var totals = totalsByEmployee[emp.EmployeeID] || { daysWorked: 0, lateCount: 0, overCount: 0, otMinutesTotal: 0, otQuartersTotal: 0 };
     var otPay = computeOtPay_(emp, totals.otMinutesTotal, totals.otQuartersTotal);
     var leaveCounts = leaveCountsByEmployee[emp.EmployeeID] || zeroLeaveCounts;
     var leaveCountValues = LEAVE_COUNT_TYPES.map(function (t) { return leaveCounts[t]; });
-    rows.push([emp.Name + ' (' + emp.EmployeeID + ')', emp.Department, totals.daysWorked, totals.lateCount, totals.otMinutesTotal, totals.otQuartersTotal, otPay].concat(leaveCountValues));
+    rows.push([emp.Name + ' (' + emp.EmployeeID + ')', emp.Department, totals.daysWorked, totals.lateCount, totals.overCount, totals.otMinutesTotal, totals.otQuartersTotal, otPay].concat(leaveCountValues));
     if (totals.lateCount > 0) lateHighlightRows.push(startRow + rows.length - 1);
+    if (totals.overCount > 0) overHighlightRows.push(startRow + rows.length - 1);
     if (otPay > 0) otPayHighlightRows.push(startRow + rows.length - 1);
   });
 
@@ -652,6 +682,13 @@ function writeYearlySummaryData_(sheet, startRow, year) {
     var lateRangeList = sheet.getRangeList(lateA1Notations);
     lateRangeList.setBackground('#c0392b');
     lateRangeList.setFontColor('#ffffff');
+  }
+
+  if (overHighlightRows.length > 0) {
+    var overA1Notations = overHighlightRows.map(function (r) { return sheet.getRange(r, OVER_COUNT_COL).getA1Notation(); });
+    var overRangeList = sheet.getRangeList(overA1Notations);
+    overRangeList.setBackground('#c0392b');
+    overRangeList.setFontColor('#ffffff');
   }
 
   if (otPayHighlightRows.length > 0) {
@@ -695,6 +732,22 @@ function aggregateYearSummary_(values, year) {
   var fiscalEndExclusive = new Date(year + 1, FISCAL_YEAR_START_MONTH, 1); // next fiscal year's start -- everything before this is in range
 
   var byDate = {};
+  // Break events collected per EMPLOYEE (not per day) across the whole
+  // fiscal year, same reasoning as aggregateMonthLogs_'s own breakMinutes
+  // pairing: a break that starts before midnight and ends after it would
+  // otherwise land in two different day buckets and never find its match.
+  // Paired into byDate[key].breakMinutes AFTER this loop, below.
+  // KNOWN NARROW GAP: this function is called once per fiscal year and
+  // rows are filtered to [fiscalStart, fiscalEndExclusive) above, so a break
+  // spanning the fiscal-year boundary itself (BREAK_START 23:50 on Mar 31,
+  // BREAK_END 00:10 on Apr 1) has its two halves land in different calls'
+  // row sets and neither call sees both -- it silently contributes 0 minutes
+  // to either fiscal year's Over Count/breakMinutes (the monthly Report/
+  // Summary for the individual months is unaffected; aggregateMonthLogs_
+  // pairs within a calendar month and doesn't hit this boundary). Accepted:
+  // requires a break to straddle exactly midnight on Mar 31/Apr 1, and only
+  // affects the yearly/"All" rollup, not any single month's data.
+  var breakEventsByEmployee = {};
   for (var i = 1; i < values.length; i++) {
     var ts = new Date(values[i][tsCol]);
     if (ts < fiscalStart || ts >= fiscalEndExclusive) continue;
@@ -703,7 +756,12 @@ function aggregateYearSummary_(values, year) {
     var type = values[i][typeCol];
     var key = employeeId + '|' + ts.getMonth() + '|' + ts.getDate();
 
-    if (!byDate[key]) byDate[key] = { employeeId: employeeId, timeIn: null, timeOut: null, late: false, otMinutes: 0, otQuarters: 0 };
+    // Every row in range touches byDate FIRST, break rows included -- same
+    // as before break rows existed here, an employee whose only fiscal-year
+    // activity is a single stray row (even an unpaired break event) still
+    // gets a (zero-ish) entry, instead of silently vanishing from the
+    // result below for having "no byDate entry at all".
+    if (!byDate[key]) byDate[key] = { employeeId: employeeId, timeIn: null, timeOut: null, late: false, otMinutes: 0, otQuarters: 0, breakMinutes: 0 };
     var entry = byDate[key];
 
     if (type === 'IN') {
@@ -717,16 +775,42 @@ function aggregateYearSummary_(values, year) {
         entry.otMinutes = otMinutesCol !== -1 ? Number(values[i][otMinutesCol]) || 0 : 0;
         entry.otQuarters = otQuartersCol !== -1 ? Number(values[i][otQuartersCol]) || 0 : 0;
       }
+    } else if (type === 'BREAK_START' || type === 'BREAK_END') {
+      if (!breakEventsByEmployee[employeeId]) breakEventsByEmployee[employeeId] = [];
+      breakEventsByEmployee[employeeId].push({ ts: ts, type: type });
     }
   }
+
+  // Pair each employee's break events chronologically across the whole
+  // fiscal year -- same rule as aggregateMonthLogs_: sum every COMPLETE
+  // BREAK_START->BREAK_END pair; an unmatched trailing BREAK_START (a
+  // forgotten Back from Break) contributes nothing. Each completed pair's
+  // minutes are attributed to the day its BREAK_START happened.
+  Object.keys(breakEventsByEmployee).forEach(function (employeeId) {
+    var events = breakEventsByEmployee[employeeId];
+    events.sort(function (a, b) { return a.ts.getTime() - b.ts.getTime(); });
+    var openStart = null;
+    for (var e = 0; e < events.length; e++) {
+      if (events[e].type === 'BREAK_START') {
+        openStart = events[e].ts;
+      } else if (openStart) {
+        var minutes = Math.round((events[e].ts.getTime() - openStart.getTime()) / 60000);
+        var startKey = employeeId + '|' + openStart.getMonth() + '|' + openStart.getDate();
+        if (!byDate[startKey]) byDate[startKey] = { employeeId: employeeId, timeIn: null, timeOut: null, late: false, otMinutes: 0, otQuarters: 0, breakMinutes: 0 };
+        byDate[startKey].breakMinutes += minutes;
+        openStart = null;
+      }
+    }
+  });
 
   var result = {};
   for (var key in byDate) {
     var entry = byDate[key];
-    if (!result[entry.employeeId]) result[entry.employeeId] = { daysWorked: 0, lateCount: 0, otMinutesTotal: 0, otQuartersTotal: 0 };
+    if (!result[entry.employeeId]) result[entry.employeeId] = { daysWorked: 0, lateCount: 0, overCount: 0, otMinutesTotal: 0, otQuartersTotal: 0 };
     var totals = result[entry.employeeId];
     if (entry.timeIn) totals.daysWorked++;
     if (entry.late) totals.lateCount++;
+    if (entry.breakMinutes > DAILY_BREAK_BUDGET_MINUTES) totals.overCount++;
     totals.otMinutesTotal += entry.otMinutes;
     totals.otQuartersTotal += entry.otQuarters;
   }
@@ -758,7 +842,7 @@ function aggregateYearSummary_(values, year) {
         if (!isEventShift_(byDay[d])) continue;
         var dateKey = emp.EmployeeID + '|' + (calMonth - 1) + '|' + d; // 0-indexed month, matching the `key` format above
         if (byDate[dateKey] && byDate[dateKey].timeIn) continue;
-        if (!result[emp.EmployeeID]) result[emp.EmployeeID] = { daysWorked: 0, lateCount: 0, otMinutesTotal: 0, otQuartersTotal: 0 };
+        if (!result[emp.EmployeeID]) result[emp.EmployeeID] = { daysWorked: 0, lateCount: 0, overCount: 0, otMinutesTotal: 0, otQuartersTotal: 0 };
         result[emp.EmployeeID].daysWorked++;
       }
     });
@@ -1362,7 +1446,7 @@ function getDashboardSummaryData_(year, month) {
     allEmployees.forEach(function (emp) {
       var dayLogs = logsByEmployee[emp.EmployeeID] || {};
       var totals = sumMonthTotals_(dayLogs, scheduledShiftsForMonth[emp.EmployeeID], daysInMonth);
-      if (totals.daysWorked || totals.lateCount || totals.otMinutesTotal || totals.otQuartersTotal) {
+      if (totals.daysWorked || totals.lateCount || totals.overCount || totals.otMinutesTotal || totals.otQuartersTotal) {
         totalsByEmployee[emp.EmployeeID] = totals;
       }
     });
@@ -1386,7 +1470,7 @@ function getDashboardSummaryData_(year, month) {
 
   var zeroLeaveCounts = {};
   LEAVE_COUNT_TYPES.forEach(function (t) { zeroLeaveCounts[t] = 0; });
-  var zeroTotals = { daysWorked: 0, lateCount: 0, otMinutesTotal: 0, otQuartersTotal: 0 };
+  var zeroTotals = { daysWorked: 0, lateCount: 0, overCount: 0, otMinutesTotal: 0, otQuartersTotal: 0 };
 
   return employees.map(function (emp) {
     var totals = totalsByEmployee[emp.EmployeeID] || zeroTotals;
@@ -1399,6 +1483,7 @@ function getDashboardSummaryData_(year, month) {
       branch: emp.Branch || '', // 'PP'/'TL' -- see BRANCHES in Attendance.gs; the Dashboard maps these to Phrom Phong/Thonglor for display
       daysWorked: totals.daysWorked,
       lateCount: totals.lateCount,
+      overCount: totals.overCount,
       otMinutes: totals.otMinutesTotal,
       otQuarters: totals.otQuartersTotal,
       otPay: otPay === '' ? null : otPay, // null = not eligible (e.g. Thai staff with no Salary on file), not zero
