@@ -263,11 +263,11 @@ export default function KioskScreen({ navigation }: Props) {
   // default, since recordBreak_/recordOfflineSyncedBreak_ reject a
   // BREAK_START that's actually invalid (already_on_break) with a clear
   // error rather than silently corrupting anything, so guessing wrong here
-  // is a UX inconvenience, not a data problem. Deliberately does NOT gate
-  // whether the Break button itself is shown (unlike IN/OUT/OUT_OT, which
-  // have never been gated on shift state either) -- the same
-  // not_clocked_in/already_clocked_out rejection path from the server is
-  // the actual enforcement of "only after IN, before OUT".
+  // is a UX inconvenience, not a data problem. The Break button ITSELF is
+  // gated on alreadyCheckedInToday below (unlike IN/OUT/OUT_OT, which stay
+  // ungated) -- an employee who hasn't clocked in yet has no valid break to
+  // start, so hiding the button avoids a guaranteed not_clocked_in rejection
+  // at Confirm instead of just tolerating it.
   const [onBreak, setOnBreak] = useState(false);
   // Resolved once per lookup, right alongside onBreak above (same source --
   // checkinState.ts) -- lets the morning auto-select effect below read this
@@ -1382,24 +1382,6 @@ export default function KioskScreen({ navigation }: Props) {
             </Pressable>
           </View>
 
-          <Pressable
-            style={[
-              styles.breakButton,
-              (selection === 'BREAK_START' || selection === 'BREAK_END') && styles.breakButtonSelected
-            ]}
-            onPress={() => selectType(onBreak ? 'BREAK_END' : 'BREAK_START')}
-            disabled={isProcessing}
-          >
-            <Text
-              style={[
-                styles.breakButtonText,
-                (selection === 'BREAK_START' || selection === 'BREAK_END') && styles.typeButtonTextSelected
-              ]}
-            >
-              {onBreak ? '💪 Back from Break' : '☕ Start Break'}
-            </Text>
-          </Pressable>
-
           {selection === 'IN' && (
             <View style={styles.shiftSection}>
               <Text style={styles.shiftLabel}>Choose your shift</Text>
@@ -1416,6 +1398,35 @@ export default function KioskScreen({ navigation }: Props) {
                 ))}
               </View>
             </View>
+          )}
+
+          {/* onBreak included alongside alreadyCheckedInToday: the latter is
+              calendar-day-stamped (todayKey() in checkinState.ts) while the
+              on-device break marker isn't, so a break spanning midnight (IN
+              at 23:50, break starts/continues after the day rolls over)
+              would otherwise read alreadyCheckedInToday=false the next day
+              and hide "Back from Break" for someone who is actually on
+              break. onBreak=true always implies already checked in, so this
+              can't wrongly show the button for someone who never clocked
+              in. */}
+          {(alreadyCheckedInToday || onBreak) && (
+            <Pressable
+              style={[
+                styles.breakButton,
+                (selection === 'BREAK_START' || selection === 'BREAK_END') && styles.breakButtonSelected
+              ]}
+              onPress={() => selectType(onBreak ? 'BREAK_END' : 'BREAK_START')}
+              disabled={isProcessing}
+            >
+              <Text
+                style={[
+                  styles.breakButtonText,
+                  (selection === 'BREAK_START' || selection === 'BREAK_END') && styles.typeButtonTextSelected
+                ]}
+              >
+                {onBreak ? '💪 Back from Break' : '☕ Start Break'}
+              </Text>
+            </Pressable>
           )}
 
           {selection === 'BREAK_START' && (
