@@ -59,10 +59,24 @@ export function adminResetCode(sessionToken: string, employeeId: string) {
 // backend ignores it for OUT. undefined for OUT, or for an IN where nothing
 // was picked (falls back server-side to the admin-set schedule, same as
 // before this feature existed).
-export function kioskCheckin(pin: string, type: 'IN' | 'OUT', ot: boolean | undefined, branch: string | null, shift: string | undefined) {
+export function kioskCheckin(
+  pin: string,
+  type: 'IN' | 'OUT',
+  ot: boolean | undefined,
+  branch: string | null,
+  shift: string | undefined,
+  specialShiftSpansNextDay?: boolean
+) {
   return postAction<{ type: 'IN' | 'OUT'; timestamp: string; name: string; late?: boolean; ot?: boolean }>(
     'kioskCheckin',
-    { pin, type, ot: ot ? 'true' : undefined, branch: branch ?? undefined, shift },
+    {
+      pin,
+      type,
+      ot: ot ? 'true' : undefined,
+      branch: branch ?? undefined,
+      shift,
+      specialShiftSpansNextDay: specialShiftSpansNextDay ? 'true' : undefined
+    },
     KIOSK_TIMEOUT_MS
   );
 }

@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, StyleSheet, Pressable, ScrollView, ActivityIndicator } from 'react-native';
+import Slider from '@react-native-community/slider';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
 import Constants from 'expo-constants';
@@ -32,12 +33,11 @@ type Props = NativeStackScreenProps<RootStackParamList, 'Kiosk'>;
 const APP_VERSION = Constants.expoConfig?.version ?? 'unknown';
 
 const PIN_LENGTH = 4;
-const FEEDBACK_DURATION_MS = 2500;
+const FEEDBACK_DURATION_MS = 4000; // was 2500 -- too short to read (e.g. break minutes remaining) before it auto-dismissed
 const ERROR_FLASH_DURATION_MS = 1200;
 const CONFIRM_TIMEOUT_MS = 20000; // auto-cancel back to the PIN screen if nobody confirms -- shared kiosk, don't leave someone else's name up
 const AUTO_IN_START_HOUR = 5; // morning arrival window -- pre-select IN from this hour...
 const AUTO_IN_END_HOUR = 9; // ...up to (not including) this hour
-const AUTO_OUT_HOUR = 16; // nobody realistically checks IN this late -- pre-select OUT after this hour so the common case is a single tap on Confirm
 
 // Mirrors the backend's STANDARD_SHIFT_CHOICES (Attendance.gs) -- used ONLY
 // as a fallback when a PIN lookup ever comes back with an empty shifts
@@ -52,6 +52,24 @@ const DEFAULT_SHIFT_CHOICES = ['7:00-16:00', '7:30-16:30', '8:00-17:00'];
 // employee's own pick of how long they intend to be gone when starting a
 // break.
 const BREAK_DURATION_CHOICES = [15, 30, 45, 60];
+
+// Special Shift time sliders -- 15-min steps, same granularity as
+// BREAK_DURATION_CHOICES above. "H:MM"/"HH:MM" output, never zero-padded
+// hour, matching the backend's own isValidSpecialShiftSubmission_ regex
+// (Attendance.gs) exactly.
+const SPECIAL_SHIFT_STEP_MINUTES = 15;
+function minutesToClockLabel_(totalMinutes: number): string {
+  const h = Math.floor(totalMinutes / 60) % 24;
+  const m = totalMinutes % 60;
+  return `${h}:${String(m).padStart(2, '0')}`;
+}
+// Nearest 15-min step at or before `now` -- used as the Special Shift
+// start slider's default so it reads as "about now", not an arbitrary 0:00.
+function nowRoundedToStep_(): number {
+  const now = new Date();
+  const raw = now.getHours() * 60 + now.getMinutes();
+  return Math.floor(raw / SPECIAL_SHIFT_STEP_MINUTES) * SPECIAL_SHIFT_STEP_MINUTES;
+}
 
 // Mirrors the backend's DAILY_BREAK_BUDGET_MINUTES (Attendance.gs) -- used
 // ONLY to compute the offline ESTIMATE of remaining break minutes (see
@@ -177,7 +195,7 @@ function Keypad({
                   (light || schedule || danger) && styles.keyTextLight
                 ]}
               >
-                {key === 'clear' ? 'Clear' : key === 'back' ? '⌫' : key}
+                {key === 'clear' ? 'Clear\nล้าง' : key === 'back' ? '⌫' : key}
               </Text>
             </Pressable>
           ))}
@@ -250,6 +268,15 @@ export default function KioskScreen({ navigation }: Props) {
   // informational (BreakPlannedMinutes server-side), never compared against
   // the real elapsed time or used to flag/auto-end anything.
   const [selectedBreakDuration, setSelectedBreakDuration] = useState<number | null>(null);
+  // Special Shift sub-panel state -- see selectType/onConfirm below for how
+  // these get folded into selectedShift (as a "Special H:MM-H:MM" string,
+  // the same shape onConfirm already sends for a normal pick) rather than
+  // being their own separate field the rest of the Confirm plumbing would
+  // need to know about.
+  const [specialShiftOpen, setSpecialShiftOpen] = useState(false);
+  const [specialStartMinutes, setSpecialStartMinutes] = useState(0); // minutes since midnight, 0-1425, 15-min steps
+  const [specialEndMinutes, setSpecialEndMinutes] = useState(0);
+  const [specialEndsNextDay, setSpecialEndsNextDay] = useState(false);
   const [isLookingUp, setIsLookingUp] = useState(false);
   // Same reasoning as isConfirmingRef below -- state alone can't close a
   // same-tick double-invocation (e.g. a bounced touch on the 4th digit).
@@ -360,6 +387,8 @@ export default function KioskScreen({ navigation }: Props) {
     setShiftChoices([]);
     setSelectedShift(null);
     setSelectedBreakDuration(null);
+    setSpecialShiftOpen(false);
+    setSpecialEndsNextDay(false);
     setSelection(null);
     setOnBreak(false);
     setAlreadyCheckedInToday(false);
@@ -383,7 +412,52 @@ export default function KioskScreen({ navigation }: Props) {
     setSelection(next);
     setSelectedShift(null);
     setSelectedBreakDuration(null);
+    setSpecialShiftOpen(false);
   };
+
+  // Opens the Special Shift panel with sensible defaults -- start "now"
+  // (rounded to the nearest 15 min), end 8h later, auto-toggling to
+  // Tomorrow if that 8h span crosses midnight. Fully adjustable afterward;
+  // this is just a starting point so the sliders aren't parked at 0:00.
+  const openSpecialShift = () => {
+    const start = nowRoundedToStep_();
+    const spanMinutes = 8 * 60;
+    setSpecialStartMinutes(start);
+    setSpecialEndMinutes((start + spanMinutes) % (24 * 60));
+    setSpecialEndsNextDay(start + spanMinutes >= 24 * 60);
+    setSelectedShift(null);
+    setSpecialShiftOpen(true);
+  };
+
+  // Collapsing the panel via its own toggle (as opposed to switching away
+  // from IN entirely, which selectType already handles) must ALSO clear
+  // selectedShift -- otherwise the last-derived "Special H:MM-H:MM" string
+  // stays live with no visible trace of it in the UI, and canConfirm/
+  // onConfirm would silently submit that stale shift, or (offline) miss the
+  // Special-specific "needs internet" guard entirely since that guard
+  // itself keys off specialShiftOpen.
+  const closeSpecialShift = () => {
+    setSpecialShiftOpen(false);
+    setSelectedShift(null);
+  };
+
+  // Same-day end at or before the start time is almost certainly a mis-tap
+  // (forgot to toggle to Tomorrow), not a real request for a zero/negative
+  // -length shift -- blocked rather than silently wrapped to next day.
+  const specialShiftInvalid = specialShiftOpen && !specialEndsNextDay && specialEndMinutes <= specialStartMinutes;
+
+  // Keeps selectedShift (and therefore the existing canConfirm/onConfirm
+  // plumbing, unchanged) in sync with the sliders -- see
+  // isValidSpecialShiftSubmission_ (Attendance.gs) for the exact format this
+  // must match.
+  useEffect(() => {
+    if (!specialShiftOpen) return;
+    if (specialShiftInvalid) {
+      setSelectedShift(null);
+      return;
+    }
+    setSelectedShift(`Special ${minutesToClockLabel_(specialStartMinutes)}-${minutesToClockLabel_(specialEndMinutes)}`);
+  }, [specialShiftOpen, specialStartMinutes, specialEndMinutes, specialShiftInvalid]);
 
   // Prime the audio session once so the first check-in chime isn't delayed.
   useEffect(() => {
@@ -432,8 +506,13 @@ export default function KioskScreen({ navigation }: Props) {
     // again later in the same morning window doesn't re-default to IN even
     // though they already tapped it. The IN button itself is never hidden
     // or disabled by this, only which button starts pre-selected.
+    //
+    // No afternoon/evening OUT default (removed -- some employees take
+    // their break around the same hour this used to fire at; a distracted
+    // tap on an already-selected OUT could clock them out entirely when
+    // they only meant to start a break). Only the morning IN default
+    // remains; every other case leaves nothing pre-selected.
     if (hour >= AUTO_IN_START_HOUR && hour < AUTO_IN_END_HOUR && !alreadyCheckedInToday) setSelection('IN');
-    else if (hour >= AUTO_OUT_HOUR) setSelection('OUT');
   }, [lookupName, onBreak]);
 
   // Falls back to the on-device PIN->Name->shifts copy (see
@@ -484,7 +563,10 @@ export default function KioskScreen({ navigation }: Props) {
       if (!isConnected) {
         if (await tryLocalLookup(value)) return;
         await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-        showFeedback({ kind: 'error', message: "Code not recognized offline. Connect to the internet and try again." });
+        showFeedback({
+          kind: 'error',
+          message: 'Code not recognized offline. Connect to the internet and try again.\nออฟไลน์อยู่ ไม่พบรหัสนี้ กรุณาเชื่อมต่ออินเทอร์เน็ตแล้วลองใหม่'
+        });
         setPin('');
         return;
       }
@@ -595,7 +677,10 @@ export default function KioskScreen({ navigation }: Props) {
       // instead of just letting them tap Confirm again into the same wall.
       resetCheckin();
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      showFeedback({ kind: 'error', message: 'Could not save your check-in on this device. Please tell your admin.' });
+      showFeedback({
+        kind: 'error',
+        message: 'Could not save your check-in on this device. Please tell your admin.\nบันทึกข้อมูลบนเครื่องนี้ไม่ได้ กรุณาแจ้งแอดมิน'
+      });
       return;
     }
     resetCheckin();
@@ -729,12 +814,29 @@ export default function KioskScreen({ navigation }: Props) {
       const branch = await getDeviceBranch();
 
       if (!isConnected || forcedOffline) {
+        // Special Shift needs a live server round trip -- it's the one Kiosk
+        // action deliberately NOT wired into the offline queue (see
+        // openSpecialShift/specialShiftOpen), since a genuinely rare,
+        // ad-hoc action doesn't justify extending enqueueCheckin's payload
+        // shape and the sync/replay path just for this. Shown as a normal
+        // error, same as any other rejected tap, rather than silently
+        // falling through to queueOffline with a Special shift string it
+        // was never designed to carry.
+        if (type === 'IN' && specialShiftOpen) {
+          resetCheckin();
+          await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+          showFeedback({
+            kind: 'error',
+            message: 'Special Shift needs an internet connection -- try again once connected.\nกะพิเศษต้องเชื่อมต่ออินเทอร์เน็ต ลองใหม่อีกครั้งเมื่อเชื่อมต่อแล้ว'
+          });
+          return;
+        }
         await queueOffline(type, ot, branch, shift);
         return;
       }
 
       const currentPin = pin; // captured before resetCheckin below clears it -- setLocalOnBreak needs the real PIN
-      const res = await kioskCheckin(pin, type, ot, branch, shift ?? undefined);
+      const res = await kioskCheckin(pin, type, ot, branch, shift ?? undefined, type === 'IN' && specialShiftOpen && specialEndsNextDay);
 
       if (res.success) {
         resetCheckin();
@@ -1028,8 +1130,14 @@ export default function KioskScreen({ navigation }: Props) {
         locations={GRADIENT_LOCATIONS}
         style={styles.container}
       >
-        <Text style={[styles.title, styles.titleDanger]}>Admin Exit PIN</Text>
-        <Text style={styles.subtitleDanger}>This leaves Kiosk Mode — not for check-in</Text>
+        <Text style={[styles.title, styles.titleDanger]}>
+          Admin Exit PIN{'\n'}
+          <Text style={styles.thaiMedium}>รหัสออกจากโหมด Kiosk</Text>
+        </Text>
+        <Text style={styles.subtitleDanger}>
+          This leaves Kiosk Mode — not for check-in{'\n'}
+          <Text style={styles.thaiSmall}>ใช้สำหรับออกจากโหมด Kiosk เท่านั้น ไม่ใช่การเข้างาน</Text>
+        </Text>
 
         <View style={[styles.badge, styles.badgeDanger]}>
           <Text style={styles.badgeGlyph}>🔒</Text>
@@ -1040,10 +1148,10 @@ export default function KioskScreen({ navigation }: Props) {
         {isVerifyingExit && (
           <View style={styles.checkingRow}>
             <ActivityIndicator color={EXIT_ACCENT_DARK} />
-            <Text style={styles.checkingText}>Checking...</Text>
+            <Text style={styles.checkingText}>Checking... / กำลังตรวจสอบ...</Text>
           </View>
         )}
-        {exitError && !isVerifyingExit && <Text style={styles.errorText}>Incorrect PIN</Text>}
+        {exitError && !isVerifyingExit && <Text style={styles.errorText}>Incorrect PIN / รหัสไม่ถูกต้อง</Text>}
         <Pressable
           style={[styles.cornerButton, styles.cornerButtonExit]}
           onPress={() => {
@@ -1061,7 +1169,7 @@ export default function KioskScreen({ navigation }: Props) {
             setExitPin('');
           }}
         >
-          <Text style={styles.cornerButtonTextExit}>Cancel</Text>
+          <Text style={styles.cornerButtonTextExit}>Cancel / ยกเลิก</Text>
         </Pressable>
       </LinearGradient>
     );
@@ -1076,7 +1184,10 @@ export default function KioskScreen({ navigation }: Props) {
         locations={GRADIENT_LOCATIONS}
         style={styles.container}
       >
-        <Text style={[styles.title, styles.titleDark]}>Enter Your Code to View Schedule</Text>
+        <Text style={[styles.title, styles.titleDark]}>
+          Enter Your Code to View Schedule{'\n'}
+          <Text style={styles.thaiMedium}>กรอกรหัสเพื่อดูตารางงาน</Text>
+        </Text>
 
         <View style={[styles.badge, styles.badgeSchedule]}>
           <Text style={styles.badgeGlyph}>🗓️</Text>
@@ -1084,12 +1195,12 @@ export default function KioskScreen({ navigation }: Props) {
 
         <Dots length={PIN_LENGTH} filled={schedulePin.length} error={scheduleError} schedule />
         <Keypad onPress={onScheduleKeyPress} disabled={isLoadingSchedule} schedule />
-        {scheduleError && <Text style={styles.errorText}>Code not recognized</Text>}
+        {scheduleError && <Text style={styles.errorText}>Code not recognized / ไม่พบรหัสนี้</Text>}
 
         {isLoadingSchedule && (
           <View style={styles.checkingRow}>
             <ActivityIndicator color={SCHEDULE_ACCENT_DARK} />
-            <Text style={styles.checkingText}>Loading...</Text>
+            <Text style={styles.checkingText}>Loading... / กำลังโหลด...</Text>
           </View>
         )}
 
@@ -1097,7 +1208,7 @@ export default function KioskScreen({ navigation }: Props) {
           <View style={styles.retryBox}>
             <Text style={styles.retryMessage}>{scheduleIssue}</Text>
             <Pressable style={styles.retryButton} onPress={() => submitSchedulePin(schedulePin)}>
-              <Text style={styles.retryButtonText}>Try Again</Text>
+              <Text style={styles.retryButtonText}>Try Again / ลองอีกครั้ง</Text>
             </Pressable>
           </View>
         )}
@@ -1109,7 +1220,7 @@ export default function KioskScreen({ navigation }: Props) {
             setScheduleIssue(null);
           }}
         >
-          <Text style={styles.cornerButtonTextSchedule}>Cancel</Text>
+          <Text style={styles.cornerButtonTextSchedule}>Cancel / ยกเลิก</Text>
         </Pressable>
       </LinearGradient>
     );
@@ -1167,7 +1278,7 @@ export default function KioskScreen({ navigation }: Props) {
               {isLoadingSchedule ? (
                 <ActivityIndicator color="#fff" size="small" />
               ) : (
-                <Text style={styles.staleBannerButtonText}>Refresh</Text>
+                <Text style={styles.staleBannerButtonText}>Refresh / รีเฟรช</Text>
               )}
             </Pressable>
           </View>
@@ -1253,7 +1364,7 @@ export default function KioskScreen({ navigation }: Props) {
             setScheduleData(null);
           }}
         >
-          <Text style={styles.buttonText}>Done</Text>
+          <Text style={styles.buttonText}>Done / เสร็จสิ้น</Text>
         </Pressable>
       </LinearGradient>
     );
@@ -1263,22 +1374,30 @@ export default function KioskScreen({ navigation }: Props) {
     <>
       {feedback && feedback.kind === 'success' && (
         <View style={[styles.feedbackCard, feedback.type === 'IN' ? styles.feedbackIn : styles.feedbackOut]}>
-          <Text style={styles.feedbackType}>{feedback.type}</Text>
+          <Text style={styles.feedbackType}>
+            {feedback.type}
+            {'\n'}
+            <Text style={styles.thaiSmall}>{feedback.type === 'IN' ? 'เข้างาน' : 'ออกงาน'}</Text>
+          </Text>
           <Text style={styles.feedbackName}>{feedback.name}</Text>
           <Text style={styles.feedbackTime}>{new Date(feedback.timestamp).toLocaleTimeString()}</Text>
-          {feedback.late && <Text style={styles.feedbackLate}>Late</Text>}
+          {feedback.late && <Text style={styles.feedbackLate}>Late / มาสาย</Text>}
           {feedback.ot && <Text style={styles.feedbackLate}>OT</Text>}
-          {feedback.queued && <Text style={styles.feedbackLate}>Saved offline — will sync automatically</Text>}
+          {feedback.queued && <Text style={styles.feedbackLate}>Saved offline — will sync automatically{'\n'}บันทึกออฟไลน์ไว้แล้ว จะซิงค์อัตโนมัติ</Text>}
         </View>
       )}
       {feedback && feedback.kind === 'break' && (
         <View style={[styles.feedbackCard, styles.feedbackBreak]}>
-          <Text style={styles.feedbackType}>{feedback.type === 'BREAK_START' ? 'BREAK' : 'BACK'}</Text>
+          <Text style={styles.feedbackType}>
+            {feedback.type === 'BREAK_START' ? 'BREAK' : 'BACK'}
+            {'\n'}
+            <Text style={styles.thaiSmall}>{feedback.type === 'BREAK_START' ? 'กำลังพัก' : 'กลับมาแล้ว'}</Text>
+          </Text>
           <Text style={styles.feedbackName}>{feedback.name}</Text>
           <Text style={styles.feedbackTime}>{new Date(feedback.timestamp).toLocaleTimeString()}</Text>
           {feedback.type === 'BREAK_START' && feedback.durationMinutes != null && (
             <>
-              <Text style={styles.feedbackBigLabel}>BACK BY</Text>
+              <Text style={styles.feedbackBigLabel}>BACK BY / กลับภายใน</Text>
               <Text style={styles.feedbackBigValue}>
                 {new Date(new Date(feedback.timestamp).getTime() + feedback.durationMinutes * 60000).toLocaleTimeString([], {
                   hour: '2-digit',
@@ -1289,8 +1408,8 @@ export default function KioskScreen({ navigation }: Props) {
           )}
           {feedback.type === 'BREAK_END' && feedback.remainingMinutes != null && (
             <>
-              <Text style={styles.feedbackBigLabel}>BREAK TIME LEFT TODAY</Text>
-              <Text style={styles.feedbackBigValue}>{feedback.remainingMinutes} min</Text>
+              <Text style={styles.feedbackBigLabel}>BREAK TIME LEFT TODAY / เวลาพักที่เหลือวันนี้</Text>
+              <Text style={styles.feedbackBigValue}>{feedback.remainingMinutes} min / นาที</Text>
             </>
           )}
           {feedback.type === 'BREAK_END' && feedback.remainingMinutes == null && feedback.estimatedRemainingMinutes != null && (
@@ -1299,11 +1418,11 @@ export default function KioskScreen({ navigation }: Props) {
                   device-side ESTIMATE (see breakMinutesCache.ts) -- always
                   marked as such, never presented with the same confidence as
                   the confirmed online figure above. */}
-              <Text style={styles.feedbackBigLabel}>BREAK TIME LEFT TODAY (ESTIMATE)</Text>
-              <Text style={styles.feedbackBigValue}>~{feedback.estimatedRemainingMinutes} min</Text>
+              <Text style={styles.feedbackBigLabel}>BREAK TIME LEFT TODAY (ESTIMATE) / โดยประมาณ</Text>
+              <Text style={styles.feedbackBigValue}>~{feedback.estimatedRemainingMinutes} min / นาที</Text>
             </>
           )}
-          {feedback.queued && <Text style={styles.feedbackLate}>Saved offline — will sync automatically</Text>}
+          {feedback.queued && <Text style={styles.feedbackLate}>Saved offline — will sync automatically{'\n'}บันทึกออฟไลน์ไว้แล้ว จะซิงค์อัตโนมัติ</Text>}
         </View>
       )}
       {feedback && feedback.kind === 'error' && (
@@ -1339,7 +1458,10 @@ export default function KioskScreen({ navigation }: Props) {
 
       {lookupName === null ? (
         <>
-          <Text style={[styles.title, styles.titleDark]}>Enter Your Code</Text>
+          <Text style={[styles.title, styles.titleDark]}>
+            Enter Your Code{'\n'}
+            <Text style={styles.thaiMedium}>กรอกรหัสของคุณ</Text>
+          </Text>
 
           <View style={styles.badge}>
             <Text style={styles.badgeGlyph}>👤</Text>
@@ -1351,7 +1473,7 @@ export default function KioskScreen({ navigation }: Props) {
           {isLookingUp && (
             <View style={styles.checkingRow}>
               <ActivityIndicator color={ACCENT_DARK} />
-              <Text style={styles.checkingText}>Checking...</Text>
+              <Text style={styles.checkingText}>Checking... / กำลังตรวจสอบ...</Text>
             </View>
           )}
 
@@ -1359,19 +1481,36 @@ export default function KioskScreen({ navigation }: Props) {
             <View style={styles.retryBox}>
               <Text style={styles.retryMessage}>{lookupIssue}</Text>
               <Pressable style={styles.retryButton} onPress={() => lookupPin(pin)}>
-                <Text style={styles.retryButtonText}>Try Again</Text>
+                <Text style={styles.retryButtonText}>Try Again / ลองอีกครั้ง</Text>
               </Pressable>
             </View>
           )}
         </>
       ) : (
-        <>
-          <Text style={[styles.title, styles.titleDark]}>Hi, {lookupName}</Text>
+        // ScrollView (not a plain Fragment) -- the Special Shift panel plus
+        // the Thai sub-lines/bigger buttons/padding added this round can
+        // push this branch's total content taller than the real Kiosk
+        // tablet's screen (the container above has no scroll of its own,
+        // fixed height, justifyContent:'center'). contentContainerStyle
+        // keeps the original "centered when short" look for the common
+        // case, while still allowing a scroll down to Confirm when a tall
+        // combination (e.g. Special Shift panel open + Start Break visible)
+        // would otherwise clip it.
+        <ScrollView style={styles.checkinScroll} contentContainerStyle={styles.checkinScrollContent} showsVerticalScrollIndicator={false}>
+          <Text style={[styles.title, styles.titleDark]}>
+            Hi, {lookupName}
+            {'\n'}
+            <Text style={styles.thaiMedium}>สวัสดี, {lookupName}</Text>
+          </Text>
           {/* onBreak gets its own subtitle: IN/OUT/OUT OT are hidden below
               while on break (see typeRow's !onBreak guard), so "Select IN or
               OUT" would be actively wrong -- there's nothing to select but
               Back from Break itself. */}
-          <Text style={styles.subtitleDark}>{onBreak ? 'Tap below when you\'re back' : 'Select IN or OUT, then confirm'}</Text>
+          <Text style={styles.subtitleDark}>
+            {onBreak ? 'Tap below when you\'re back' : 'Select IN or OUT, then confirm'}
+            {'\n'}
+            <Text style={styles.thaiSmall}>{onBreak ? 'กลับมาแล้วกดด้านล่าง' : 'เลือก IN หรือ OUT แล้วกดยืนยัน'}</Text>
+          </Text>
 
           {/* Hidden entirely while on break -- IN is impossible (already
               clocked in), and OUT/OUT OT, though technically valid (a
@@ -1390,14 +1529,20 @@ export default function KioskScreen({ navigation }: Props) {
                   onPress={() => selectType('IN')}
                   disabled={isProcessing}
                 >
-                  <Text style={[styles.typeButtonInText, selection === 'IN' && styles.typeButtonTextSelected]}>IN</Text>
+                  <Text style={[styles.typeButtonInText, selection === 'IN' && styles.typeButtonTextSelected]}>
+                    IN{'\n'}
+                    <Text style={styles.thaiSmall}>เข้างาน</Text>
+                  </Text>
                 </Pressable>
                 <Pressable
                   style={[styles.typeButton, styles.typeButtonOut, selection === 'OUT' && styles.typeButtonOutSelected]}
                   onPress={() => selectType('OUT')}
                   disabled={isProcessing}
                 >
-                  <Text style={[styles.typeButtonOutText, selection === 'OUT' && styles.typeButtonTextSelected]}>OUT</Text>
+                  <Text style={[styles.typeButtonOutText, selection === 'OUT' && styles.typeButtonTextSelected]}>
+                    OUT{'\n'}
+                    <Text style={styles.thaiSmall}>ออกงาน</Text>
+                  </Text>
                 </Pressable>
                 <Pressable
                   style={[styles.typeButton, styles.typeButtonOt, selection === 'OUT_OT' && styles.typeButtonOtSelected]}
@@ -1405,26 +1550,130 @@ export default function KioskScreen({ navigation }: Props) {
                   disabled={isProcessing}
                 >
                   <Text style={[styles.typeButtonOtText, selection === 'OUT_OT' && styles.typeButtonTextSelected]}>
-                    OUT OT
+                    OUT OT{'\n'}
+                    <Text style={styles.thaiSmall}>ออก OT</Text>
                   </Text>
                 </Pressable>
               </View>
 
               {selection === 'IN' && (
                 <View style={styles.shiftSection}>
-                  <Text style={styles.shiftLabel}>Choose your shift</Text>
+                  <Text style={styles.shiftLabel}>
+                    Choose your shift{'\n'}
+                    <Text style={styles.thaiTiny}>เลือกกะทำงาน</Text>
+                  </Text>
                   <View style={styles.shiftGrid}>
                     {shiftChoices.map((s) => (
                       <Pressable
                         key={s}
                         style={[styles.shiftButton, selectedShift === s && styles.shiftButtonSelected]}
-                        onPress={() => setSelectedShift(s)}
+                        onPress={() => {
+                          closeSpecialShift(); // closeSpecialShift's own setSelectedShift(null) is superseded by this one, same batch
+                          setSelectedShift(s);
+                        }}
                         disabled={isProcessing}
                       >
                         <Text style={[styles.shiftButtonText, selectedShift === s && styles.shiftButtonTextSelected]}>{s}</Text>
                       </Pressable>
                     ))}
+                    <Pressable
+                      style={[styles.shiftButton, styles.specialShiftButton, specialShiftOpen && styles.shiftButtonSelected]}
+                      onPress={() => (specialShiftOpen ? closeSpecialShift() : openSpecialShift())}
+                      disabled={isProcessing}
+                    >
+                      <Text style={[styles.shiftButtonText, specialShiftOpen && styles.shiftButtonTextSelected]}>
+                        🕐 Special Shift{'\n'}
+                        <Text style={styles.thaiSmall}>กะพิเศษ</Text>
+                      </Text>
+                    </Pressable>
                   </View>
+
+                  {specialShiftOpen && (
+                    <View style={styles.specialShiftPanel}>
+                      <View style={styles.specialShiftRow}>
+                        <Text style={styles.specialShiftFieldLabel}>
+                          Start time (Today){'\n'}
+                          <Text style={styles.thaiTiny}>เวลาเริ่ม (วันนี้)</Text>
+                        </Text>
+                        <Text style={styles.specialShiftTimeValue}>{minutesToClockLabel_(specialStartMinutes)}</Text>
+                      </View>
+                      <Slider
+                        style={styles.specialShiftSlider}
+                        minimumValue={0}
+                        maximumValue={24 * 60 - SPECIAL_SHIFT_STEP_MINUTES}
+                        step={SPECIAL_SHIFT_STEP_MINUTES}
+                        value={specialStartMinutes}
+                        onValueChange={setSpecialStartMinutes}
+                        minimumTrackTintColor={TEAL}
+                        disabled={isProcessing}
+                      />
+
+                      <View style={styles.specialShiftRow}>
+                        <Text style={styles.specialShiftFieldLabel}>
+                          Ends{'\n'}
+                          <Text style={styles.thaiTiny}>สิ้นสุด</Text>
+                        </Text>
+                        <View style={styles.specialShiftDayToggle}>
+                          <Pressable
+                            style={[styles.specialShiftDayOption, !specialEndsNextDay && styles.specialShiftDayOptionSelected]}
+                            onPress={() => setSpecialEndsNextDay(false)}
+                            disabled={isProcessing}
+                          >
+                            <Text style={[styles.specialShiftDayOptionText, !specialEndsNextDay && styles.specialShiftDayOptionTextSelected]}>
+                              Today{'\n'}
+                              <Text style={styles.thaiTiny}>วันนี้</Text>
+                            </Text>
+                          </Pressable>
+                          <Pressable
+                            style={[styles.specialShiftDayOption, specialEndsNextDay && styles.specialShiftDayOptionSelected]}
+                            onPress={() => setSpecialEndsNextDay(true)}
+                            disabled={isProcessing}
+                          >
+                            <Text style={[styles.specialShiftDayOptionText, specialEndsNextDay && styles.specialShiftDayOptionTextSelected]}>
+                              Tomorrow{'\n'}
+                              <Text style={styles.thaiTiny}>พรุ่งนี้</Text>
+                            </Text>
+                          </Pressable>
+                        </View>
+                      </View>
+
+                      <View style={styles.specialShiftRow}>
+                        <Text style={styles.specialShiftFieldLabel}>
+                          End time{'\n'}
+                          <Text style={styles.thaiTiny}>เวลาเลิก</Text>
+                        </Text>
+                        <Text style={styles.specialShiftTimeValue}>{minutesToClockLabel_(specialEndMinutes)}</Text>
+                      </View>
+                      <Slider
+                        style={styles.specialShiftSlider}
+                        minimumValue={0}
+                        maximumValue={24 * 60 - SPECIAL_SHIFT_STEP_MINUTES}
+                        step={SPECIAL_SHIFT_STEP_MINUTES}
+                        value={specialEndMinutes}
+                        onValueChange={setSpecialEndMinutes}
+                        minimumTrackTintColor={TEAL}
+                        disabled={isProcessing}
+                      />
+
+                      {specialShiftInvalid ? (
+                        <Text style={styles.specialShiftWarning}>
+                          End time must be after start, or choose Tomorrow.{'\n'}
+                          <Text style={styles.thaiTiny}>เวลาเลิกต้องมากกว่าเวลาเริ่ม หรือเลือกพรุ่งนี้</Text>
+                        </Text>
+                      ) : (
+                        <Text style={styles.specialShiftSummary}>
+                          Special Shift: {minutesToClockLabel_(specialStartMinutes)} (Today) {'→'} {minutesToClockLabel_(specialEndMinutes)} (
+                          {specialEndsNextDay ? 'Tomorrow' : 'Today'})
+                        </Text>
+                      )}
+                      {(!isConnected || forcedOffline) && (
+                        <Text style={styles.specialShiftWarning}>
+                          Needs an internet connection to submit.{'\n'}
+                          <Text style={styles.thaiTiny}>ต้องเชื่อมต่ออินเทอร์เน็ตก่อนถึงจะบันทึกได้</Text>
+                        </Text>
+                      )}
+                    </View>
+                  )}
                 </View>
               )}
             </>
@@ -1460,13 +1709,18 @@ export default function KioskScreen({ navigation }: Props) {
                 ]}
               >
                 {onBreak ? '💪 Back from Break' : '☕ Start Break'}
+                {'\n'}
+                <Text style={onBreak ? styles.thaiMedium : styles.thaiSmall}>{onBreak ? 'กลับจากพัก' : 'เริ่มพัก'}</Text>
               </Text>
             </Pressable>
           )}
 
           {selection === 'BREAK_START' && (
             <View style={styles.shiftSection}>
-              <Text style={styles.shiftLabel}>How long is your break?</Text>
+              <Text style={styles.shiftLabel}>
+                How long is your break?{'\n'}
+                <Text style={styles.thaiTiny}>จะพักนานแค่ไหน?</Text>
+              </Text>
               <View style={styles.shiftGrid}>
                 {BREAK_DURATION_CHOICES.map((minutes) => (
                   <Pressable
@@ -1476,7 +1730,7 @@ export default function KioskScreen({ navigation }: Props) {
                     disabled={isProcessing}
                   >
                     <Text style={[styles.shiftButtonText, selectedBreakDuration === minutes && styles.shiftButtonTextSelected]}>
-                      {minutes} min
+                      {minutes} min / {minutes} นาที
                     </Text>
                   </Pressable>
                 ))}
@@ -1492,26 +1746,32 @@ export default function KioskScreen({ navigation }: Props) {
             {isProcessing ? (
               <ActivityIndicator color={TEXT} />
             ) : (
-              <Text style={[styles.confirmButtonText, !canConfirm && styles.confirmButtonTextDisabled]}>Confirm</Text>
+              <Text style={[styles.confirmButtonText, !canConfirm && styles.confirmButtonTextDisabled]}>
+                Confirm{'\n'}
+                <Text style={[styles.thaiMedium, !canConfirm && styles.confirmButtonTextDisabled]}>ยืนยัน</Text>
+              </Text>
             )}
           </Pressable>
 
           <Pressable style={styles.cancelLink} onPress={resetCheckin} disabled={isProcessing}>
-            <Text style={styles.cancelLinkText}>Not you? Cancel</Text>
+            <Text style={styles.cancelLinkText}>
+              Not you? Cancel{'\n'}
+              <Text style={styles.thaiTiny}>ไม่ใช่คุณ? ยกเลิก</Text>
+            </Text>
           </Pressable>
-        </>
+        </ScrollView>
       )}
 
       {feedbackOverlay}
 
       {lookupName === null && (
         <Pressable style={[styles.scheduleButton, styles.cornerButtonLight]} onPress={() => setMode('scheduleEntry')}>
-          <Text style={styles.cornerButtonTextLight}>My Schedule</Text>
+          <Text style={styles.cornerButtonTextLight}>My Schedule / ตารางงาน</Text>
         </Pressable>
       )}
       {lookupName === null && (
         <Pressable style={[styles.cornerButton, styles.cornerButtonLight]} onPress={() => setMode('exit')}>
-          <Text style={styles.cornerButtonTextLight}>Admin</Text>
+          <Text style={styles.cornerButtonTextLight}>Admin / แอดมิน</Text>
         </Pressable>
       )}
       {lookupName === null && <Text style={styles.versionText}>v{APP_VERSION}</Text>}
@@ -1594,10 +1854,31 @@ const GRADIENT_LOCATIONS: [number, number] = [0, 0.68];
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#000', alignItems: 'center', justifyContent: 'center', padding: 24 },
-  title: { color: TEXT, fontSize: 22, fontFamily: FONT_DISPLAY_BOLD, marginBottom: 8, textAlign: 'center' },
+  // See the ScrollView wrapping the post-lookup (Hi, {name}) branch. flex:1
+  // (not just alignSelf:'stretch') is load-bearing here: without an actual
+  // height bound, an RN ScrollView sizes to its full content height instead
+  // of being clamped by its parent, so it would never scroll at all -- just
+  // grow taller than the screen and get centered by the container's own
+  // justifyContent:'center', overflowing top and bottom with nothing
+  // reachable. flex:1 makes it fill the container's real (bounded) height
+  // instead, so content taller than that genuinely scrolls;
+  // checkinScrollContent's flexGrow:1 + centering below still keeps the
+  // original "centered when short" look for the common case.
+  checkinScroll: { flex: 1, width: '100%' },
+  checkinScrollContent: { flexGrow: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: 12 },
+  // Thai sub-line tiers -- English stays primary (the existing styles below,
+  // now all a notch larger per the owner's sizing request), Thai rides along
+  // underneath as a nested <Text>{'\n'}<Text style={thaiXxx}> so it inherits
+  // the parent's color automatically instead of needing its own per context.
+  // Three sizes only, picked by how big the English line next to it is, not
+  // one-off per site.
+  thaiTiny: { fontSize: 11, fontFamily: FONT_BODY_SEMIBOLD },
+  thaiSmall: { fontSize: 13, fontFamily: FONT_BODY_SEMIBOLD },
+  thaiMedium: { fontSize: 15, fontFamily: FONT_BODY_SEMIBOLD },
+  title: { color: TEXT, fontSize: 25, fontFamily: FONT_DISPLAY_BOLD, marginBottom: 8, textAlign: 'center' },
   titleDark: { color: TEXT },
   titleDanger: { color: '#3A1210' },
-  subtitleDark: { color: TEXT_MUTED, fontSize: 15, fontFamily: FONT_BODY_MEDIUM, marginBottom: 8 },
+  subtitleDark: { color: TEXT_MUTED, fontSize: 16.5, fontFamily: FONT_BODY_MEDIUM, marginBottom: 8, textAlign: 'center' },
   monthNavRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 18, marginBottom: 4 },
   monthNavButton: { padding: 8, borderRadius: 999 },
   monthNavButtonDisabled: { opacity: 0.3 },
@@ -1621,7 +1902,7 @@ const styles = StyleSheet.create({
   staleBannerText: { flex: 1, color: '#8A5A1E', fontSize: 12, fontFamily: FONT_BODY_MEDIUM },
   staleBannerButton: { backgroundColor: SCHEDULE_ACCENT_DARK, borderRadius: 999, paddingVertical: 7, paddingHorizontal: 16, minWidth: 64, alignItems: 'center' },
   staleBannerButtonText: { color: '#fff', fontSize: 12, fontFamily: FONT_DISPLAY_BOLD },
-  subtitleDanger: { color: '#A9645D', fontSize: 13, fontFamily: FONT_BODY_MEDIUM, marginBottom: 8, textAlign: 'center' },
+  subtitleDanger: { color: '#A9645D', fontSize: 14.5, fontFamily: FONT_BODY_MEDIUM, marginBottom: 8, textAlign: 'center' },
   badge: {
     width: 64,
     height: 64,
@@ -1641,48 +1922,49 @@ const styles = StyleSheet.create({
   netDotOnline: { backgroundColor: '#7cb987' },
   netDotOffline: { backgroundColor: '#c0392b' },
   retryBox: { marginTop: 20, alignItems: 'center' },
-  retryMessage: { color: '#C0392B', fontSize: 13, fontFamily: FONT_BODY_MEDIUM, textAlign: 'center', marginBottom: 10, maxWidth: 280 },
-  retryButton: { backgroundColor: TEXT, borderRadius: 999, paddingVertical: 12, paddingHorizontal: 32 },
-  retryButtonText: { color: '#fff', fontSize: 15, fontFamily: FONT_DISPLAY_BOLD },
+  retryMessage: { color: '#C0392B', fontSize: 14.5, fontFamily: FONT_BODY_MEDIUM, textAlign: 'center', marginBottom: 10, maxWidth: 300 },
+  retryButton: { backgroundColor: TEXT, borderRadius: 999, paddingVertical: 14, paddingHorizontal: 34 },
+  retryButtonText: { color: '#fff', fontSize: 16.5, fontFamily: FONT_DISPLAY_BOLD, textAlign: 'center' },
   confirmButton: {
-    marginTop: 32,
+    marginTop: 44, // extra separation from Start Break/the shift pickers above -- was 32, read as too close to Start Break specifically
     // Bold, saturated green (not the soft accent blue used elsewhere) so
     // Confirm reads as THE action to take, at a glance, distinct from every
     // other pastel button on this screen.
     backgroundColor: CONFIRM_GREEN,
     borderRadius: 999,
-    paddingVertical: 18,
+    paddingVertical: 22, // was 18
     paddingHorizontal: 64,
     alignItems: 'center'
   },
   confirmButtonDisabled: { backgroundColor: '#DCE9F5' },
   checkingRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 24 },
-  checkingText: { color: TEXT_MUTED, fontSize: 14, fontFamily: FONT_BODY_SEMIBOLD },
+  checkingText: { color: TEXT_MUTED, fontSize: 15.5, fontFamily: FONT_BODY_SEMIBOLD },
   cancelLink: {
     marginTop: 20,
     backgroundColor: CARD,
     borderWidth: 1,
     borderColor: BORDER,
     borderRadius: 999,
-    paddingVertical: 10,
-    paddingHorizontal: 20
+    paddingVertical: 12,
+    paddingHorizontal: 22
   },
-  cancelLinkText: { color: TEXT_MUTED, fontSize: 13, fontFamily: FONT_BODY_BOLD },
+  cancelLinkText: { color: TEXT_MUTED, fontSize: 14.5, fontFamily: FONT_BODY_BOLD, textAlign: 'center' },
   subtitle: { color: 'rgba(255,255,255,0.6)', fontSize: 15, marginBottom: 24 },
   typeRow: { flexDirection: 'row', gap: 12, marginTop: 20, marginBottom: 8 },
   typeButton: {
     borderRadius: 20,
-    paddingVertical: 18,
+    paddingVertical: 22, // was 18 -- bigger touch target + room for the Thai sub-line
     paddingHorizontal: 22,
-    borderWidth: 2
+    borderWidth: 2,
+    alignItems: 'center'
   },
   breakButton: {
     alignSelf: 'center',
-    width: '60%',
+    width: '64%',
     marginTop: 28, // extra separation from typeRow above (beyond typeRow's own marginBottom: 8) so this reads as a distinct, secondary action, not a fourth IN/OUT/OUT OT button
     marginBottom: 8,
     borderRadius: 16,
-    paddingVertical: 12,
+    paddingVertical: 15, // was 12
     paddingHorizontal: 12,
     borderWidth: 2,
     borderColor: TEAL_BORDER,
@@ -1690,7 +1972,7 @@ const styles = StyleSheet.create({
     alignItems: 'center'
   },
   breakButtonSelected: { backgroundColor: TEAL, borderColor: TEAL },
-  breakButtonText: { color: TEAL, fontSize: 15, fontFamily: FONT_DISPLAY_EXTRABOLD },
+  breakButtonText: { color: TEAL, fontSize: 16.5, fontFamily: FONT_DISPLAY_EXTRABOLD, textAlign: 'center' },
   // Sole button on screen while on break (typeRow hidden) -- bigger and
   // full-width instead of the smaller "secondary action" size breakButton
   // normally has next to IN/OUT/OUT OT. Deliberately leaves
@@ -1703,9 +1985,9 @@ const styles = StyleSheet.create({
   breakButtonPrimary: {
     width: '100%',
     marginTop: 20,
-    paddingVertical: 20
+    paddingVertical: 24 // was 20
   },
-  breakButtonPrimaryText: { fontSize: 19 },
+  breakButtonPrimaryText: { fontSize: 21 }, // was 19
   feedbackBreak: { backgroundColor: TEAL },
   typeButtonIn: { backgroundColor: SAGE_BG, borderColor: SAGE_BORDER },
   typeButtonOut: { backgroundColor: ROSE_BG, borderColor: ROSE_BORDER },
@@ -1716,9 +1998,9 @@ const styles = StyleSheet.create({
   // what theme is picked later.
   typeButtonOutSelected: { backgroundColor: ROSE_TEXT, borderColor: ROSE_TEXT },
   typeButtonOtSelected: { backgroundColor: BUTTER, borderColor: BUTTER },
-  typeButtonInText: { color: SAGE, fontSize: 17, fontFamily: FONT_DISPLAY_EXTRABOLD },
-  typeButtonOutText: { color: ROSE_TEXT, fontSize: 17, fontFamily: FONT_DISPLAY_EXTRABOLD },
-  typeButtonOtText: { color: BUTTER, fontSize: 17, fontFamily: FONT_DISPLAY_EXTRABOLD },
+  typeButtonInText: { color: SAGE, fontSize: 19, fontFamily: FONT_DISPLAY_EXTRABOLD, textAlign: 'center' },
+  typeButtonOutText: { color: ROSE_TEXT, fontSize: 19, fontFamily: FONT_DISPLAY_EXTRABOLD, textAlign: 'center' },
+  typeButtonOtText: { color: BUTTER, fontSize: 19, fontFamily: FONT_DISPLAY_EXTRABOLD, textAlign: 'center' },
   typeButtonTextSelected: { color: '#fff' },
   // The IN-only shift picker -- reuses the Sky accent (ACCENT/ACCENT_BG/
   // BORDER) already used for Confirm below, rather than borrowing the
@@ -1727,7 +2009,7 @@ const styles = StyleSheet.create({
   shiftSection: { width: '100%', maxWidth: 420, marginTop: 4 },
   shiftLabel: {
     color: TEXT_MUTED,
-    fontSize: 13,
+    fontSize: 14.5,
     fontFamily: FONT_BODY_EXTRABOLD,
     textAlign: 'center',
     marginBottom: 10,
@@ -1740,12 +2022,60 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     borderColor: BORDER,
     backgroundColor: CARD,
-    paddingVertical: 14,
+    paddingVertical: 17, // was 14
     alignItems: 'center'
   },
   shiftButtonSelected: { backgroundColor: ACCENT, borderColor: ACCENT },
-  shiftButtonText: { color: TEXT, fontSize: 16, fontFamily: FONT_BODY_EXTRABOLD },
+  shiftButtonText: { color: TEXT, fontSize: 17.5, fontFamily: FONT_BODY_EXTRABOLD, textAlign: 'center' },
   shiftButtonTextSelected: { color: '#fff' },
+  // Deliberately styled via the same shiftButton/shiftButtonSelected base as
+  // the normal shift choices (just a border-color accent) -- reads as one
+  // more option in the same family, not a visually separate feature.
+  specialShiftButton: { borderColor: TEAL_BORDER },
+  specialShiftPanel: {
+    marginTop: 14,
+    borderRadius: 16,
+    borderWidth: 2,
+    borderColor: TEAL_BORDER,
+    backgroundColor: TEAL_BG,
+    padding: 14,
+    gap: 4
+  },
+  specialShiftRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 8
+  },
+  specialShiftFieldLabel: { color: TEXT_MUTED, fontSize: 13, fontFamily: FONT_BODY_EXTRABOLD },
+  specialShiftTimeValue: { color: TEAL, fontSize: 20, fontFamily: FONT_DISPLAY_EXTRABOLD },
+  specialShiftSlider: { width: '100%', height: 36 },
+  specialShiftDayToggle: { flexDirection: 'row', gap: 8 },
+  specialShiftDayOption: {
+    borderRadius: 999,
+    borderWidth: 2,
+    borderColor: TEAL_BORDER,
+    backgroundColor: CARD,
+    paddingVertical: 6,
+    paddingHorizontal: 14
+  },
+  specialShiftDayOptionSelected: { backgroundColor: TEAL, borderColor: TEAL },
+  specialShiftDayOptionText: { color: TEAL, fontSize: 13, fontFamily: FONT_BODY_EXTRABOLD },
+  specialShiftDayOptionTextSelected: { color: '#fff' },
+  specialShiftSummary: {
+    marginTop: 10,
+    color: TEXT,
+    fontSize: 13.5,
+    fontFamily: FONT_BODY_SEMIBOLD,
+    textAlign: 'center'
+  },
+  specialShiftWarning: {
+    marginTop: 10,
+    color: '#C0392B',
+    fontSize: 12.5,
+    fontFamily: FONT_BODY_BOLD,
+    textAlign: 'center'
+  },
   dots: { flexDirection: 'row', gap: 20, marginTop: 20, marginBottom: 36 },
   dot: {
     width: 22,
@@ -1762,13 +2092,13 @@ const styles = StyleSheet.create({
   dotSchedule: { borderColor: SCHEDULE_BORDER }, // light outline so empty dots are visible on the violet Schedule background
   dotFilledSchedule: { backgroundColor: SCHEDULE_ACCENT_DARK, borderColor: SCHEDULE_ACCENT_DARK },
   dotError: { borderColor: '#c0392b', backgroundColor: '#c0392b' },
-  errorText: { color: '#C0392B', fontSize: 14, fontFamily: FONT_BODY_SEMIBOLD, marginTop: 20 },
+  errorText: { color: '#C0392B', fontSize: 15.5, fontFamily: FONT_BODY_SEMIBOLD, marginTop: 20, textAlign: 'center' },
   keypad: { gap: 16 },
   keypadRow: { flexDirection: 'row', gap: 16 },
   key: {
-    width: 84,
-    height: 84,
-    borderRadius: 42,
+    width: 92, // was 84 -- bigger touch target
+    height: 92,
+    borderRadius: 46,
     backgroundColor: 'rgba(255,255,255,0.1)',
     alignItems: 'center',
     justifyContent: 'center'
@@ -1776,8 +2106,8 @@ const styles = StyleSheet.create({
   keyDanger: { backgroundColor: '#ffffff', borderWidth: 1.5, borderColor: EXIT_BORDER },
   keyLight: { backgroundColor: '#ffffff', borderWidth: 1, borderColor: BORDER },
   keySchedule: { backgroundColor: '#ffffff', borderWidth: 1.5, borderColor: SCHEDULE_BORDER },
-  keyText: { color: '#fff', fontSize: 30, fontFamily: FONT_DISPLAY_BOLD },
-  keyTextSmall: { color: 'rgba(255,255,255,0.7)', fontSize: 16, fontFamily: FONT_BODY_BOLD },
+  keyText: { color: '#fff', fontSize: 32, fontFamily: FONT_DISPLAY_BOLD },
+  keyTextSmall: { color: 'rgba(255,255,255,0.7)', fontSize: 14, fontFamily: FONT_BODY_BOLD, textAlign: 'center' },
   keyTextLight: { color: TEXT },
   scheduleButton: {
     position: 'absolute',
@@ -1793,21 +2123,21 @@ const styles = StyleSheet.create({
     bottom: 24,
     right: 24,
     backgroundColor: 'rgba(255,255,255,0.15)',
-    paddingVertical: 8,
-    paddingHorizontal: 16,
+    paddingVertical: 10,
+    paddingHorizontal: 18,
     borderRadius: 999
   },
-  cornerButtonText: { color: 'rgba(255,255,255,0.7)', fontSize: 12, fontFamily: FONT_DISPLAY_SEMIBOLD },
+  cornerButtonText: { color: 'rgba(255,255,255,0.7)', fontSize: 13.5, fontFamily: FONT_DISPLAY_SEMIBOLD },
   cornerButtonLight: { backgroundColor: ACCENT_BG },
-  cornerButtonTextLight: { color: ACCENT_DARK, fontSize: 12, fontFamily: FONT_DISPLAY_BOLD },
+  cornerButtonTextLight: { color: ACCENT_DARK, fontSize: 13.5, fontFamily: FONT_DISPLAY_BOLD },
   // Schedule/Exit corner buttons ("Cancel") follow those screens' own
   // accent instead of the main Sky one -- swapped in for cornerButtonLight
   // on just those two screens, same structural cornerButton/scheduleButton
   // base underneath.
   cornerButtonSchedule: { backgroundColor: SCHEDULE_ACCENT_BG },
-  cornerButtonTextSchedule: { color: SCHEDULE_ACCENT_DARK, fontSize: 12, fontFamily: FONT_DISPLAY_BOLD },
+  cornerButtonTextSchedule: { color: SCHEDULE_ACCENT_DARK, fontSize: 13.5, fontFamily: FONT_DISPLAY_BOLD },
   cornerButtonExit: { backgroundColor: EXIT_ACCENT_BG },
-  cornerButtonTextExit: { color: EXIT_ACCENT_DARK, fontSize: 12, fontFamily: FONT_DISPLAY_BOLD },
+  cornerButtonTextExit: { color: EXIT_ACCENT_DARK, fontSize: 13.5, fontFamily: FONT_DISPLAY_BOLD },
   versionText: {
     position: 'absolute',
     bottom: 4,
@@ -1834,30 +2164,32 @@ const styles = StyleSheet.create({
   feedbackIn: { backgroundColor: SAGE },
   feedbackOut: { backgroundColor: ROSE_TEXT },
   feedbackError: { backgroundColor: '#c0392b' },
-  feedbackType: { color: '#fff', fontSize: 22, fontFamily: FONT_DISPLAY_EXTRABOLD, letterSpacing: 2 },
-  feedbackName: { color: '#fff', fontSize: 17, fontFamily: FONT_DISPLAY_BOLD, marginTop: 4, textAlign: 'center' },
-  feedbackTime: { color: 'rgba(255,255,255,0.8)', fontSize: 13, fontFamily: FONT_BODY_MEDIUM, marginTop: 2 },
+  feedbackType: { color: '#fff', fontSize: 24, fontFamily: FONT_DISPLAY_EXTRABOLD, letterSpacing: 2, textAlign: 'center' },
+  feedbackName: { color: '#fff', fontSize: 18.5, fontFamily: FONT_DISPLAY_BOLD, marginTop: 4, textAlign: 'center' },
+  feedbackTime: { color: 'rgba(255,255,255,0.8)', fontSize: 14, fontFamily: FONT_BODY_MEDIUM, marginTop: 2 },
   // Used by the Break feedback card only -- "Back by HH:MM" (Start Break)
   // and "N min left today" (Back from Break) are the whole point of that
   // card, so they get the same visual weight as a stopwatch readout instead
   // of the small feedbackLate pill every other tag on this card uses.
   feedbackBigLabel: {
     color: 'rgba(255,255,255,0.85)',
-    fontSize: 12,
+    fontSize: 13,
     fontFamily: FONT_DISPLAY_BOLD,
-    letterSpacing: 1.5,
-    marginTop: 10
+    letterSpacing: 1.2,
+    marginTop: 10,
+    textAlign: 'center'
   },
-  feedbackBigValue: { color: '#fff', fontSize: 40, fontFamily: FONT_DISPLAY_EXTRABOLD, marginTop: 2 },
+  feedbackBigValue: { color: '#fff', fontSize: 42, fontFamily: FONT_DISPLAY_EXTRABOLD, marginTop: 2 },
   feedbackLate: {
     color: '#fff',
     backgroundColor: 'rgba(0,0,0,0.25)',
-    fontSize: 11,
+    fontSize: 12,
     fontFamily: FONT_DISPLAY_BOLD,
     marginTop: 6,
-    paddingVertical: 3,
-    paddingHorizontal: 10,
-    borderRadius: 10
+    paddingVertical: 4,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    textAlign: 'center'
   },
   calendarWrap: { width: '100%', maxWidth: 500, maxHeight: '62%' },
   calendarWeekRow: { flexDirection: 'row', width: '100%', maxWidth: 500 },
@@ -1911,7 +2243,7 @@ const styles = StyleSheet.create({
   // fill (see confirmButton) -- confirmButtonTextDisabled below overrides
   // this back to dark whenever the background switches to the light
   // confirmButtonDisabled fill instead.
-  confirmButtonText: { color: '#fff', fontSize: 16, fontFamily: FONT_DISPLAY_EXTRABOLD },
+  confirmButtonText: { color: '#fff', fontSize: 18, fontFamily: FONT_DISPLAY_EXTRABOLD, textAlign: 'center' },
   // White text only reads against the vivid CONFIRM_GREEN enabled fill --
   // confirmButtonDisabled swaps the background back to a light neutral, so
   // the text needs to swap back to something dark too, or it goes invisible.
