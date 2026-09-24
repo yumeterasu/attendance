@@ -1489,7 +1489,11 @@ export default function KioskScreen({ navigation }: Props) {
             onPress={onConfirm}
             disabled={!canConfirm || isProcessing}
           >
-            {isProcessing ? <ActivityIndicator color={ACCENT_TEXT} /> : <Text style={styles.confirmButtonText}>Confirm</Text>}
+            {isProcessing ? (
+              <ActivityIndicator color={TEXT} />
+            ) : (
+              <Text style={[styles.confirmButtonText, !canConfirm && styles.confirmButtonTextDisabled]}>Confirm</Text>
+            )}
           </Pressable>
 
           <Pressable style={styles.cancelLink} onPress={resetCheckin} disabled={isProcessing}>
@@ -1538,8 +1542,15 @@ const BORDER = '#BFDDF3';
 const ACCENT = '#85C2EE';
 const ACCENT_DARK = '#2C74AD';
 const ACCENT_BG = '#D9EDFB';
-const ACCENT_TEXT = '#1C4A6E';
 const SAGE = '#6E9C69';
+// Deliberately more saturated (and darker) than SAGE above (that one's the
+// soft IN-button fill) -- Confirm needs to read as "the one button to
+// press" at a glance, not blend in with the rest of the pastel palette.
+// Specifically dark enough that white text on it clears WCAG AA's 4.5:1
+// contrast minimum for normal-size text (~4.7:1 here) -- a lighter,
+// brighter green reads "more vivid" but drops white text below that
+// threshold.
+const CONFIRM_GREEN = '#1E8449';
 const SAGE_BG = '#E8F2E4';
 const SAGE_BORDER = '#CDE3C6';
 const BUTTER = '#C98A22';
@@ -1635,7 +1646,10 @@ const styles = StyleSheet.create({
   retryButtonText: { color: '#fff', fontSize: 15, fontFamily: FONT_DISPLAY_BOLD },
   confirmButton: {
     marginTop: 32,
-    backgroundColor: ACCENT,
+    // Bold, saturated green (not the soft accent blue used elsewhere) so
+    // Confirm reads as THE action to take, at a glance, distinct from every
+    // other pastel button on this screen.
+    backgroundColor: CONFIRM_GREEN,
     borderRadius: 999,
     paddingVertical: 18,
     paddingHorizontal: 64,
@@ -1893,8 +1907,16 @@ const styles = StyleSheet.create({
     alignItems: 'center'
   },
   buttonText: { color: '#fff', fontSize: 16, fontFamily: FONT_DISPLAY_SEMIBOLD },
-  // Separate from buttonText: the Confirm button sits on a light pastel
-  // fill (see confirmButton), so it needs dark text for contrast, never
-  // white-on-pastel -- same rule as every button in the web preview.
-  confirmButtonText: { color: ACCENT_TEXT, fontSize: 16, fontFamily: FONT_DISPLAY_EXTRABOLD }
+  // Separate from buttonText: white against CONFIRM_GREEN's dark, saturated
+  // fill (see confirmButton) -- confirmButtonTextDisabled below overrides
+  // this back to dark whenever the background switches to the light
+  // confirmButtonDisabled fill instead.
+  confirmButtonText: { color: '#fff', fontSize: 16, fontFamily: FONT_DISPLAY_EXTRABOLD },
+  // White text only reads against the vivid CONFIRM_GREEN enabled fill --
+  // confirmButtonDisabled swaps the background back to a light neutral, so
+  // the text needs to swap back to something dark too, or it goes invisible.
+  // TEXT (not TEXT_MUTED) specifically -- this needs strong contrast on its
+  // own light background, not the softer "de-emphasized" look TEXT_MUTED is
+  // for elsewhere in this file.
+  confirmButtonTextDisabled: { color: TEXT }
 });
