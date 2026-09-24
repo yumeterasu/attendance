@@ -453,6 +453,32 @@ function refreshLiveSummarySheet_() {
 var LEAVE_COUNT_TYPES = ['Annual Leave', 'Sick Leave', 'Paid Special Leave', 'Unpaid Leave'];
 var HALF_DAY_LEAVE_COUNTS_AS_ = { 'Half Day Annual Leave': 'Annual Leave', 'Half Day Sick Leave': 'Sick Leave', 'Half Day Unpaid Leave': 'Unpaid Leave' };
 
+// Employees-sheet rows that exist purely for Dashboard/Admin-screen login
+// (see requireAdmin_ in Auth.gs) and never represent a real clocking-in
+// employee -- excluded from every Dashboard-facing employee list so they
+// never show up as a person with zero activity. Matched by Name, not
+// EmployeeID/Active/IsAdmin, so the account's own login keeps working
+// completely unchanged; this only trims it from these two rendered lists.
+// Lowercased here (not just at compare time) so isDashboardExcludedEmployee_
+// below only needs to normalize one side. Accepted tradeoff: matching by
+// Name (there's no "this row is an admin identity" field to key off
+// instead) means a real employee ever literally named "Admin" would also be
+// excluded -- treated as implausible enough not to design around.
+var DASHBOARD_EXCLUDED_EMPLOYEE_NAMES = ['admin'];
+
+// Case/whitespace-insensitive on purpose, same convention as
+// findEmployeeByNameOrId_ (Utils.gs) -- a sheet edit that leaves a trailing
+// space or different casing on this row's Name must not silently defeat the
+// exclusion. Defined once and reused by both Dashboard-facing filters below
+// so a future tweak to the matching rule can't end up applied to only one of
+// them and reintroduce a Daily-vs-Monthly mismatch, the same failure mode
+// the isEventShift_ parity comment a few hundred lines below already guards
+// against for a different field.
+function isDashboardExcludedEmployee_(emp) {
+  var name = String(emp.Name || '').toLowerCase().trim();
+  return DASHBOARD_EXCLUDED_EMPLOYEE_NAMES.indexOf(name) !== -1;
+}
+
 /** One employee's leave-type counts from a getScheduledShiftsForMonth_ result -- { [LEAVE_COUNT_TYPES[i]]: count }, see HALF_DAY_LEAVE_COUNTS_AS_ above. */
 function countLeavesForEmployee_(scheduledShiftsForMonth, employeeId) {
   var counts = {};
@@ -1457,9 +1483,11 @@ function getDashboardSummaryData_(year, month) {
     sortGroupFor = function (emp) { return reportSortGroup_(emp, logsByEmployee[emp.EmployeeID]); };
   }
 
-  // Same rule as the Summary sheet: Active, or has data this period.
+  // Same "Active, or has data this period" rule as the Summary sheet
+  // (writeYearlySummaryData_), PLUS a Dashboard-only exclusion the Summary
+  // sheet deliberately does not have -- see isDashboardExcludedEmployee_.
   var employees = allEmployees.filter(function (emp) {
-    return isTrue_(emp.Active) || !!totalsByEmployee[emp.EmployeeID];
+    return (isTrue_(emp.Active) || !!totalsByEmployee[emp.EmployeeID]) && !isDashboardExcludedEmployee_(emp);
   });
 
   employees = employees.slice().sort(function (a, b) {
@@ -1609,7 +1637,9 @@ function handleDashboardDaily_(params) {
   var tz = Session.getScriptTimeZone();
 
   var scheduledShiftsForMonth = getScheduledShiftsForMonth_(year, month);
-  var activeEmployees = getAllEmployees_().filter(function (emp) { return isTrue_(emp.Active); });
+  var activeEmployees = getAllEmployees_().filter(function (emp) {
+    return isTrue_(emp.Active) && !isDashboardExcludedEmployee_(emp);
+  });
 
   // Earliest IN of the day wins if there's more than one (offline sync
   // duplicate, etc.) -- same convention getMonthLogsByEmployee_ uses. Late
