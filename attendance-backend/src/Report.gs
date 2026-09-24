@@ -1570,15 +1570,17 @@ function handleDashboardSummary_(params) {
  *     before a day got relabeled Event can't leak into this endpoint
  *     without waiting on a recompute run first. Both listed with the
  *     person's check-in time (earliest IN of the day, if more than one).
- *   - absent: a genuine scheduled shift (not blank, not a full day off --
- *     see FULL_DAY_OFF_SHIFTS) but never tapped in.
+ *   - absent: never tapped in, and the day's shift is NOT one of
+ *     FULL_DAY_OFF_SHIFTS -- this includes a genuine scheduled shift the
+ *     employee skipped AND a blank Schedule cell, since admins no longer
+ *     pre-fill normal work shifts ahead of time (employees pick their own
+ *     shift at the Kiosk when they check in -- see getScheduledShift_'s
+ *     ShiftPicked fallback in Attendance.gs). A blank cell today means
+ *     "an ordinary work day, nothing marked off", not "not scheduled yet";
+ *     an intentional day off is only ever a real FULL_DAY_OFF_SHIFTS value
+ *     an admin wrote in.
  *   - onLeave: no tap in, and the day's shift IS one of FULL_DAY_OFF_SHIFTS
  *     (Annual/Sick/Unpaid/Paid Special Leave, or Holiday).
- * An employee with a blank schedule who never tapped in falls into none of
- * the four: there's no way to tell "not scheduled yet" apart from "day
- * off" from here, so this can't responsibly call it a no-show. This mirrors
- * the exact same rule menuFillMissedPunches_ (Menu.gs) uses for the same
- * reason.
  *
  * An "Event ..." shift is a fifth case, checked before absent/onLeave and
  * overriding onTime/late above: no matter whether the person taps IN, taps
@@ -1774,9 +1776,9 @@ function handleDashboardDaily_(params) {
     var entry = { employeeId: emp.EmployeeID, name: emp.Name, department: emp.Department, branch: emp.Branch || '', shift: shift };
     if (FULL_DAY_OFF_SHIFTS.indexOf(shift) !== -1) {
       onLeave.push(entry);
-    } else if (shift) {
+    } else {
       absent.push(entry);
-    } // else: blank schedule, never tapped in -- not expected in, left uncounted
+    }
   });
 
   return ok_({

@@ -918,14 +918,15 @@
       tableLeave: 'Leave',
       dateLabel: 'Date',
       absentLabel: 'Absent',
-      absentHint: 'Had a real shift today, never tapped in.',
+      absentHint: 'Didn’t punch in today.',
+      noShiftNote: 'No shift',
       lateLabel: 'Late',
       lateHint: 'Punched in after shift start.',
       onLeaveLabel: 'On Leave',
       onLeaveHint: 'Shift marked Leave/Holiday, never tapped in.',
       onTimeLabel: 'On Time',
       onTimeHint: 'Punched in on time.',
-      absentSectionTitle: 'Absent today — scheduled, didn’t punch in',
+      absentSectionTitle: 'Absent today — didn’t punch in',
       absentEmpty: 'Nobody — everyone scheduled today showed up.',
       onLeaveSectionTitle: 'On leave today',
       onLeaveEmpty: 'Nobody on leave today.',
@@ -978,14 +979,15 @@
       tableLeave: '休暇',
       dateLabel: '日付',
       absentLabel: '欠勤',
-      absentHint: '本日シフトがあったが、打刻していない。',
+      absentHint: '本日、打刻していない。',
+      noShiftNote: 'シフトなし',
       lateLabel: '遅刻',
       lateHint: 'シフト開始後に打刻した。',
       onLeaveLabel: '休暇中',
       onLeaveHint: 'シフトが休暇/休日で、打刻していない。',
       onTimeLabel: '定刻',
       onTimeHint: '定刻に打刻した。',
-      absentSectionTitle: '本日の欠勤者 — シフトありで未打刻',
+      absentSectionTitle: '本日の欠勤者 — 未打刻',
       absentEmpty: '該当者なし — 本日予定の全員が出勤しました。',
       onLeaveSectionTitle: '本日の休暇者',
       onLeaveEmpty: '本日、休暇者はいません。',
@@ -1733,8 +1735,13 @@
     var chip = document.createElement('div');
     chip.className = noteClass ? 'name-chip ' + noteClass : 'name-chip';
     // Present entries carry a check-in time (emp.inTime), Absent/On Leave
-    // entries carry the day's shift value (emp.shift) -- never both.
-    var note = emp.shift || emp.inTime;
+    // entries carry the day's shift value (emp.shift) -- never both. Absent
+    // can now have a genuinely blank emp.shift (an ordinary workday with no
+    // shift assigned, not an admin-marked day off -- see handleDashboardDaily_),
+    // so `'shift' in emp` (not `emp.shift` truthiness) tells an Absent/On
+    // Leave chip with nothing to show apart from an On Time/Late chip,
+    // which never carries a `shift` key at all.
+    var note = ('shift' in emp) ? (emp.shift || t('noShiftNote')) : emp.inTime;
     var noteHtml = note ? '<span class="chip-note">' + escapeHtml(note) + '</span>' : '';
     // On Time and Late share one set of branch boxes now (see
     // renderBranchGroupedList) -- a late arrival is told apart by this
