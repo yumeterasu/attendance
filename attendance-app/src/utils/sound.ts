@@ -9,6 +9,8 @@ type Player = ReturnType<typeof createAudioPlayer>;
 // try/catch means a sound-init failure costs the chime, never the app.
 let checkinPlayer: Player | null = null;
 let checkoutPlayer: Player | null = null;
+let breakStartPlayer: Player | null = null;
+let breakEndPlayer: Player | null = null;
 let audioConfigured = false;
 
 // Lets the confirmation chime play even when the tablet's ringer switch is
@@ -27,6 +29,8 @@ export async function configureCheckinAudio(): Promise<void> {
   try {
     checkinPlayer = createAudioPlayer(require('../../assets/sounds/checkin.wav'));
     checkoutPlayer = createAudioPlayer(require('../../assets/sounds/checkout.wav'));
+    breakStartPlayer = createAudioPlayer(require('../../assets/sounds/breakstart.wav'));
+    breakEndPlayer = createAudioPlayer(require('../../assets/sounds/breakend.wav'));
   } catch {
     // a sound-init failure must never take down the app -- just no chime
   }
@@ -48,4 +52,12 @@ export function playCheckinSound(): void {
 
 export function playCheckoutSound(): void {
   play(checkoutPlayer);
+}
+
+export function playBreakStartSound(): void {
+  play(breakStartPlayer);
+}
+
+export function playBreakEndSound(): void {
+  play(breakEndPlayer);
 }

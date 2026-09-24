@@ -23,7 +23,7 @@ import {
   cacheCurrentScheduleSnapshot,
   getCurrentScheduleSnapshot
 } from '../utils/scheduleCache';
-import { configureCheckinAudio, playCheckinSound, playCheckoutSound } from '../utils/sound';
+import { configureCheckinAudio, playCheckinSound, playCheckoutSound, playBreakStartSound, playBreakEndSound } from '../utils/sound';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Kiosk'>;
 
@@ -417,6 +417,12 @@ export default function KioskScreen({ navigation }: Props) {
   // guess at mid-shift.
   useEffect(() => {
     if (lookupName === null) return;
+    // Skipped entirely while on break -- IN/OUT/OUT OT are hidden during a
+    // break (see the render below, only Back from Break shows), so
+    // auto-selecting one of them here would leave `selection` pointing at a
+    // button the employee can't even see, and Confirm would silently submit
+    // it if tapped without ever showing what was about to happen.
+    if (onBreak) return;
     const hour = new Date().getHours();
     // alreadyCheckedInToday (see checkinState.ts) is resolved together with
     // lookupName itself (see tryLocalLookup/lookupPin above), so it's
@@ -428,7 +434,7 @@ export default function KioskScreen({ navigation }: Props) {
     // or disabled by this, only which button starts pre-selected.
     if (hour >= AUTO_IN_START_HOUR && hour < AUTO_IN_END_HOUR && !alreadyCheckedInToday) setSelection('IN');
     else if (hour >= AUTO_OUT_HOUR) setSelection('OUT');
-  }, [lookupName]);
+  }, [lookupName, onBreak]);
 
   // Falls back to the on-device PIN->Name->shifts copy (see
   // employeeDirectory) when there's truly no way to reach the server --
@@ -602,6 +608,7 @@ export default function KioskScreen({ navigation }: Props) {
       // has no correctness reason to delay the tap-to-feedback path.
       const nowIso = new Date().toISOString();
       setLocalOnBreak(currentPin, nowIso);
+      playBreakStartSound();
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       showFeedback({ kind: 'break', type, name, timestamp: nowIso, durationMinutes: breakDurationMinutes, queued: true });
       return;
@@ -619,6 +626,7 @@ export default function KioskScreen({ navigation }: Props) {
         const totalUsed = await addEstimatedOfflineBreakMinutes(currentPin, breakSessionMinutes);
         estimatedRemainingMinutes = Math.max(0, DAILY_BREAK_BUDGET_MINUTES - totalUsed);
       }
+      playBreakEndSound();
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       showFeedback({ kind: 'break', type, name, timestamp: nowIso, estimatedRemainingMinutes, queued: true });
       return;
@@ -674,6 +682,11 @@ export default function KioskScreen({ navigation }: Props) {
             // accurate baseline instead of drifting from whatever was there
             // before. Not awaited, same reasoning as every cache write here.
             setConfirmedTotalMinutesToday(currentPin, res.totalMinutesUsedToday);
+          }
+          if (res.type === 'BREAK_START') {
+            playBreakStartSound();
+          } else {
+            playBreakEndSound();
           }
           await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
           showFeedback({ kind: 'break', type: res.type, name: res.name, timestamp: res.timestamp, durationMinutes: res.durationMinutes, remainingMinutes: res.remainingMinutes });
@@ -1354,50 +1367,67 @@ export default function KioskScreen({ navigation }: Props) {
       ) : (
         <>
           <Text style={[styles.title, styles.titleDark]}>Hi, {lookupName}</Text>
-          <Text style={styles.subtitleDark}>Select IN or OUT, then confirm</Text>
+          {/* onBreak gets its own subtitle: IN/OUT/OUT OT are hidden below
+              while on break (see typeRow's !onBreak guard), so "Select IN or
+              OUT" would be actively wrong -- there's nothing to select but
+              Back from Break itself. */}
+          <Text style={styles.subtitleDark}>{onBreak ? 'Tap below when you\'re back' : 'Select IN or OUT, then confirm'}</Text>
 
-          <View style={styles.typeRow}>
-            <Pressable
-              style={[styles.typeButton, styles.typeButtonIn, selection === 'IN' && styles.typeButtonInSelected]}
-              onPress={() => selectType('IN')}
-              disabled={isProcessing}
-            >
-              <Text style={[styles.typeButtonInText, selection === 'IN' && styles.typeButtonTextSelected]}>IN</Text>
-            </Pressable>
-            <Pressable
-              style={[styles.typeButton, styles.typeButtonOut, selection === 'OUT' && styles.typeButtonOutSelected]}
-              onPress={() => selectType('OUT')}
-              disabled={isProcessing}
-            >
-              <Text style={[styles.typeButtonOutText, selection === 'OUT' && styles.typeButtonTextSelected]}>OUT</Text>
-            </Pressable>
-            <Pressable
-              style={[styles.typeButton, styles.typeButtonOt, selection === 'OUT_OT' && styles.typeButtonOtSelected]}
-              onPress={() => selectType('OUT_OT')}
-              disabled={isProcessing}
-            >
-              <Text style={[styles.typeButtonOtText, selection === 'OUT_OT' && styles.typeButtonTextSelected]}>
-                OUT OT
-              </Text>
-            </Pressable>
-          </View>
-
-          {selection === 'IN' && (
-            <View style={styles.shiftSection}>
-              <Text style={styles.shiftLabel}>Choose your shift</Text>
-              <View style={styles.shiftGrid}>
-                {shiftChoices.map((s) => (
-                  <Pressable
-                    key={s}
-                    style={[styles.shiftButton, selectedShift === s && styles.shiftButtonSelected]}
-                    onPress={() => setSelectedShift(s)}
-                    disabled={isProcessing}
-                  >
-                    <Text style={[styles.shiftButtonText, selectedShift === s && styles.shiftButtonTextSelected]}>{s}</Text>
-                  </Pressable>
-                ))}
+          {/* Hidden entirely while on break -- IN is impossible (already
+              clocked in), and OUT/OUT OT, though technically valid (a
+              clock-out always ends any in-progress break server-side), read
+              as an easy accidental tap for someone who really just means to
+              end their break. Forcing Back from Break first (OUT is still
+              reachable right after, from the normal screen) trades one extra
+              tap for someone leaving straight from a break against removing
+              a whole class of "meant to resume, accidentally clocked out"
+              mistakes. */}
+          {!onBreak && (
+            <>
+              <View style={styles.typeRow}>
+                <Pressable
+                  style={[styles.typeButton, styles.typeButtonIn, selection === 'IN' && styles.typeButtonInSelected]}
+                  onPress={() => selectType('IN')}
+                  disabled={isProcessing}
+                >
+                  <Text style={[styles.typeButtonInText, selection === 'IN' && styles.typeButtonTextSelected]}>IN</Text>
+                </Pressable>
+                <Pressable
+                  style={[styles.typeButton, styles.typeButtonOut, selection === 'OUT' && styles.typeButtonOutSelected]}
+                  onPress={() => selectType('OUT')}
+                  disabled={isProcessing}
+                >
+                  <Text style={[styles.typeButtonOutText, selection === 'OUT' && styles.typeButtonTextSelected]}>OUT</Text>
+                </Pressable>
+                <Pressable
+                  style={[styles.typeButton, styles.typeButtonOt, selection === 'OUT_OT' && styles.typeButtonOtSelected]}
+                  onPress={() => selectType('OUT_OT')}
+                  disabled={isProcessing}
+                >
+                  <Text style={[styles.typeButtonOtText, selection === 'OUT_OT' && styles.typeButtonTextSelected]}>
+                    OUT OT
+                  </Text>
+                </Pressable>
               </View>
-            </View>
+
+              {selection === 'IN' && (
+                <View style={styles.shiftSection}>
+                  <Text style={styles.shiftLabel}>Choose your shift</Text>
+                  <View style={styles.shiftGrid}>
+                    {shiftChoices.map((s) => (
+                      <Pressable
+                        key={s}
+                        style={[styles.shiftButton, selectedShift === s && styles.shiftButtonSelected]}
+                        onPress={() => setSelectedShift(s)}
+                        disabled={isProcessing}
+                      >
+                        <Text style={[styles.shiftButtonText, selectedShift === s && styles.shiftButtonTextSelected]}>{s}</Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                </View>
+              )}
+            </>
           )}
 
           {/* onBreak included alongside alreadyCheckedInToday: the latter is
@@ -1408,11 +1438,15 @@ export default function KioskScreen({ navigation }: Props) {
               and hide "Back from Break" for someone who is actually on
               break. onBreak=true always implies already checked in, so this
               can't wrongly show the button for someone who never clocked
-              in. */}
+              in. Styled as the primary action (breakButtonPrimary) when
+              onBreak, since typeRow is hidden above and this is the only
+              button on screen -- the smaller secondary look only makes sense
+              when it's sitting alongside IN/OUT/OUT OT. */}
           {(alreadyCheckedInToday || onBreak) && (
             <Pressable
               style={[
                 styles.breakButton,
+                onBreak && styles.breakButtonPrimary,
                 (selection === 'BREAK_START' || selection === 'BREAK_END') && styles.breakButtonSelected
               ]}
               onPress={() => selectType(onBreak ? 'BREAK_END' : 'BREAK_START')}
@@ -1421,6 +1455,7 @@ export default function KioskScreen({ navigation }: Props) {
               <Text
                 style={[
                   styles.breakButtonText,
+                  onBreak && styles.breakButtonPrimaryText,
                   (selection === 'BREAK_START' || selection === 'BREAK_END') && styles.typeButtonTextSelected
                 ]}
               >
@@ -1642,6 +1677,21 @@ const styles = StyleSheet.create({
   },
   breakButtonSelected: { backgroundColor: TEAL, borderColor: TEAL },
   breakButtonText: { color: TEAL, fontSize: 15, fontFamily: FONT_DISPLAY_EXTRABOLD },
+  // Sole button on screen while on break (typeRow hidden) -- bigger and
+  // full-width instead of the smaller "secondary action" size breakButton
+  // normally has next to IN/OUT/OUT OT. Deliberately leaves
+  // backgroundColor/borderColor alone (still the outlined TEAL_BG/
+  // TEAL_BORDER look from breakButton) rather than pre-applying breakButtonSelected's
+  // solid TEAL here -- that solid fill is the tap feedback for "this is
+  // what Confirm is about to submit", and giving the button that look
+  // before it's even tapped would make the actual selected state
+  // indistinguishable from the unselected one.
+  breakButtonPrimary: {
+    width: '100%',
+    marginTop: 20,
+    paddingVertical: 20
+  },
+  breakButtonPrimaryText: { fontSize: 19 },
   feedbackBreak: { backgroundColor: TEAL },
   typeButtonIn: { backgroundColor: SAGE_BG, borderColor: SAGE_BORDER },
   typeButtonOut: { backgroundColor: ROSE_BG, borderColor: ROSE_BORDER },
