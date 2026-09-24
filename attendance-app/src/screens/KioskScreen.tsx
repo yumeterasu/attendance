@@ -15,7 +15,7 @@ import { lookupPinLocally } from '../utils/employeeDirectory';
 import { enqueueCheckin } from '../utils/offlineQueue';
 import { setLocalOnBreak, getLocalOnBreak, getLocalBreakStartedAt } from '../utils/breakState';
 import { addEstimatedOfflineBreakMinutes, setConfirmedTotalMinutesToday } from '../utils/breakMinutesCache';
-import { setLocalCheckedInToday, getLocalCheckedInToday } from '../utils/checkinState';
+import { setLocalCheckedInToday, getLocalCheckedInToday, clearLocalCheckedInToday } from '../utils/checkinState';
 import { getDeviceBranch } from '../utils/deviceBranch';
 import {
   cacheScheduleMonth,
@@ -720,6 +720,12 @@ export default function KioskScreen({ navigation }: Props) {
       // Same reasoning as the online OUT path above -- a clock-out ends any
       // in-progress break server-side, so clear the local marker too.
       setLocalOnBreak(currentPin, null);
+      // Also clear "checked in today" -- otherwise the Break button (gated
+      // on alreadyCheckedInToday || onBreak) would keep showing for the
+      // rest of the day after a real clock-out, letting the employee tap
+      // Start Break into a guaranteed already_clocked_out rejection from
+      // recordBreak_ instead of never seeing the button at all.
+      clearLocalCheckedInToday(currentPin);
     }
     if (type === 'IN') {
       // Best-effort marker so the morning auto-select doesn't default to IN
@@ -847,6 +853,13 @@ export default function KioskScreen({ navigation }: Props) {
           // linger into tomorrow's first lookup for this PIN. Not awaited --
           // same reasoning as queueOffline's own calls.
           setLocalOnBreak(currentPin, null);
+          // Also clear "checked in today" -- otherwise the Break button
+          // (gated on alreadyCheckedInToday || onBreak) would keep showing
+          // for the rest of the day after a real clock-out, letting the
+          // employee tap Start Break into a guaranteed already_clocked_out
+          // rejection from recordBreak_ instead of never seeing the button
+          // at all -- same fix as the offline path in queueOffline above.
+          clearLocalCheckedInToday(currentPin);
         }
         if (res.type === 'IN') {
           // Best-effort marker so the morning auto-select doesn't default to

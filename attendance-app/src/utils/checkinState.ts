@@ -46,12 +46,18 @@ export async function setLocalCheckedInToday(pin: string): Promise<void> {
 }
 
 /**
- * Reverts the marker -- called when a queued offline IN later turns out to
- * have never actually landed (permanently rejected on sync, e.g. the
- * employee was deactivated in the meantime), so the auto-select doesn't
- * keep silently skipping IN for a check-in that never really happened. Same
- * "worst case is a missed default, never a block" reasoning as everywhere
- * else this marker is used -- IN was always still tappable in the meantime.
+ * Reverts the marker. Two callers, two reasons:
+ * - A queued offline IN later turns out to have never actually landed
+ *   (permanently rejected on sync, e.g. the employee was deactivated in the
+ *   meantime), so the auto-select doesn't keep silently skipping IN for a
+ *   check-in that never really happened. Same "worst case is a missed
+ *   default, never a block" reasoning as everywhere else this marker is
+ *   used -- IN was always still tappable in the meantime.
+ * - A real OUT succeeds (online or queued offline) -- see KioskScreen's
+ *   onConfirm/queueOffline -- so the Kiosk's Break button (gated on
+ *   alreadyCheckedInToday || onBreak) stops showing for the rest of the
+ *   day; otherwise it would keep inviting a tap that recordBreak_ can only
+ *   ever reject with already_clocked_out.
  */
 export async function clearLocalCheckedInToday(pin: string): Promise<void> {
   const map = await readMap();
