@@ -198,6 +198,50 @@ function isEventShift_(scheduledShift) {
   return !!scheduledShift && /^Event\b/.test(scheduledShift);
 }
 
+/**
+ * "Special Shift": an employee-picked custom start/end (e.g. "Special
+ * 12:00-11:00", possibly spanning into the next day), used for genuinely
+ * irregular hours. Unlike Event, deliberately NOT run through
+ * eventShiftOverrideTimestamp_ -- Special keeps the real tap time (same
+ * "real time is always what's recorded" rule break minutes already follow
+ * elsewhere in this app), it just skips Late/OT math on top of that real
+ * time. See isNoLateNoOtShift_ below for the shared "no Late, no OT"
+ * treatment both Event and Special get everywhere else in the system.
+ */
+function isSpecialShift_(scheduledShift) {
+  return !!scheduledShift && /^Special\b/.test(scheduledShift);
+}
+
+/**
+ * True only for a well-formed "Special H:MM-H:MM" string sent from the
+ * Kiosk -- never trusts the client's format blindly. Deliberately separate
+ * from normalizeShiftChoice_ (Special is never one of an employee's own
+ * shiftChoicesFor_, by design -- it's a custom one-off, not a pre-approved
+ * choice), so that function's own contract/callers stay untouched. Checks
+ * actual hour/minute RANGES (0-23 / 0-59), not just digit-count shape --
+ * \d{1,2}/\d{2} alone would let "Special 25:99-30:00" through, which would
+ * then feed garbage into getShiftStartTime_/getShiftEndTime_ everywhere
+ * downstream (Report sheet, Dashboard, My Schedule).
+ */
+function isValidSpecialShiftSubmission_(raw) {
+  var match = String(raw || '').trim().match(/^Special (\d{1,2}):(\d{2})-(\d{1,2}):(\d{2})$/);
+  if (!match) return false;
+  var startHour = Number(match[1]), startMinute = Number(match[2]);
+  var endHour = Number(match[3]), endMinute = Number(match[4]);
+  return startHour <= 23 && startMinute <= 59 && endHour <= 23 && endMinute <= 59;
+}
+
+/**
+ * Shared widening: every existing "is this an Event day" check (Late/OT
+ * skip, Dashboard/My-Schedule day classification) needs the exact same
+ * treatment for a Special day too -- always reads as on-time, worked, zero
+ * OT. Kept as one function so a future third "no Late/no OT" shift type
+ * only needs to change this one place, not every call site again.
+ */
+function isNoLateNoOtShift_(scheduledShift) {
+  return isEventShift_(scheduledShift) || isSpecialShift_(scheduledShift);
+}
+
 /** Minutes actually worked past shift end, or null if the shift/event string has no end time. */
 function minutesPastShiftEnd_(shiftOrEvent, outTimestamp) {
   var end = getShiftEndTime_(shiftOrEvent);
@@ -288,7 +332,7 @@ function handleKioskCheckin_(params) {
   var found = findEmployeeByKioskPin_(params.pin);
   if (!found) return fail_('not_found', 'Code not recognized');
 
-  return recordAttendance_(found.row.EmployeeID, 'KioskPIN', params.pin, params.type, params.ot === 'true', params.branch, params.shift);
+  return recordAttendance_(found.row.EmployeeID, 'KioskPIN', params.pin, params.type, params.ot === 'true', params.branch, params.shift, params.specialShiftSpansNextDay === 'true');
 }
 
 /**
@@ -659,7 +703,11 @@ function buildMyAttendanceDays_(year, month, dayLogs, scheduledShiftsForMonth, t
   for (var d = 1; d <= daysInMonth; d++) {
     var entry = dayLogs[d];
     var scheduled = scheduledShiftsForMonth[d];
-    var isEventDay = isEventShift_(scheduled);
+    // Late/OT suppression (below, on a day WITH a real IN) uses the wider
+    // isNoLateNoOtShift_ -- Special's own IN row already has late=false/
+    // otMinutes=0 correctly written, but this stays defensive in case of a
+    // relabel-after-the-fact, same reasoning as the Event case always had.
+    var isNoLateNoOt = isNoLateNoOtShift_(scheduled);
     // Real IN required here, not just "an entry exists" -- a stray OUT-only
     // row (no matching IN) still produces a truthy dayLogs[d] with
     // timeIn: null and shift: '' (Shift is only ever written on the IN
@@ -675,14 +723,14 @@ function buildMyAttendanceDays_(year, month, dayLogs, scheduledShiftsForMonth, t
         timeOut: entry.timeOut ? Utilities.formatDate(entry.timeOut, tz, 'HH:mm') : '',
         shift: entry.shift || '',
         note: '',
-        // isEventDay overrides a stale stored Late/OT the same way
+        // isNoLateNoOt overrides a stale stored Late/OT the same way
         // sumMonthTotals_/handleDashboardDaily_ already do unconditionally
         // from the CURRENT schedule -- without this, a day relabeled Event
         // AFTER a late/OT punch would still show Late/OT to the employee
         // here until an admin remembers to run "Recompute Late/OT for One
         // Month".
-        late: !!entry.late && !isEventDay,
-        ot: !isEventDay && !!(entry.otMinutes || entry.otQuarters)
+        late: !!entry.late && !isNoLateNoOt,
+        ot: !isNoLateNoOt && !!(entry.otMinutes || entry.otQuarters)
       });
       continue;
     }
@@ -695,7 +743,14 @@ function buildMyAttendanceDays_(year, month, dayLogs, scheduledShiftsForMonth, t
     // (or, for the stray-OUT case, the actual OUT time with a blank shift),
     // even though the whole point of an Event shift is that nobody's
     // expected to tap the kiosk for it.
-    if (isEventDay) {
+    //
+    // Deliberately isEventShift_ here, NOT isNoLateNoOt -- Special must
+    // NEVER have this branch fabricate a synthetic Time Out. The END day of
+    // an overnight Special Shift has no real IN either, but usually DOES
+    // have a real OUT (falls through to the stray-OUT-only branch below,
+    // which shows that real time); Special's whole design point is the real
+    // tap time is always what's recorded and shown, unlike Event.
+    if (isEventShift_(scheduled)) {
       var eventStart = getShiftStartTime_(scheduled);
       var eventEnd = getShiftEndTime_(scheduled);
       days.push({
@@ -713,16 +768,20 @@ function buildMyAttendanceDays_(year, month, dayLogs, scheduledShiftsForMonth, t
 
     // Non-Event day with a stray OUT-only row (no matching IN) -- same case
     // as above, just without an Event day's synthetic official hours to
-    // fall back on. Preserves the pre-existing behavior: the real OUT time
-    // shows, Shift stays blank (it's only ever recorded on the IN row), and
-    // there's nothing to be "late" or earn OT against without a real IN.
+    // fall back on. The real OUT time shows; Shift falls back to whatever's
+    // scheduled that day (entry.shift itself is blank here -- it's only
+    // ever recorded on the IN row) so a reference label still shows, same
+    // parity with Report.gs's writeMonthlyReportData_ its own comment
+    // promises -- most relevantly the END day of an overnight Special
+    // Shift, which always has a real OUT here but never a Shift value of
+    // its own. Nothing to be "late" or earn OT against without a real IN.
     if (entry) {
       days.push({
         day: d,
         date: Utilities.formatDate(new Date(year, month - 1, d), tz, 'yyyy-MM-dd'),
         timeIn: '',
         timeOut: entry.timeOut ? Utilities.formatDate(entry.timeOut, tz, 'HH:mm') : '',
-        shift: entry.shift || '',
+        shift: entry.shift || scheduled || '',
         note: '',
         late: false,
         ot: !!(entry.otMinutes || entry.otQuarters)
@@ -1083,13 +1142,15 @@ function recomputeLateAndOt_(year, month, startDay, endDay) {
       }
       continue;
     }
-    // An Event day is always on time, no matter when the actual tap
-    // happened -- same rule eventShiftOverrideTimestamp_ enforces live at
-    // check-in time. Recompute has to enforce it too, since it works from
-    // the raw stored Timestamp (never touches that column), which stays
-    // whatever the actual tap time was, particularly when a day gets
-    // relabeled "Event ..." in the schedule after the punch already happened.
-    var late = isEventShift_(scheduledShift) ? false : (scheduledShift ? isLate_(scheduledShift, ts) : false);
+    // An Event or Special day is always on time, no matter when the actual
+    // tap happened -- same rule eventShiftOverrideTimestamp_ enforces live
+    // for Event, and recordAttendance_'s IN branch enforces directly for
+    // Special. Recompute has to enforce it too, since it re-derives Late
+    // from the raw stored Timestamp (never touches that column) against
+    // whatever the Schedule sheet currently says -- without this, running
+    // Recompute on a Special day would wrongly flag Late the moment the
+    // real tap deviates from the picked start by more than a minute.
+    var late = isNoLateNoOtShift_(scheduledShift) ? false : (scheduledShift ? isLate_(scheduledShift, ts) : false);
 
     sliceValues[i][shiftCol] = scheduledShift;
     sliceValues[i][lateCol] = late;
@@ -1123,9 +1184,13 @@ function recomputeLateAndOt_(year, month, startDay, endDay) {
     var key = employeeId2 + '|' + day2;
     var shift = shiftByEmployeeDay.hasOwnProperty(key) ? shiftByEmployeeDay[key] : '';
 
-    // An Event day never has OT, no matter when the actual OUT tap happened
-    // -- same "always the clean official hours" rule as the Late fix above.
-    var isEventDay = isEventShift_(shift);
+    // An Event or Special day never has OT, no matter when the actual OUT
+    // tap happened -- same rule as the Late fix above. Matters most for a
+    // SAME-day Special Shift: unlike Event (whose live-time timestamp
+    // forcing already makes minutesPastShiftEnd_ resolve to exactly 0),
+    // Special keeps the real OUT tap time, so without this explicit skip a
+    // genuinely late real tap would recompute real positive OT.
+    var isEventDay = isNoLateNoOtShift_(shift);
 
     if (currentDept === 'Japanese') {
       var capMinutes = Number(currentEmp.row.OTMaxMinutes) || JP_OT_CAP_MINUTES;
@@ -1626,7 +1691,7 @@ function recordOfflineSyncedBreak_(employeeId, type, timestamp, clientId, durati
   };
 }
 
-function recordAttendance_(employeeId, method, rawScanValue, type, ot, punchBranch, shift) {
+function recordAttendance_(employeeId, method, rawScanValue, type, ot, punchBranch, shift, specialShiftSpansNextDay) {
   var found = findEmployeeRow_(employeeId);
   if (!found) return fail_('not_found', 'Employee not found');
   var emp = found.row;
@@ -1670,6 +1735,7 @@ function recordAttendance_(employeeId, method, rawScanValue, type, ot, punchBran
   var otMinutesForRow = '';
   var otQuartersForRow = '';
   var recordedTimestamp = now; // overridden below for "Event" shifts -- see eventShiftOverrideTimestamp_
+  var writtenShift; // pickedShift or specialShift -- whatever the employee's own IN pick was, if anything (see the ShiftPicked column / Schedule-sheet write below)
 
   if (type === 'IN') {
     // The employee's own pick, validated against their shiftChoicesFor_,
@@ -1678,11 +1744,25 @@ function recordAttendance_(employeeId, method, rawScanValue, type, ot, punchBran
     // that sent something invalid, behaves exactly as before this feature
     // existed.
     var pickedShift = normalizeShiftChoice_(emp, shift);
-    var scheduledShift = pickedShift || getScheduledShift_(employeeId, now);
+    // A well-formed "Special H:MM-H:MM" submission is never on the
+    // employee's own approved list (normalizeShiftChoice_ always rejects
+    // it, by design -- see isValidSpecialShiftSubmission_), so it's only
+    // even considered once pickedShift has already come back empty.
+    var specialShift = (!pickedShift && isValidSpecialShiftSubmission_(shift)) ? String(shift).trim() : '';
+    var scheduledShift = pickedShift || specialShift || getScheduledShift_(employeeId, now);
+    writtenShift = pickedShift || specialShift;
     if (scheduledShift) {
       shiftForRow = scheduledShift;
-      recordedTimestamp = eventShiftOverrideTimestamp_(scheduledShift, now, 'IN');
-      late = isLate_(scheduledShift, recordedTimestamp);
+      if (specialShift) {
+        // Special Shift: keeps the REAL tap time always (unlike Event,
+        // never forced to the shift's own official start) -- Late/OT are
+        // simply never computed on top of that real time. See isSpecialShift_.
+        recordedTimestamp = now;
+        late = false;
+      } else {
+        recordedTimestamp = eventShiftOverrideTimestamp_(scheduledShift, now, 'IN');
+        late = isLate_(scheduledShift, recordedTimestamp);
+      }
       // The actual Schedule-sheet write (writeScheduleShiftCell_) happens
       // AFTER appendRow_ below, not here -- see the comment there for why.
     }
@@ -1694,7 +1774,16 @@ function recordAttendance_(employeeId, method, rawScanValue, type, ot, punchBran
       durationMinutes = Math.round((recordedTimestamp.getTime() - todayIn.timestamp.getTime()) / 60000);
     }
 
-    var otEligible = isOtEligible_(emp);
+    // Event's OT-skip normally falls out for free here, via
+    // eventShiftOverrideTimestamp_ above forcing recordedTimestamp to the
+    // shift's own exact end time (minutesPastShiftEnd_ = 0). Special
+    // deliberately does NOT force the timestamp (real OUT time always), so
+    // for a same-day Special Shift a genuinely late real OUT tap would
+    // otherwise compute real positive OT -- isNoLateNoOtShift_ guards that
+    // explicitly. (An overnight Special Shift never reaches here with a
+    // truthy todayShift at all, since todayIn/todayShift only ever resolve
+    // for an IN on the OUT's own calendar day -- see findTodayInLog_.)
+    var otEligible = isOtEligible_(emp) && !isNoLateNoOtShift_(todayShift);
     if (emp.Department === 'Japanese') {
       // OUT and OUT OT are equivalent for Japanese -- always auto-computed.
       var capMinutes = Number(emp.OTMaxMinutes) || JP_OT_CAP_MINUTES;
@@ -1726,15 +1815,28 @@ function recordAttendance_(employeeId, method, rawScanValue, type, ot, punchBran
     OTMinutes: otMinutesForRow,
     OTQuarters: otQuartersForRow,
     PunchBranch: punchBranchForRow,
-    ShiftPicked: !!pickedShift // see the identical field in recordOfflineSyncedAttendance_ for why
+    ShiftPicked: !!writtenShift // see the identical field in recordOfflineSyncedAttendance_ for why -- true for a Special submission too, same as a normal pick: it's the employee's own IN-time choice, not the admin schedule
   }, appendHeaders);
 
   // Deliberately AFTER the AttendanceLog append above, not before -- see
   // the identical ordering (and the full reasoning) in
   // recordOfflineSyncedAttendance_.
-  if (pickedShift) {
-    try { writeScheduleShiftCell_(employeeId, now, pickedShift); } catch (e) {
+  if (writtenShift) {
+    try { writeScheduleShiftCell_(employeeId, now, writtenShift); } catch (e) {
       Logger.log('writeScheduleShiftCell_ failed for ' + employeeId + ' on ' + now + ': ' + e);
+    }
+    // Overnight Special Shift (e.g. 12:00 today -> 11:00 tomorrow): also
+    // write tomorrow's Schedule cell with the same string, so whichever day
+    // the real OUT tap (or lack of one) lands on, that day's own
+    // handleDashboardDaily_/buildMyAttendanceDays_ classification already
+    // sees "Special ..." rather than a blank cell that would otherwise read
+    // as an ordinary, un-punched workday (Absent). A separate try/catch so a
+    // failure writing one day never blocks the other.
+    if (specialShift && specialShiftSpansNextDay) {
+      var nextDay = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+      try { writeScheduleShiftCell_(employeeId, nextDay, writtenShift); } catch (e) {
+        Logger.log('writeScheduleShiftCell_ (next day) failed for ' + employeeId + ' on ' + nextDay + ': ' + e);
+      }
     }
   }
 

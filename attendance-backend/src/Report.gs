@@ -100,6 +100,16 @@ function writeMonthlyReportData_(sheet, startRow, year, month, precomputedLogsBy
         // correctly straight off AttendanceLog's own Late/OT columns (now
         // forced right by eventShiftOverrideTimestamp_ and
         // recomputeLateAndOt_), so this only matters when there's no real IN.
+        //
+        // Deliberately isEventShift_ here, NOT the wider isNoLateNoOtShift_ --
+        // Special must NEVER have this branch fabricate a synthetic Time
+        // Out. On the END day of an overnight Special Shift there's no real
+        // IN either, but there usually IS a real OUT (dayEntry.timeOut,
+        // already captured into the `timeOut` var above); Special's whole
+        // design point is that the REAL tap time is always what's recorded
+        // and shown, unlike Event's "always the clean official hours" rule.
+        // That day falls through to the branch below instead, which leaves
+        // the already-real timeIn/timeOut alone.
         shift = scheduledShift;
         var startTime = getShiftStartTime_(scheduledShift);
         var endTime = getShiftEndTime_(scheduledShift);
@@ -107,24 +117,23 @@ function writeMonthlyReportData_(sheet, startRow, year, month, precomputedLogsBy
         if (endTime) timeOut = minutesToHHMM_(endTime.hour * 60 + endTime.minute);
       } else if ((!dayEntry || !dayEntry.timeIn) && scheduledShift) {
         // Any other scheduled value (a normal shift name, Leave, Holiday,
-        // Half Day Annual/Sick Leave, ...) with no real IN that day -- either
-        // zero AttendanceLog rows at all, or only a stray OUT with no
-        // matching IN (dayEntry.shift comes back blank in that case too,
-        // same reason as the Event branch above) -- still show it in the
-        // Shift column for reference, even though nobody clocked in. Time
-        // In/Out are left blank regardless (unlike the Event case above, a
-        // normal missed clock-in earns no special credit), so it's still
-        // obvious at a glance that nothing was actually recorded that day.
+        // Half Day Annual/Sick Leave, a Special Shift's END day, ...) with no
+        // real IN that day -- still show it in the Shift column for
+        // reference. Time In stays blank (no real IN that day, same as
+        // always); Time Out stays whatever real data was already captured
+        // above (dayEntry.timeOut) -- blank for a genuine missed clock-in,
+        // but a real timestamp for a Special Shift's END day, where the
+        // employee's actual OUT tap must never be silently replaced.
         shift = scheduledShift;
       }
-      // isEventShift_ overrides a stale stored Late/OT the same way
+      // isNoLateNoOtShift_ overrides a stale stored Late/OT the same way
       // sumMonthTotals_ already does unconditionally from the CURRENT
-      // schedule -- without this, a day relabeled Event AFTER a late/OT
-      // punch would still show Late or an OT number here (straight off the
-      // stored AttendanceLog columns) until an admin remembers to run
-      // "Recompute Late/OT for One Month", disagreeing with the Days
+      // schedule -- without this, a day relabeled Event/Special AFTER a
+      // late/OT punch would still show Late or an OT number here (straight
+      // off the stored AttendanceLog columns) until an admin remembers to
+      // run "Recompute Late/OT for One Month", disagreeing with the Days
       // Worked/Late/OT totals below in the meantime.
-      var isEventDay = isEventShift_(scheduledShift);
+      var isEventDay = isNoLateNoOtShift_(scheduledShift);
       var isLateDay = !!(dayEntry && dayEntry.late) && !isEventDay;
       var late = isLateDay ? 'Late' : '';
       var otMinutes = (dayEntry && dayEntry.otMinutes && !isEventDay) ? dayEntry.otMinutes : '';
@@ -1217,7 +1226,7 @@ function highlightShiftMismatches_(sheet, year, month) {
       var dayCol = headers.indexOf(d);
       if (dayCol === -1) continue;
       var scheduledShift = String(values[r][dayCol] || '').trim();
-      if (isEventShift_(scheduledShift)) continue; // one-off/irregular by nature -- not a normal recurring shift to flag as "wrong"
+      if (isNoLateNoOtShift_(scheduledShift)) continue; // Event or Special -- one-off/irregular by nature, not a normal recurring shift to flag as "wrong"
       var scheduledStart = getShiftStartMinutes_(scheduledShift);
       if (scheduledStart === null) continue; // blank, Leave, Holiday, Half Day Annual Leave, or unparseable -- nothing to compare
 
@@ -1770,29 +1779,35 @@ function handleDashboardDaily_(params) {
         // in-progress (not yet ended) break contributes nothing until it ends.
         breakMinutes: breakMinutesByEmployee[emp.EmployeeID] || 0
       };
-      // isEventShift_(shift) overrides a stale stored Late=TRUE the same way
-      // sumMonthTotals_ already does unconditionally from the CURRENT
-      // schedule -- without this, a day relabeled Event AFTER a late punch
-      // would show late here but not-late in the Monthly view until an
+      // isNoLateNoOtShift_(shift) overrides a stale stored Late=TRUE the same
+      // way sumMonthTotals_ already does unconditionally from the CURRENT
+      // schedule -- without this, a day relabeled Event/Special AFTER a late
+      // punch would show late here but not-late in the Monthly view until an
       // admin remembers to run "Recompute Late/OT for One Month", the two
       // silently disagreeing on the same employee/day in the meantime.
-      var isLateNow = inRow.late && !isEventShift_(shift);
+      var isLateNow = inRow.late && !isNoLateNoOtShift_(shift);
       (isLateNow ? late : onTime).push(punchEntry);
       return;
     }
-    if (isEventShift_(shift)) {
+    if (isNoLateNoOtShift_(shift)) {
       // An Event day always counts as present/on-time even with no real IN
       // tap at all -- same rule sumMonthTotals_ and the Report grid already
       // apply; without this the Dashboard would show someone at an
-      // off-site event as a no-show. Synthetic in-time from the shift's own
-      // official start, matching the "clean official hours" behavior
+      // off-site event as a no-show. Also covers the END day of an overnight
+      // Special Shift (isSpecialShift_), which by construction never has its
+      // own real IN either -- without this it would misclassify as Absent
+      // (see the "no shift = Absent" rule) instead of reading as still
+      // on-shift. Synthetic in-time from the shift's own official/picked
+      // start, matching the "clean official hours" behavior
       // eventShiftOverrideTimestamp_ already gives a REAL punch on an Event
-      // day. There's still no real IN here, so punchBranch stays blank
-      // rather than claiming a branch nobody actually tapped at -- but a
-      // stray OUT-only punch (no matching IN, same real case
-      // sumMonthTotals_'s own comment calls out) is real data and must
-      // still surface its own branch/mismatch info, not get silently
-      // dropped just because this is the Event branch.
+      // day (for Special, this is just the picked start time re-parsed from
+      // the string -- cosmetic on the END day, not a real "arrival"). There's
+      // still no real IN here, so punchBranch stays blank rather than
+      // claiming a branch nobody actually tapped at -- but a stray OUT-only
+      // punch (no matching IN, same real case sumMonthTotals_'s own comment
+      // calls out) is real data and must still surface its own branch/
+      // mismatch info, not get silently dropped just because this is the
+      // Event/Special branch.
       var eventOutRow = outRowByEmployee[emp.EmployeeID];
       var eventStartMinutes = getShiftStartMinutes_(shift);
       onTime.push({
