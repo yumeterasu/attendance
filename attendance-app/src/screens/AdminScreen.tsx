@@ -6,7 +6,7 @@ import { RootStackParamList } from '../navigation/types';
 import { adminResetCode } from '../api/client';
 import { useSession } from '../context/SessionContext';
 import { AttemptEntry, clearAttemptLog, getAttemptLog } from '../utils/attemptLog';
-import { getQueueLength } from '../utils/offlineQueue';
+import { getQueueLength, getOldestQueuedAt } from '../utils/offlineQueue';
 import { DeviceBranch, DEVICE_BRANCH_LABELS, getDeviceBranch, setDeviceBranch } from '../utils/deviceBranch';
 
 // Derived from DEVICE_BRANCH_LABELS (the single source of truth for what
@@ -17,6 +17,13 @@ const BRANCH_OPTIONS = Object.keys(DEVICE_BRANCH_LABELS) as DeviceBranch[];
 // Read straight from app.config.ts's `version` at build time -- one place to
 // bump (already done for every release), nothing to keep in sync by hand.
 const APP_VERSION = Constants.expoConfig?.version ?? 'unknown';
+
+// flushQueue is strict FIFO and stops entirely at the first network_error/
+// timeout, so one stuck entry can silently block everyone behind it
+// (including a real BREAK_END) indefinitely -- this tablet is expected to
+// stay online essentially all the time, so a queue entry still waiting
+// this long is worth an admin's attention, not a normal offline blip.
+const STUCK_QUEUE_WARNING_MS = 15 * 60 * 1000;
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Admin'>;
 
@@ -42,6 +49,7 @@ export default function AdminScreen({ navigation }: Props) {
   const [issuedCode, setIssuedCode] = useState<{ employeeId: string; setupCode: string } | null>(null);
   const [attemptLog, setAttemptLog] = useState<AttemptEntry[] | null>(null);
   const [pendingSyncCount, setPendingSyncCount] = useState<number | null>(null);
+  const [oldestQueuedAt, setOldestQueuedAt] = useState<number | null>(null);
   const [deviceBranch, setDeviceBranchState] = useState<DeviceBranch | null>(null);
   const [branchLoaded, setBranchLoaded] = useState(false);
   const [isSavingBranch, setIsSavingBranch] = useState(false);
@@ -59,11 +67,26 @@ export default function AdminScreen({ navigation }: Props) {
   const isSavingBranchRef = useRef(false);
 
   useEffect(() => {
-    getQueueLength().then(setPendingSyncCount);
     getDeviceBranch().then((branch) => {
       if (!userSavedBranchRef.current) setDeviceBranchState(branch);
       setBranchLoaded(true);
     });
+  }, []);
+
+  // Polled, not just loaded once on mount -- an admin staying on this screen
+  // (the whole point of the stuck-queue warning below) would otherwise never
+  // see pendingSyncCount/oldestQueuedAt change while they're actually
+  // looking at it, e.g. a tap gets queued and sits stuck for the next 20
+  // minutes right in front of them with the badge never appearing. 30s
+  // matches the offline-sync retry cadence elsewhere in this app.
+  useEffect(() => {
+    const refresh = () => {
+      getQueueLength().then(setPendingSyncCount);
+      getOldestQueuedAt().then(setOldestQueuedAt);
+    };
+    refresh();
+    const interval = setInterval(refresh, 30000);
+    return () => clearInterval(interval);
   }, []);
 
   const onSelectBranch = async (branch: DeviceBranch) => {
@@ -216,6 +239,18 @@ export default function AdminScreen({ navigation }: Props) {
           </Text>
         </View>
       )}
+      {oldestQueuedAt !== null && Date.now() - oldestQueuedAt > STUCK_QUEUE_WARNING_MS && (
+        // flushQueue is strict FIFO (see offlineQueue.ts) -- this specific
+        // entry being stuck this long means EVERYTHING behind it, of any
+        // type for any employee, is stuck too, even though pendingSyncCount
+        // above doesn't distinguish "just offline for a bit" from "stuck".
+        <View style={[styles.pendingSyncBadge, styles.stuckQueueBadge]}>
+          <Text style={[styles.pendingSyncText, styles.stuckQueueText]}>
+            Oldest pending item is {Math.round((Date.now() - oldestQueuedAt) / 60000)} min old -- this tablet may need
+            attention (check its internet connection).
+          </Text>
+        </View>
+      )}
       <Text style={styles.kioskHint}>
         Every kiosk PIN attempt made on this device, including ones that never reached the server -- useful for
         pinpointing exactly when and why a check-in got stuck.
@@ -295,6 +330,11 @@ const styles = StyleSheet.create({
     marginBottom: 12
   },
   pendingSyncText: { color: '#e65100', fontSize: 13, fontWeight: '600', textAlign: 'center' },
+  // More urgent red (not just the normal orange "some items pending" look)
+  // -- this specifically means the queue looks STUCK, not just "offline for
+  // a bit," so it should read as more alarming than the badge above it.
+  stuckQueueBadge: { backgroundColor: '#fdecea' },
+  stuckQueueText: { color: '#c0392b' },
   codeCard: {
     backgroundColor: '#e8f5e9',
     borderRadius: 12,

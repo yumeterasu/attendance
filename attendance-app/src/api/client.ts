@@ -106,11 +106,20 @@ export function kioskBreak(pin: string, type: 'BREAK_START' | 'BREAK_END', durat
 // shifts: the shift strings this specific employee can pick at the Kiosk --
 // the 3 standard choices everyone gets, plus their own ExtraShift if they
 // have one (see shiftChoicesFor_ server-side). Always non-empty.
-// Deliberately no onBreak field here -- see breakState.ts for why that's
-// driven by an on-device marker instead of a server round trip on this
-// latency-sensitive path (KIOSK_TIMEOUT_MS is only 3000ms).
+// onBreak/breakStartedAt: real server state (currentShiftBreakState_), not
+// just the on-device kiosk_break_state_v1 marker -- reversed from an
+// earlier "local marker only, no server round trip" design after a real
+// incident where the local marker got stuck wrong (a BREAK_END that
+// silently never reached the server) with nothing to ever self-correct it.
+// KioskScreen's live lookupPin path uses these as authoritative and writes
+// them back into the local marker; the offline/local-directory path
+// (tryLocalLookup) has no live data and keeps using the local marker alone.
 export function kioskLookupPin(pin: string) {
-  return postAction<{ name: string; shifts: string[] }>('kioskLookupPin', { pin }, KIOSK_TIMEOUT_MS);
+  return postAction<{ name: string; shifts: string[]; onBreak: boolean; breakStartedAt: string | null }>(
+    'kioskLookupPin',
+    { pin },
+    KIOSK_TIMEOUT_MS
+  );
 }
 
 export type ScheduleDay = { day: number; date: string; timeIn: string; timeOut: string; shift: string; note: string; late: boolean; ot: boolean };

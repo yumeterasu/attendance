@@ -691,18 +691,23 @@ export default function KioskScreen({ navigation }: Props) {
       const res = await kioskLookupPin(value);
 
       if (res.success) {
-        // Both reads resolved together before any state is set -- same
-        // reasoning as tryLocalLookup above (avoids a stale intermediate
-        // render between lookupName committing and alreadyCheckedInToday
-        // landing, which the auto-select effect below is sensitive to).
-        const [onBreakNow, checkedInNow] = await Promise.all([getLocalOnBreak(value), getLocalCheckedInToday(value)]);
+        // alreadyCheckedInToday still comes from the local marker (no live
+        // equivalent exists server-side for that one) -- resolved alongside
+        // the rest before any state is set, same reasoning as tryLocalLookup
+        // below (avoids a stale intermediate render between lookupName
+        // committing and alreadyCheckedInToday landing, which the
+        // auto-select effect is sensitive to).
+        const checkedInNow = await getLocalCheckedInToday(value);
         setLookupName(res.name);
         applyShiftChoices(res.shifts);
-        // Same on-device marker tryLocalLookup uses below -- kioskLookupPin
-        // deliberately doesn't return onBreak itself (see client.ts), so
-        // this is the one source of truth for both the online and offline
-        // paths, kept correct by every successful BREAK_START/BREAK_END/OUT.
-        setOnBreak(onBreakNow);
+        // Server-authoritative now (res.onBreak/breakStartedAt -- see
+        // client.ts/handleKioskLookupPin_), not the on-device marker this
+        // used to trust unconditionally. Also written back into that local
+        // marker so it self-heals here instead of staying wrong indefinitely
+        // if it had drifted (e.g. a BREAK_END that silently never reached
+        // the server -- see queueOffline's BREAK_END branch).
+        setOnBreak(res.onBreak);
+        setLocalOnBreak(value, res.onBreak ? res.breakStartedAt : null);
         setAlreadyCheckedInToday(checkedInNow);
       } else if (res.error === 'timeout' || res.error === 'network_error') {
         // Connection dropped mid-request -- try the local copy again in case
@@ -769,11 +774,24 @@ export default function KioskScreen({ navigation }: Props) {
       // to sync later. Retrying is unlikely to help on its own if storage
       // itself is the problem, so this points the employee at an admin
       // instead of just letting them tap Confirm again into the same wall.
+      //
+      // BREAK_END gets its own, more urgent message: this specific failure
+      // is exactly what caused a real incident -- the break was never
+      // recorded anywhere (not synced, not queued), the on-device "on
+      // break" marker is left untouched (correctly, since the break really
+      // isn't over), but a generic "tell your admin" banner reads as a
+      // routine save hiccup, not "you are still on break and losing budget
+      // time right now." Telling them to look themselves up again
+      // immediately actually works, since the marker being untouched means
+      // the next attempt starts from the correct state.
       resetCheckin();
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       showFeedback({
         kind: 'error',
-        message: 'Could not save your check-in on this device. Please tell your admin.\nบันทึกข้อมูลบนเครื่องนี้ไม่ได้ กรุณาแจ้งแอดมิน'
+        message:
+          type === 'BREAK_END'
+            ? 'Could not end your break on this device. You are still marked ON BREAK -- look yourself up again right away and try Back from Break once more.\nไม่สามารถบันทึกการหยุดพักได้ คุณยังอยู่ในสถานะพักอยู่ กรุณากดรหัสของคุณใหม่แล้วกด "หยุดพัก" อีกครั้งทันที'
+            : 'Could not save your check-in on this device. Please tell your admin.\nบันทึกข้อมูลบนเครื่องนี้ไม่ได้ กรุณาแจ้งแอดมิน'
       });
       return;
     }
@@ -886,6 +904,25 @@ export default function KioskScreen({ navigation }: Props) {
           await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
           showFeedback({ kind: 'error', message: res.message });
         }
+      } catch (err) {
+        // Previously uncaught -- an exception anywhere after kioskBreak/
+        // queueOffline resolves (e.g. inside queueOffline itself, or one of
+        // the local-cache writes) would skip resetCheckin/local-state
+        // cleanup entirely, silently leaving the screen (and the on-device
+        // break marker) in whatever partial state existed at the moment it
+        // threw. No way to know from here whether the action actually
+        // reached the server, so this can't safely claim success OR
+        // failure -- just get the shared kiosk back to a usable state and
+        // tell them to check by looking themselves up again, same spirit as
+        // the BREAK_END enqueue-failure message above.
+        console.warn('onConfirm break exception:', err);
+        resetCheckin();
+        await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+        showFeedback({
+          kind: 'error',
+          message:
+            'Something went wrong. Look yourself up again to check your real status before continuing.\nเกิดข้อผิดพลาด กรุณากดรหัสของคุณใหม่เพื่อตรวจสอบสถานะจริงก่อนทำต่อ'
+        });
       } finally {
         isConfirmingRef.current = false;
         setIsProcessing(false);

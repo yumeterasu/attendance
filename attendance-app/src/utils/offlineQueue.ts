@@ -3,6 +3,7 @@ import { kioskSyncOffline } from '../api/client';
 import { setLocalOnBreak } from './breakState';
 import { setConfirmedTotalMinutesToday, addEstimatedOfflineBreakMinutes } from './breakMinutesCache';
 import { clearLocalCheckedInToday } from './checkinState';
+import { logAttempt } from './attemptLog';
 
 const STORAGE_KEY = 'kiosk_offline_queue_v1';
 // Prefix for a best-effort backup of a queue value that failed to
@@ -159,6 +160,24 @@ export async function getQueueLength(): Promise<number> {
 }
 
 /**
+ * Epoch ms of the oldest still-queued entry's own tap timestamp, or null if
+ * the queue is empty (or unreadable). flushQueue is strict FIFO and stops
+ * entirely at the first network_error/timeout (see its own doc comment) --
+ * one stuck entry can silently block everyone behind it, including a real
+ * BREAK_END, for as long as the device stays in that state. This doesn't
+ * fix that (reordering risks breaking a single employee's own action
+ * order), it just gives AdminScreen something to show so a stuck queue is
+ * visible instead of invisible.
+ */
+export async function getOldestQueuedAt(): Promise<number | null> {
+  return withQueueLock(async () => {
+    const queue = await readQueue();
+    if (queue.length === 0) return null;
+    return new Date(queue[0].timestamp).getTime();
+  }).catch(() => null);
+}
+
+/**
  * Tries to sync every queued entry, oldest first, stopping at the first one
  * that still fails (keeps order -- a later entry shouldn't sync ahead of an
  * earlier one for the same day). Safe to call repeatedly/concurrently isn't
@@ -206,6 +225,20 @@ export async function flushQueue(): Promise<{ synced: number; remaining: number 
           queue.splice(idx, 1); // permanent rejection (e.g. employee deactivated since) -- will never succeed, drop it instead of blocking everyone behind it
           await writeQueue(queue);
           if (next.type === 'BREAK_START' || next.type === 'BREAK_END') {
+            // Logged for EVERY permanent drop of a break entry, not just the
+            // rejection reasons below that don't have specific marker
+            // reconciliation -- an admin reviewing the Connection Log (see
+            // AdminScreen.tsx, already reads this same attemptLog storage)
+            // needs the full trail to reconstruct what happened for a
+            // specific employee, not just the cases this code doesn't know
+            // how to self-correct. Not awaited, same fire-and-forget
+            // convention as every other best-effort write in this file.
+            logAttempt({
+              timestamp: Date.now(),
+              action: 'kioskSyncOffline_breakDropped',
+              result: 'rejected',
+              message: `${next.type} for pin ${next.pin} permanently dropped: ${res.error}`
+            });
             // A dropped Break entry must not leave the on-device marker (see
             // breakState.ts) stuck on whatever queueOffline optimistically
             // guessed when it was first enqueued -- correct it from the
