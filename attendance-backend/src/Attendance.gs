@@ -1351,17 +1351,29 @@ function handleVerifyKioskExitPin_(params) {
  * `isValidTimestamp` predicates, so a future fix to the scan itself (column
  * lookups, tie-breaking) can't be applied to only one of them by accident.
  *
- * `excludeAdminBackdated`: when true, skips IN rows written by
- * menuBulkMarkAttendance_/menuAddBackdatedAttendance_/menuFillMissedPunches_
- * (Method 'AdminBackdated', see recordBackdatedAttendance_) -- those are
- * historical catch-up entries for a day admin already knows is closed, not
- * a live shift anyone should be able to validly take a break against or
- * have the Kiosk reconcile as "still open." findTodayInLog_'s OTHER
- * callers (day-specific reporting) pass false here, unchanged from before
- * this refactor -- a backdated entry legitimately IS that day's real IN for
- * reporting purposes, just not a live-shift anchor.
+ * `excludeStaleAdminBackdatedAsOf`: pass a `now` Date to skip IN rows
+ * written by menuBulkMarkAttendance_/menuAddBackdatedAttendance_/
+ * menuFillMissedPunches_ (Method 'AdminBackdated', see
+ * recordBackdatedAttendance_) UNLESS that row is from the same calendar day
+ * as `now` -- pass a falsy value to never exclude them. A backdated catch-up
+ * entry for a day admin already knows is closed (e.g. filling in a punch
+ * from last week) must never look like a still-open live shift days later.
+ * But a same-day backdated entry (the far more common case -- an employee
+ * forgot to tap IN this morning, admin backdates it a couple hours later)
+ * IS that employee's real, currently-open shift for the rest of today, same
+ * as if they'd tapped it themselves -- excluding it unconditionally (an
+ * earlier version of this function did exactly that) meant such an
+ * employee could never take a Break or have the Kiosk show them as clocked
+ * in for the rest of the day, even though recordAttendance_'s OUT path
+ * (which uses findTodayInLog_ below, always inclusive of backdated entries)
+ * would happily clock them out -- two "is this employee on shift" checks
+ * silently disagreeing about the same employee on the same day.
+ * findTodayInLog_'s OTHER callers (day-specific reporting) pass a falsy
+ * value here, unchanged from before this refactor -- a backdated entry
+ * legitimately IS that day's real IN for reporting purposes regardless of
+ * how old it is.
  */
-function findMostRecentInLogWhere_(employeeId, log, isValidTimestamp, excludeAdminBackdated) {
+function findMostRecentInLogWhere_(employeeId, log, isValidTimestamp, excludeStaleAdminBackdatedAsOf) {
   var idCol = log.headers.indexOf('EmployeeID');
   var tsCol = log.headers.indexOf('Timestamp');
   var typeCol = log.headers.indexOf('Type');
@@ -1372,8 +1384,13 @@ function findMostRecentInLogWhere_(employeeId, log, isValidTimestamp, excludeAdm
   for (var i = 0; i < log.rows.length; i++) {
     if (String(log.rows[i][idCol]) !== String(employeeId)) continue;
     if (log.rows[i][typeCol] !== 'IN') continue;
-    if (excludeAdminBackdated && methodCol !== -1 && log.rows[i][methodCol] === 'AdminBackdated') continue;
     var ts = new Date(log.rows[i][tsCol]);
+    if (
+      excludeStaleAdminBackdatedAsOf &&
+      methodCol !== -1 &&
+      log.rows[i][methodCol] === 'AdminBackdated' &&
+      !isSameDay_(ts, excludeStaleAdminBackdatedAsOf)
+    ) continue;
     if (!isValidTimestamp(ts)) continue;
     if (!found || ts > found.timestamp) {
       found = { timestamp: ts, shift: shiftCol !== -1 ? String(log.rows[i][shiftCol] || '') : '' };
@@ -1389,16 +1406,17 @@ function findTodayInLog_(employeeId, now, log) {
     employeeId,
     log,
     function (ts) { return isSameDay_(ts, now); },
-    false
+    null
   );
 }
 
 /**
  * Finds an employee's most recent IN row within MAX_SHIFT_LOOKBACK_HOURS of
  * `now` (NOT just today -- see currentShiftBreakState_ below for why),
- * excluding admin-backdated catch-up entries (see
- * findMostRecentInLogWhere_'s own doc comment for why those must never
- * count as a live, still-open shift). Returns {timestamp, shift} or null.
+ * excluding STALE admin-backdated catch-up entries -- see
+ * findMostRecentInLogWhere_'s own doc comment for exactly what "stale"
+ * means here and why a same-day backdated entry must still count.
+ * Returns {timestamp, shift} or null.
  *
  * Same accepted bound as sumCompletedBreakMinutesToday_ above: `log` is
  * capped at RECENT_LOG_ROWS (1000) rows ACROSS EVERY EMPLOYEE, so on an
@@ -1416,7 +1434,7 @@ function findMostRecentInLog_(employeeId, now, log) {
     employeeId,
     log,
     function (ts) { return ts.getTime() <= now.getTime() && ts.getTime() >= earliestAllowed; },
-    true
+    now
   );
 }
 
