@@ -351,17 +351,28 @@ function handleKioskLookupPin_(params) {
     return fail_('inactive', 'Employee is not active');
   }
 
-  // Deliberately no onShift/onBreak here -- an earlier version called
-  // currentShiftBreakState_ (an AttendanceLog read) on every single PIN
-  // lookup, adding real Sheets I/O to the highest-frequency, most
-  // latency-sensitive path in the whole app (KIOSK_TIMEOUT_MS is only
-  // 3000ms) for the sole purpose of labeling the Break button. The app now
-  // gets that label from its own on-device kiosk_break_state_v1 marker
-  // instead (see breakState.ts), kept correct by every successful
-  // BREAK_START/BREAK_END/OUT (see KioskScreen's onConfirm/queueOffline) --
-  // no server round trip needed, and recordBreak_ is still the actual
-  // source of truth/enforcement regardless of what the button says.
-  return ok_({ name: found.row.Name, shifts: shiftChoicesFor_(found.row) });
+  // Reversed a deliberate earlier trade-off: this used to return no
+  // onShift/onBreak at all, to avoid adding an AttendanceLog read to the
+  // highest-frequency, most latency-sensitive path in the app
+  // (KIOSK_TIMEOUT_MS is only 3000ms) just to label the Break button --
+  // the app instead trusted its own on-device kiosk_break_state_v1 marker
+  // (breakState.ts), kept correct by every successful
+  // BREAK_START/BREAK_END/OUT. That marker turned out to have no way to
+  // self-correct once wrong: a real incident (an employee's BREAK_END
+  // silently failed to ever reach the server -- see queueOffline's
+  // BREAK_END branch in KioskScreen.tsx) left it stuck "on break" for
+  // hours with nothing to notice or fix it, since even a later ONLINE
+  // lookup never checked the server's real state. currentShiftBreakState_
+  // is the same call recordBreak_ already makes (bounded "recent log"
+  // read, not a full-sheet scan), so the added cost here is the same one
+  // other latency-sensitive Kiosk endpoints already pay successfully.
+  var breakState = currentShiftBreakState_(found.row.EmployeeID, new Date());
+  return ok_({
+    name: found.row.Name,
+    shifts: shiftChoicesFor_(found.row),
+    onBreak: breakState.onBreak,
+    breakStartedAt: breakState.onBreak && breakState.lastBreakTs ? breakState.lastBreakTs.toISOString() : null
+  });
 }
 
 /**
@@ -375,12 +386,34 @@ function handleKioskLookupPin_(params) {
  * inert to all of them without any further changes there.
  */
 
+// How far back currentShiftBreakState_ will look for the IN that opened the
+// current shift -- generous enough to cover any real overnight shift
+// (including a Special Shift's worst case, IN just after midnight with a
+// picked end of "Tomorrow" just before midnight again, close to 48h) without
+// reaching back far enough to resurrect a genuinely forgotten, days-old OUT
+// as if the employee were still clocked in today (that's Fill Missed
+// Punches' job, not this function's).
+var MAX_SHIFT_LOOKBACK_HOURS = 48;
+
 /**
  * Figures out whether an employee is currently clocked in and/or on break,
- * by scanning today's rows for them. Shared by handleKioskLookupPin_ (so the
- * kiosk knows which buttons to show) and recordBreak_/recordOfflineSyncedBreak_
- * (to validate a BREAK_START/BREAK_END request). Pass a pre-fetched `log`
- * (see getRecentAttendanceLog_) to avoid re-reading the sheet.
+ * by scanning rows for them since their most recent IN (see
+ * findMostRecentInLog_ -- deliberately NOT day-bounded like findTodayInLog_,
+ * which every OTHER caller of that function correctly wants for
+ * day-specific reporting). Shared by handleKioskLookupPin_ (so the kiosk
+ * knows which buttons to show -- including reconciling a stale on-device
+ * marker against server truth on every live lookup) and
+ * recordBreak_/recordOfflineSyncedBreak_ (to validate a BREAK_START/
+ * BREAK_END request). Pass a pre-fetched `log` (see getRecentAttendanceLog_)
+ * to avoid re-reading the sheet.
+ *
+ * Using "today's IN only" here used to make a break or shift genuinely still
+ * open past midnight (a real overnight shift, or a Special Shift spanning
+ * into "Tomorrow") invisible the moment the calendar day rolled over --
+ * `recordBreak_` would wrongly reject a legitimate BREAK_START just after
+ * midnight as not_clocked_in, and (the incident this was fixed for)
+ * handleKioskLookupPin_ could never detect and self-heal a break that had
+ * been silently left open since the day before.
  *
  * `now` doubles as "as of what moment" -- for the live path it's the actual
  * current time, but the offline-sync path passes the queued tap's own
@@ -392,7 +425,7 @@ function handleKioskLookupPin_(params) {
  */
 function currentShiftBreakState_(employeeId, now, log) {
   log = log || getRecentAttendanceLog_();
-  var todayIn = findTodayInLog_(employeeId, now, log);
+  var todayIn = findMostRecentInLog_(employeeId, now, log);
   if (!todayIn) return { onShift: false, onBreak: false, todayIn: null };
 
   var idCol = log.headers.indexOf('EmployeeID');
@@ -568,8 +601,12 @@ function recordBreak_(employeeId, type, durationMinutes) {
   var now = new Date(); // one instant for the whole request -- shared by the state check, the duplicate guard, and the row itself, same reasoning recordAttendance_ already follows
   var log = getRecentAttendanceLog_();
   var state = currentShiftBreakState_(employeeId, now, log);
-  if (!state.todayIn) return fail_('not_clocked_in', 'Not clocked in yet today');
-  if (!state.onShift) return fail_('already_clocked_out', 'Already clocked out today');
+  // Message says just "Not clocked in" (not "...today") since state.todayIn
+  // is now populated by findMostRecentInLog_'s 48h lookback, not a same-day
+  // check -- see currentShiftBreakState_'s doc comment.
+  if (!state.todayIn) return fail_('not_clocked_in', 'Not clocked in');
+  // Same "not just today" wording fix as the not_clocked_in message above.
+  if (!state.onShift) return fail_('already_clocked_out', 'Already clocked out');
   if (type === 'BREAK_START' && state.onBreak) return fail_('already_on_break', 'Already on break');
   if (type === 'BREAK_END' && !state.onBreak) return fail_('not_on_break', 'Not currently on break');
 
@@ -1304,20 +1341,40 @@ function handleVerifyKioskExitPin_(params) {
   return fail_('invalid_pin', 'Incorrect exit PIN');
 }
 
-/** Finds today's most recent IN row for an employee. Returns {timestamp, shift} or null. Pass a pre-fetched `log` (see getRecentAttendanceLog_) to avoid re-reading the sheet. */
-function findTodayInLog_(employeeId, now, log) {
-  log = log || getRecentAttendanceLog_();
+/**
+ * Shared core for findTodayInLog_ and findMostRecentInLog_ below -- both
+ * want "this employee's latest IN row matching some timestamp bound," and
+ * previously duplicated that whole scan independently, which is exactly how
+ * findTodayInLog_'s day-boundary assumption ended up silently baked into
+ * a second, similar-looking function (see findMostRecentInLog_'s own doc
+ * comment for the incident that exposed it) -- one scan, two different
+ * `isValidTimestamp` predicates, so a future fix to the scan itself (column
+ * lookups, tie-breaking) can't be applied to only one of them by accident.
+ *
+ * `excludeAdminBackdated`: when true, skips IN rows written by
+ * menuBulkMarkAttendance_/menuAddBackdatedAttendance_/menuFillMissedPunches_
+ * (Method 'AdminBackdated', see recordBackdatedAttendance_) -- those are
+ * historical catch-up entries for a day admin already knows is closed, not
+ * a live shift anyone should be able to validly take a break against or
+ * have the Kiosk reconcile as "still open." findTodayInLog_'s OTHER
+ * callers (day-specific reporting) pass false here, unchanged from before
+ * this refactor -- a backdated entry legitimately IS that day's real IN for
+ * reporting purposes, just not a live-shift anchor.
+ */
+function findMostRecentInLogWhere_(employeeId, log, isValidTimestamp, excludeAdminBackdated) {
   var idCol = log.headers.indexOf('EmployeeID');
   var tsCol = log.headers.indexOf('Timestamp');
   var typeCol = log.headers.indexOf('Type');
   var shiftCol = log.headers.indexOf('Shift');
+  var methodCol = log.headers.indexOf('Method');
 
   var found = null;
   for (var i = 0; i < log.rows.length; i++) {
     if (String(log.rows[i][idCol]) !== String(employeeId)) continue;
     if (log.rows[i][typeCol] !== 'IN') continue;
+    if (excludeAdminBackdated && methodCol !== -1 && log.rows[i][methodCol] === 'AdminBackdated') continue;
     var ts = new Date(log.rows[i][tsCol]);
-    if (!isSameDay_(ts, now)) continue;
+    if (!isValidTimestamp(ts)) continue;
     if (!found || ts > found.timestamp) {
       found = { timestamp: ts, shift: shiftCol !== -1 ? String(log.rows[i][shiftCol] || '') : '' };
     }
@@ -1325,7 +1382,44 @@ function findTodayInLog_(employeeId, now, log) {
   return found;
 }
 
-/** Finds an employee's row for a specific type (IN or OUT) on a specific date, searching the whole AttendanceLog (not just the recent window) since a backdated entry can be from any point in the past. */
+/** Finds today's most recent IN row for an employee. Returns {timestamp, shift} or null. Pass a pre-fetched `log` (see getRecentAttendanceLog_) to avoid re-reading the sheet. Includes admin-backdated entries -- day-specific reporting callers want the real historical IN either way. */
+function findTodayInLog_(employeeId, now, log) {
+  log = log || getRecentAttendanceLog_();
+  return findMostRecentInLogWhere_(
+    employeeId,
+    log,
+    function (ts) { return isSameDay_(ts, now); },
+    false
+  );
+}
+
+/**
+ * Finds an employee's most recent IN row within MAX_SHIFT_LOOKBACK_HOURS of
+ * `now` (NOT just today -- see currentShiftBreakState_ below for why),
+ * excluding admin-backdated catch-up entries (see
+ * findMostRecentInLogWhere_'s own doc comment for why those must never
+ * count as a live, still-open shift). Returns {timestamp, shift} or null.
+ *
+ * Same accepted bound as sumCompletedBreakMinutesToday_ above: `log` is
+ * capped at RECENT_LOG_ROWS (1000) rows ACROSS EVERY EMPLOYEE, so on an
+ * implausibly high-volume 48h window (1000+ combined punches org-wide) a
+ * genuinely-open shift's IN could theoretically scroll out of the window
+ * before 48h elapses, wrongly falling back to not_clocked_in. Not fixed
+ * here for the same reason: an unbounded read would defeat the point of
+ * RECENT_LOG_ROWS on this latency-sensitive path, and this org's actual
+ * punch volume is nowhere near 1000 rows in any 48h span.
+ */
+function findMostRecentInLog_(employeeId, now, log) {
+  log = log || getRecentAttendanceLog_();
+  var earliestAllowed = now.getTime() - MAX_SHIFT_LOOKBACK_HOURS * 60 * 60 * 1000;
+  return findMostRecentInLogWhere_(
+    employeeId,
+    log,
+    function (ts) { return ts.getTime() <= now.getTime() && ts.getTime() >= earliestAllowed; },
+    true
+  );
+}
+
 /**
  * Reads AttendanceLog once and returns the set of EmployeeIDs (string keys)
  * who have at least one IN row on `date`. Use instead of calling
@@ -1352,6 +1446,7 @@ function getEmployeeIdsWithInOnDate_(date) {
   return ids;
 }
 
+/** Finds an employee's row for a specific type (IN or OUT) on a specific date, searching the whole AttendanceLog (not just the recent window) since a backdated entry can be from any point in the past. */
 function findLogEntryForDate_(employeeId, type, date) {
   var sheet = getSheet_('AttendanceLog');
   var values = sheet.getDataRange().getValues();
@@ -1651,8 +1746,10 @@ function recordOfflineSyncedBreak_(employeeId, type, timestamp, clientId, durati
 
   var log = getRecentAttendanceLog_();
   var state = currentShiftBreakState_(employeeId, timestamp, log);
-  if (!state.todayIn) return { error: 'not_clocked_in', message: 'Not clocked in yet today' };
-  if (!state.onShift) return { error: 'already_clocked_out', message: 'Already clocked out today' };
+  // See the identical comment in recordBreak_ -- same 48h-lookback reasoning applies here.
+  if (!state.todayIn) return { error: 'not_clocked_in', message: 'Not clocked in' };
+  // See the identical comment in recordBreak_.
+  if (!state.onShift) return { error: 'already_clocked_out', message: 'Already clocked out' };
   if (type === 'BREAK_START' && state.onBreak) return { error: 'already_on_break', message: 'Already on break' };
   if (type === 'BREAK_END' && !state.onBreak) return { error: 'not_on_break', message: 'Not currently on break' };
 
