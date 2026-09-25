@@ -585,12 +585,16 @@ export default function KioskScreen({ navigation }: Props) {
   // guess at mid-shift.
   useEffect(() => {
     if (lookupName === null) return;
-    // Skipped entirely while on break -- IN/OUT/OUT OT are hidden during a
-    // break (see the render below, only Back from Break shows), so
-    // auto-selecting one of them here would leave `selection` pointing at a
-    // button the employee can't even see, and Confirm would silently submit
-    // it if tapped without ever showing what was about to happen.
-    if (onBreak) return;
+    // While on break, Back from Break is the only button shown (IN/OUT/OUT
+    // OT are hidden, see the render below) -- unlike the IN/OUT guess below,
+    // there's no ambiguity about which action they want, so pre-select it
+    // via selectType (not setSelection directly, so it also clears any
+    // stale shift/duration pick from a previous selection) and let them
+    // tap Confirm right away instead of having to tap the button first.
+    if (onBreak) {
+      selectType('BREAK_END');
+      return;
+    }
     const hour = new Date().getHours();
     // alreadyCheckedInToday (see checkinState.ts) is resolved together with
     // lookupName itself (see tryLocalLookup/lookupPin above), so it's
@@ -1676,11 +1680,13 @@ export default function KioskScreen({ navigation }: Props) {
           {/* onBreak gets its own subtitle: IN/OUT/OUT OT are hidden below
               while on break (see typeRow's !onBreak guard), so "Select IN or
               OUT" would be actively wrong -- there's nothing to select but
-              Back from Break itself. */}
+              Back from Break itself, which the auto-select effect above
+              already pre-selects -- so the instruction is just to confirm,
+              not to tap it again. */}
           <Text style={styles.subtitleDark}>
-            {onBreak ? 'Tap below when you\'re back' : 'Select IN or OUT, then confirm'}
+            {onBreak ? 'Confirm to end your break' : 'Select IN or OUT, then confirm'}
             {'\n'}
-            <Text style={styles.thaiSmall}>{onBreak ? 'กลับมาแล้วกดด้านล่าง' : 'เลือก IN หรือ OUT แล้วกดยืนยัน'}</Text>
+            <Text style={styles.thaiSmall}>{onBreak ? 'กดยืนยันเพื่อกลับมาทำงาน' : 'เลือก IN หรือ OUT แล้วกดยืนยัน'}</Text>
           </Text>
 
           {/* Hidden entirely while on break -- IN is impossible (already
