@@ -1011,6 +1011,21 @@ export default function KioskScreen({ navigation }: Props) {
         await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
         showFeedback({ kind: 'error', message: res.message });
       }
+    } catch (err) {
+      // Same reasoning as the BREAK_START/BREAK_END branch's own catch above
+      // -- an exception after kioskCheckin/queueOffline resolves (e.g. one of
+      // the local-cache writes at lines 986-999 above) would otherwise skip
+      // resetCheckin entirely, leaving the screen stuck with no success/error
+      // feedback and no way for the employee to tell whether their IN/OUT
+      // actually reached the server.
+      console.warn('onConfirm checkin exception:', err);
+      resetCheckin();
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      showFeedback({
+        kind: 'error',
+        message:
+          'Something went wrong. Look yourself up again to check your real status before continuing.\nเกิดข้อผิดพลาด กรุณากดรหัสของคุณใหม่เพื่อตรวจสอบสถานะจริงก่อนทำต่อ'
+      });
     } finally {
       isConfirmingRef.current = false;
       setIsProcessing(false);
