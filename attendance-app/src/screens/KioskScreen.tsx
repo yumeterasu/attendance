@@ -359,6 +359,13 @@ export default function KioskScreen({ navigation }: Props) {
   // Same reasoning as isConfirmingRef below -- state alone can't close a
   // same-tick double-invocation (e.g. a bounced touch on the 4th digit).
   const isLookingUpRef = useRef(false);
+  // Bumped at the start of every lookupPin call -- lets the background
+  // onBreak reconciliation below (fired after a local-directory hit) tell
+  // whether it's still relevant by the time it resolves. Without this, a
+  // slow response from an earlier PIN entry could land after the employee
+  // has already moved on (re-entered the same PIN, or a different one) and
+  // overwrite state a newer lookup already set more recently.
+  const lookupGenerationRef = useRef(0);
   const [selection, setSelection] = useState<Selection | null>(null);
   // Whether this PIN is currently on break right now -- drives the Break
   // button's label (Start Break vs Back from Break). Comes from the live
@@ -657,6 +664,8 @@ export default function KioskScreen({ navigation }: Props) {
     if (isLookingUpRef.current) return;
     isLookingUpRef.current = true;
     setIsLookingUp(true);
+    lookupGenerationRef.current += 1;
+    const myGeneration = lookupGenerationRef.current;
     try {
       if (!isConnected) {
         if (await tryLocalLookup(value)) return;
@@ -687,6 +696,34 @@ export default function KioskScreen({ navigation }: Props) {
       const isPeak = isPeakOfflineWindowNow();
       if (await tryLocalLookup(value)) {
         setForcedOffline(isPeak);
+        // A local-directory hit means the live call below (the one carrying
+        // server-authoritative onBreak/breakStartedAt) never runs -- and a
+        // local hit is the COMMON case, not the rare one, since the
+        // directory refreshes every 30s while connected. Without this, the
+        // whole point of reconciling onBreak against the server on every
+        // live lookup (see the comment on the live branch below) would
+        // almost never actually happen, and a stale on-device break marker
+        // would keep going uncorrected exactly like the incident this was
+        // built to fix. Fired in the background (not awaited) so it can't
+        // slow down the instant local response; skipped during a peak
+        // window since that's a deliberate "skip the network entirely"
+        // window (see PEAK_OFFLINE_WINDOWS), and any failure is silently
+        // ignored -- the local guess already showing is a reasonable
+        // fallback, same as before this existed.
+        if (!isPeak) {
+          kioskLookupPin(value)
+            .then((res) => {
+              // Superseded by a newer lookup (same PIN re-entered, or a
+              // different one) -- applying this now would overwrite state
+              // that lookup already set more recently.
+              if (lookupGenerationRef.current !== myGeneration) return;
+              if (res.success) {
+                setOnBreak(res.onBreak);
+                setLocalOnBreak(value, res.onBreak ? res.breakStartedAt : null);
+              }
+            })
+            .catch(() => {});
+        }
         return;
       }
       setForcedOffline(false);
@@ -895,7 +932,14 @@ export default function KioskScreen({ navigation }: Props) {
           } else {
             playBreakEndSound();
           }
-          await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+          // Wrapped locally -- the break itself already succeeded (resetCheckin
+          // and the local-marker writes above already ran), so a haptics
+          // failure here (a device/platform quirk) must never fall through to
+          // the catch below and show "something went wrong" for an action
+          // that actually went right.
+          try {
+            await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+          } catch {}
           showFeedback({ kind: 'break', type: res.type, name: res.name, timestamp: res.timestamp, durationMinutes: res.durationMinutes, remainingMinutes: res.remainingMinutes });
         } else if (res.error === 'timeout' || res.error === 'network_error') {
           await queueOffline(breakType, false, null, null, breakDuration);
@@ -1005,7 +1049,12 @@ export default function KioskScreen({ navigation }: Props) {
         } else {
           playCheckoutSound();
         }
-        await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        // Same reasoning as the BREAK_START/BREAK_END branch above -- the
+        // IN/OUT itself already succeeded, so a haptics failure must not be
+        // mistaken by the catch below for the check-in itself failing.
+        try {
+          await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        } catch {}
         showFeedback({ kind: 'success', type: res.type, name: res.name, timestamp: res.timestamp, late: res.late, ot: res.ot });
       } else if (res.error === 'timeout' || res.error === 'network_error') {
         // Connection dropped mid-request -- queue it rather than making them retry manually.
