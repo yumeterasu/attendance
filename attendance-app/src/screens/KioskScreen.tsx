@@ -246,6 +246,84 @@ function Dots({
   );
 }
 
+// Special Shift's start/end time input -- two separate sliders (hour 0-23
+// step 1, minute 0/15/30/45 step 15) instead of one slider spanning the
+// whole day in 15-min steps. A single 0-1425 slider packs 96 steps into one
+// short drag, which reads as genuinely hard to land on precisely; splitting
+// hour and minute gives each its own much coarser, easier-to-hit range.
+// Still just two numbers in, two numbers out -- callers keep their existing
+// single "minutes since midnight" state (specialStartMinutes/
+// specialEndMinutes) and just split/recombine it here.
+//
+// onActivity (optional): the screen's idle-timeout reset -- passed through
+// to each slider's onValueChange, not just relied on via touch bubbling up
+// to some ancestor View. Two reasons this is necessary, not just extra
+// caution: (1) a native Slider (SeekBar on Android) can consume the touch
+// stream at the native level, so an ancestor's onTouchStart may never fire
+// for a touch that starts directly on the slider; (2) onTouchStart only
+// fires once per touch-down, never again for the rest of a single drag, so
+// a slow multi-second slide with the finger never lifted would otherwise
+// still hit the idle timeout mid-gesture. onValueChange fires continuously
+// as the value changes during a drag, so wiring it there covers both gaps.
+function HourMinuteSliders({
+  hour,
+  minute,
+  onHourChange,
+  onMinuteChange,
+  onActivity,
+  disabled
+}: {
+  hour: number;
+  minute: number;
+  onHourChange: (hour: number) => void;
+  onMinuteChange: (minute: number) => void;
+  onActivity?: () => void;
+  disabled?: boolean;
+}) {
+  return (
+    <View style={styles.hourMinuteRow}>
+      <View style={styles.hourMinuteCol}>
+        <Text style={styles.hourMinuteLabel}>
+          Hour{'\n'}
+          <Text style={styles.thaiTiny}>ชั่วโมง</Text>
+        </Text>
+        <Slider
+          style={styles.specialShiftSlider}
+          minimumValue={0}
+          maximumValue={23}
+          step={1}
+          value={hour}
+          onValueChange={(h) => {
+            onActivity?.();
+            onHourChange(h);
+          }}
+          minimumTrackTintColor={TEAL}
+          disabled={disabled}
+        />
+      </View>
+      <View style={styles.hourMinuteCol}>
+        <Text style={styles.hourMinuteLabel}>
+          Min{'\n'}
+          <Text style={styles.thaiTiny}>นาที</Text>
+        </Text>
+        <Slider
+          style={styles.specialShiftSlider}
+          minimumValue={0}
+          maximumValue={60 - SPECIAL_SHIFT_STEP_MINUTES}
+          step={SPECIAL_SHIFT_STEP_MINUTES}
+          value={minute}
+          onValueChange={(m) => {
+            onActivity?.();
+            onMinuteChange(m);
+          }}
+          minimumTrackTintColor={TEAL}
+          disabled={disabled}
+        />
+      </View>
+    </View>
+  );
+}
+
 export default function KioskScreen({ navigation }: Props) {
   const isConnected = useNetworkStatus();
   useOfflineSync(isConnected);
@@ -477,10 +555,26 @@ export default function KioskScreen({ navigation }: Props) {
 
   // Shared kiosk: if someone looks themselves up and walks away without
   // confirming, don't leave their name on screen for the next person.
+  // Inactivity-based (resets on every touch anywhere on screen, via
+  // resetIdleTimer/onTouchStart below), not just a fixed delay from the
+  // initial lookup -- a fixed delay from lookup meant someone genuinely
+  // still using the screen (e.g. carefully adjusting the Special Shift
+  // sliders) could get kicked back to the PIN screen mid-interaction just
+  // because the total time added up, even though they never stopped
+  // touching it.
+  const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const resetIdleTimer = () => {
+    if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
+    if (lookupName !== null) {
+      idleTimerRef.current = setTimeout(resetCheckin, CONFIRM_TIMEOUT_MS);
+    }
+  };
   useEffect(() => {
-    if (lookupName === null) return;
-    const timer = setTimeout(resetCheckin, CONFIRM_TIMEOUT_MS);
-    return () => clearTimeout(timer);
+    resetIdleTimer();
+    return () => {
+      if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lookupName]);
 
   // Pre-select IN during the morning arrival window and OUT once it's late
@@ -1464,6 +1558,18 @@ export default function KioskScreen({ navigation }: Props) {
       end={GRADIENT_END}
       locations={GRADIENT_LOCATIONS}
       style={styles.container}
+      // Any touch anywhere on this screen resets the idle timer (see
+      // resetIdleTimer above) -- plain onTouchStart/onTouchMove observers,
+      // not a Pressable/responder claim, so they never compete with or
+      // block the real Pressables underneath for the touch itself, they
+      // just also observe that a touch happened. onTouchMove covers a
+      // slow drag/hold that moves without a fresh touch-down (e.g.
+      // scrolling the ScrollView); the Special Shift sliders specifically
+      // also call resetIdleTimer straight from their own onValueChange
+      // (see HourMinuteSliders' onActivity) since a native Slider isn't
+      // guaranteed to bubble its touch up to here at all.
+      onTouchStart={resetIdleTimer}
+      onTouchMove={resetIdleTimer}
     >
       <View style={styles.netStatusDot}>
         <View style={[styles.netDot, isConnected ? styles.netDotOnline : styles.netDotOffline]} />
@@ -1610,14 +1716,12 @@ export default function KioskScreen({ navigation }: Props) {
                         </Text>
                         <Text style={styles.specialShiftTimeValue}>{minutesToClockLabel_(specialStartMinutes)}</Text>
                       </View>
-                      <Slider
-                        style={styles.specialShiftSlider}
-                        minimumValue={0}
-                        maximumValue={24 * 60 - SPECIAL_SHIFT_STEP_MINUTES}
-                        step={SPECIAL_SHIFT_STEP_MINUTES}
-                        value={specialStartMinutes}
-                        onValueChange={setSpecialStartMinutes}
-                        minimumTrackTintColor={TEAL}
+                      <HourMinuteSliders
+                        hour={Math.floor(specialStartMinutes / 60)}
+                        minute={specialStartMinutes % 60}
+                        onHourChange={(h) => setSpecialStartMinutes(h * 60 + (specialStartMinutes % 60))}
+                        onMinuteChange={(m) => setSpecialStartMinutes(Math.floor(specialStartMinutes / 60) * 60 + m)}
+                        onActivity={resetIdleTimer}
                         disabled={isProcessing}
                       />
 
@@ -1657,14 +1761,12 @@ export default function KioskScreen({ navigation }: Props) {
                         </Text>
                         <Text style={styles.specialShiftTimeValue}>{minutesToClockLabel_(specialEndMinutes)}</Text>
                       </View>
-                      <Slider
-                        style={styles.specialShiftSlider}
-                        minimumValue={0}
-                        maximumValue={24 * 60 - SPECIAL_SHIFT_STEP_MINUTES}
-                        step={SPECIAL_SHIFT_STEP_MINUTES}
-                        value={specialEndMinutes}
-                        onValueChange={setSpecialEndMinutes}
-                        minimumTrackTintColor={TEAL}
+                      <HourMinuteSliders
+                        hour={Math.floor(specialEndMinutes / 60)}
+                        minute={specialEndMinutes % 60}
+                        onHourChange={(h) => setSpecialEndMinutes(h * 60 + (specialEndMinutes % 60))}
+                        onMinuteChange={(m) => setSpecialEndMinutes(Math.floor(specialEndMinutes / 60) * 60 + m)}
+                        onActivity={resetIdleTimer}
                         disabled={isProcessing}
                       />
 
@@ -2063,6 +2165,15 @@ const styles = StyleSheet.create({
   specialShiftFieldLabel: { color: TEXT_MUTED, fontSize: 13, fontFamily: FONT_BODY_EXTRABOLD },
   specialShiftTimeValue: { color: TEAL, fontSize: 20, fontFamily: FONT_DISPLAY_EXTRABOLD },
   specialShiftSlider: { width: '100%', height: 36 },
+  hourMinuteRow: { flexDirection: 'row', gap: 14, marginTop: 4 },
+  hourMinuteCol: { flex: 1 },
+  hourMinuteLabel: {
+    color: TEXT_MUTED,
+    fontSize: 12,
+    fontFamily: FONT_BODY_EXTRABOLD,
+    textAlign: 'center',
+    marginBottom: 2
+  },
   specialShiftDayToggle: { flexDirection: 'row', gap: 8 },
   specialShiftDayOption: {
     borderRadius: 999,
