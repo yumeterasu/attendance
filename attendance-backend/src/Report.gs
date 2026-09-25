@@ -558,6 +558,7 @@ function sumMonthTotals_(dayLogs, scheduledShiftsForEmployee, daysInMonth) {
   var daysWorked = 0, lateCount = 0, overCount = 0, otMinutesTotal = 0, otQuartersTotal = 0;
   for (var day = 1; day <= daysInMonth; day++) {
     var entry = dayLogs[day];
+    var scheduledShift = scheduledShiftsForEmployee && scheduledShiftsForEmployee[day];
     // Checked before the Event-day branch below and regardless of it: break
     // punches are independent, real taps that happen no matter what the day
     // was scheduled as, so an over-budget break on an Event day must still
@@ -574,15 +575,39 @@ function sumMonthTotals_(dayLogs, scheduledShiftsForEmployee, daysInMonth) {
     // eventShiftOverrideTimestamp_) and would count either way, so this
     // never double-counts against the entry-based path below -- the two are
     // mutually exclusive per day (continue).
-    if (isEventShift_(scheduledShiftsForEmployee && scheduledShiftsForEmployee[day])) {
+    //
+    // Deliberately isEventShift_ here, NOT isNoLateNoOtShift_. A normal
+    // Special day always has a real punch backing it (it's the employee's
+    // own pick at check-in, and an overnight one writes the SAME "Special
+    // ..." string onto both its start and end day's Schedule cell -- see
+    // recordAttendance_), so widening this to Special would double-count an
+    // overnight Special shift as two separate "days worked" (the start day
+    // via its real IN, the end day via this synthesis, since the end day's
+    // only real row is an OUT, which this IN-based synthesis doesn't see).
+    // The Late/OT skip below, however, DOES need to cover Special too -- see
+    // the isNoLateNoOtShift_ call.
+    if (isEventShift_(scheduledShift)) {
       daysWorked++;
       continue;
     }
     if (entry) {
       if (entry.timeIn) daysWorked++;
-      if (entry.late) lateCount++;
-      otMinutesTotal += entry.otMinutes || 0;
-      otQuartersTotal += entry.otQuarters || 0;
+      // Every other Late/OT view (Report tab, Dashboard Daily, Recompute,
+      // the Summary sheet's own yearly "All" rollup) exempts both Event AND
+      // Special days via isNoLateNoOtShift_ -- this monthly Summary used to
+      // only check isEventShift_ here, so a Special day (whose Late/OT
+      // columns are already correctly false/0 at check-in time -- see
+      // isSpecialShift_'s own comment, Attendance.gs -- but could still be
+      // wrong on a row recorded before the employee's shift was later
+      // changed to Special, same retroactive-edit scenario as Event) wasn't
+      // covered here, disagreeing with every other view for the same
+      // employee/day.
+      var isNoLateOtDay = isNoLateNoOtShift_(scheduledShift);
+      if (entry.late && !isNoLateOtDay) lateCount++;
+      if (!isNoLateOtDay) {
+        otMinutesTotal += entry.otMinutes || 0;
+        otQuartersTotal += entry.otQuarters || 0;
+      }
     }
   }
   return { daysWorked: daysWorked, lateCount: lateCount, overCount: overCount, otMinutesTotal: otMinutesTotal, otQuartersTotal: otQuartersTotal };
@@ -796,7 +821,11 @@ function aggregateYearSummary_(values, year) {
     // activity is a single stray row (even an unpaired break event) still
     // gets a (zero-ish) entry, instead of silently vanishing from the
     // result below for having "no byDate entry at all".
-    if (!byDate[key]) byDate[key] = { employeeId: employeeId, timeIn: null, timeOut: null, late: false, otMinutes: 0, otQuarters: 0, breakMinutes: 0 };
+    // year/month0/day (month0 duplicates what's already baked into `key`,
+    // just unpacked) let the tally loop below look up each day's Schedule
+    // override without re-parsing `key` or re-deriving the calendar year
+    // from fiscal-month arithmetic.
+    if (!byDate[key]) byDate[key] = { employeeId: employeeId, timeIn: null, timeOut: null, late: false, otMinutes: 0, otQuarters: 0, breakMinutes: 0, year: ts.getFullYear(), month0: ts.getMonth(), day: ts.getDate() };
     var entry = byDate[key];
 
     if (type === 'IN') {
@@ -831,11 +860,40 @@ function aggregateYearSummary_(values, year) {
       } else if (openStart) {
         var minutes = Math.round((events[e].ts.getTime() - openStart.getTime()) / 60000);
         var startKey = employeeId + '|' + openStart.getMonth() + '|' + openStart.getDate();
-        if (!byDate[startKey]) byDate[startKey] = { employeeId: employeeId, timeIn: null, timeOut: null, late: false, otMinutes: 0, otQuarters: 0, breakMinutes: 0 };
+        if (!byDate[startKey]) byDate[startKey] = { employeeId: employeeId, timeIn: null, timeOut: null, late: false, otMinutes: 0, otQuarters: 0, breakMinutes: 0, year: openStart.getFullYear(), month0: openStart.getMonth(), day: openStart.getDate() };
         byDate[startKey].breakMinutes += minutes;
         openStart = null;
       }
     }
+  });
+
+  // Single spot for the scheduleCache key format, used at every one of its
+  // three touch points below (population + two lookups) so they can't
+  // independently drift the way the fiscal-month math and day-column
+  // matching elsewhere in this diff once did before being consolidated.
+  function scheduleCacheKey_(calYear, calMonth) { return calYear + '-' + calMonth; }
+
+  // Fiscal months' calYear/calMonth pairs (1-indexed calMonth, matching
+  // getScheduledShiftsForMonth_'s expectation), computed once and reused by
+  // both the schedule-cache population right below and the day-synthesis
+  // second pass further down -- avoids deriving the same fiscal-to-calendar
+  // month math (Date construction, month-overflow handling) in two places
+  // that could otherwise drift apart.
+  var fiscalMonths = [];
+  for (var m = 0; m < 12; m++) {
+    var monthDate = new Date(year, FISCAL_YEAR_START_MONTH + m, 1);
+    fiscalMonths.push({ calYear: monthDate.getFullYear(), calMonth: monthDate.getMonth() + 1 });
+  }
+
+  // Fetches each fiscal month's "Schedule YYYY-MM" sheet exactly once,
+  // cached by scheduleCacheKey_ -- shared by the tally loop below (to apply
+  // the same Event/Special "no Late/no OT" override every other Late/OT
+  // view already applies live, see isNoLateNoOtShift_) and the day-synthesis
+  // second pass further down, so this reads each month's Schedule sheet
+  // once total for the whole function, not once per pass.
+  var scheduleCache = {};
+  fiscalMonths.forEach(function (fm) {
+    scheduleCache[scheduleCacheKey_(fm.calYear, fm.calMonth)] = getScheduledShiftsForMonth_(fm.calYear, fm.calMonth);
   });
 
   var result = {};
@@ -844,10 +902,26 @@ function aggregateYearSummary_(values, year) {
     if (!result[entry.employeeId]) result[entry.employeeId] = { daysWorked: 0, lateCount: 0, overCount: 0, otMinutesTotal: 0, otQuartersTotal: 0 };
     var totals = result[entry.employeeId];
     if (entry.timeIn) totals.daysWorked++;
-    if (entry.late) totals.lateCount++;
     if (entry.breakMinutes > DAILY_BREAK_BUDGET_MINUTES) totals.overCount++;
-    totals.otMinutesTotal += entry.otMinutes;
-    totals.otQuartersTotal += entry.otQuarters;
+
+    // Every other Late/OT view (per-month Report, per-month Summary,
+    // Dashboard Daily) re-derives this live from the current Schedule sheet
+    // on every read, so editing a day's cell to Event/Special fixes what
+    // they show immediately -- this yearly rollup used to just trust
+    // whatever Late/OTMinutes/OTQuarters happened to already be stored on
+    // the AttendanceLog row, which only reflects that override AFTER
+    // Recompute has actually run for that month. Matching the other views
+    // here means the "All" total is correct immediately too, not just after
+    // a Recompute.
+    var byDayForEntry = scheduleCache[scheduleCacheKey_(entry.year, entry.month0 + 1)];
+    var scheduledShiftForEntry = (byDayForEntry && byDayForEntry[entry.employeeId] && byDayForEntry[entry.employeeId][entry.day]) || '';
+    var isNoLateOtDay = isNoLateNoOtShift_(scheduledShiftForEntry);
+
+    if (entry.late && !isNoLateOtDay) totals.lateCount++;
+    if (!isNoLateOtDay) {
+      totals.otMinutesTotal += entry.otMinutes;
+      totals.otQuartersTotal += entry.otQuarters;
+    }
   }
 
   // Second pass: Event-scheduled days still count as a full day worked no
@@ -856,19 +930,16 @@ function aggregateYearSummary_(values, year) {
   // AttendanceLog rows at all (never shows up in byDate above), and the edge
   // case of a stray OUT-only row with no matching IN (byDate has an entry,
   // but entry.timeIn is null so the first pass above didn't count it).
-  // Reads each fiscal month's Schedule sheet once (12 reads total, same
-  // cost countLeavesForYear_ already pays for the same reason). Skipped
+  // Reuses scheduleCache from above (no extra Schedule-sheet reads). Skipped
   // only when byDate already has a REAL IN for that day -- a genuine Event
   // punch already has entry.timeIn forced to the shift's own start time
   // (see eventShiftOverrideTimestamp_) and was already counted by the first
   // pass, so this never double-counts that case.
   var employees = getAllEmployees_();
-  for (var m = 0; m < 12; m++) {
-    var monthDate = new Date(year, FISCAL_YEAR_START_MONTH + m, 1);
-    var calYear = monthDate.getFullYear();
-    var calMonth = monthDate.getMonth() + 1; // 1-indexed, matches getScheduledShiftsForMonth_'s expectation
+  fiscalMonths.forEach(function (fm) {
+    var calYear = fm.calYear, calMonth = fm.calMonth;
     var daysInThisMonth = new Date(calYear, calMonth, 0).getDate();
-    var shiftsForMonth = getScheduledShiftsForMonth_(calYear, calMonth);
+    var shiftsForMonth = scheduleCache[scheduleCacheKey_(calYear, calMonth)];
 
     employees.forEach(function (emp) {
       var byDay = shiftsForMonth[emp.EmployeeID];
@@ -881,7 +952,7 @@ function aggregateYearSummary_(values, year) {
         result[emp.EmployeeID].daysWorked++;
       }
     });
-  }
+  });
 
   return result;
 }
@@ -1218,12 +1289,16 @@ function highlightShiftMismatches_(sheet, year, month) {
     }
   }
 
+  // See resolveScheduleDayColumns_'s own doc comment (Attendance.gs) for why
+  // this isn't headers.indexOf(d) -- a manually-retyped header cell would
+  // silently fail that exact-type match and skip every check for that day.
+  var dayCols = resolveScheduleDayColumns_(headers);
   var flaggedA1 = [];
   var lines = [];
   for (var r = 1; r < values.length; r++) {
     var employeeId = String(values[r][idCol]);
     for (var d = 1; d <= daysInMonth; d++) {
-      var dayCol = headers.indexOf(d);
+      var dayCol = dayCols.hasOwnProperty(d) ? dayCols[d] : -1;
       if (dayCol === -1) continue;
       var scheduledShift = String(values[r][dayCol] || '').trim();
       if (isNoLateNoOtShift_(scheduledShift)) continue; // Event or Special -- one-off/irregular by nature, not a normal recurring shift to flag as "wrong"
@@ -1292,7 +1367,11 @@ function findScheduleCell_(employeeId, date) {
   var values = sheet.getDataRange().getValues();
   var headers = values[0];
   var idCol = headers.indexOf('EmployeeID');
-  var dayCol = headers.indexOf(date.getDate());
+  // Not headers.indexOf(date.getDate()) -- see resolveScheduleDayColumns_'s
+  // own doc comment (Attendance.gs) for why that requires an exact type
+  // match a manually-retyped header cell can silently fail.
+  var dayCols = resolveScheduleDayColumns_(headers);
+  var dayCol = dayCols.hasOwnProperty(date.getDate()) ? dayCols[date.getDate()] : -1;
   if (idCol === -1 || dayCol === -1) return null;
 
   for (var i = 1; i < values.length; i++) {

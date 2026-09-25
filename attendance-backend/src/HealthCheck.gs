@@ -423,9 +423,31 @@ function checkCurrentSchedule_(findings, activeEmployees) {
     }
   });
 
+  // See resolveScheduleDayColumns_'s own doc comment (Attendance.gs) for why
+  // this isn't headers.indexOf(d) -- a manually-retyped header cell would
+  // silently fail that exact-type match and skip every check for that day.
+  var dayCols = resolveScheduleDayColumns_(headers);
+  // resolveScheduleDayColumns_ only trusts a header whose raw cell type is
+  // already number or string (deliberately -- see its own comment on why a
+  // boolean/Date-typed header must NOT be coerced into matching a day, to
+  // avoid a false match like Number(true) === 1). That's the right call for
+  // every READER of this sheet, but it means a header corrupted into some
+  // OTHER type (e.g. accidentally reformatted as a Date) would otherwise
+  // silently vanish from every check with nothing to ever flag it -- so
+  // Health Check specifically (whose whole job is catching exactly this
+  // kind of data-quality problem) checks for that gap here instead.
+  for (var d = 1; d <= today; d++) {
+    if (!dayCols.hasOwnProperty(d)) {
+      findings.push({
+        sheetName: sheetName,
+        a1: null,
+        message: 'Could not find a column for day ' + d + ' on ' + sheetName + ' -- its header cell may be missing or not formatted as a number (try re-typing it).'
+      });
+    }
+  }
   for (var r = 1; r < values.length; r++) {
     for (var d = 1; d <= today; d++) {
-      var dayCol = headers.indexOf(d);
+      var dayCol = dayCols.hasOwnProperty(d) ? dayCols[d] : -1;
       if (dayCol === -1) continue;
       var cellValue = String(values[r][dayCol] || '').trim();
       if (!cellValue) continue;

@@ -1267,6 +1267,49 @@ function recomputeLateAndOt_(year, month, startDay, endDay) {
 }
 
 /**
+ * Resolves a "Schedule YYYY-MM" sheet's header row into { day: colIndex },
+ * shared by every reader of that sheet's per-day columns
+ * (getScheduledShiftsForMonth_, findScheduleCell_, checkCurrentSchedule_,
+ * highlightShiftMismatches_) so they can't independently drift on what
+ * counts as "the day N column" -- two of them once did exactly that (one
+ * took the first matching header, one the last) when this coercion was
+ * first added piecemeal to each call site separately.
+ *
+ * Coerces each header instead of requiring it to already be a JS number --
+ * buildScheduleSheet_ only ever writes the header row as real numbers when
+ * it FIRST creates a "Schedule YYYY-MM" sheet; every later re-run (the
+ * normal path for adding a mid-month employee) only appends/re-sorts rows
+ * and never rewrites the header row (see buildScheduleSheet_'s "existing"
+ * branch), so a header cell that ever got reformatted/retyped as plain text
+ * by a manual edit stays that way forever. A strict `typeof === 'number'`
+ * check (or `headers.indexOf(dayNumber)`, which requires the same exact
+ * type match) then silently drops that whole day for EVERY employee --
+ * which, for anyone who already picked their own shift at the Kiosk, also
+ * trips recomputeLateAndOt_'s "blank schedule, leave their Kiosk pick
+ * alone" skip, so a later Schedule override for that day (e.g. setting it
+ * to an Event shift) never actually reaches Late/OT.
+ *
+ * Only coerces a header whose raw type is already `number` or `string` --
+ * never `boolean`/`Date`/anything else, since e.g. `Number(true) === 1`
+ * would otherwise let a stray boolean or date-typed header cell falsely
+ * match day 1. First matching column wins for a given day (should never
+ * actually happen on a well-formed sheet, but a duplicate/stray header
+ * must resolve predictably rather than by loop order).
+ */
+function resolveScheduleDayColumns_(headers) {
+  var dayCols = {};
+  for (var c = 0; c < headers.length; c++) {
+    var raw = headers[c];
+    if (typeof raw !== 'number' && typeof raw !== 'string') continue;
+    if (raw === '') continue;
+    var n = Number(raw);
+    if (isNaN(n)) continue;
+    if (!(n in dayCols)) dayCols[n] = c;
+  }
+  return dayCols;
+}
+
+/**
  * Reads a whole "Schedule YYYY-MM" sheet once and returns
  * { [employeeId]: { [dayOfMonth]: shift } }, or {} if that month's Schedule
  * sheet doesn't exist. Same lookup semantics as getScheduledShift_ (which
@@ -1284,10 +1327,7 @@ function getScheduledShiftsForMonth_(year, month) {
   var idCol = headers.indexOf('EmployeeID');
   if (idCol === -1) return {};
 
-  var dayCols = {};
-  for (var c = 0; c < headers.length; c++) {
-    if (typeof headers[c] === 'number') dayCols[headers[c]] = c;
-  }
+  var dayCols = resolveScheduleDayColumns_(headers);
 
   var result = {};
   for (var i = 1; i < values.length; i++) {
