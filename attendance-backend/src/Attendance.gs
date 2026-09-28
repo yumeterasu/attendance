@@ -729,10 +729,17 @@ function handleKioskSyncOffline_(params) {
 
 /**
  * Builds the { day, date, timeIn, timeOut, shift, note, late, ot } list for
- * one employee's one month, shared by handleKioskMyAttendance_ (one month)
- * and handleKioskMyAttendanceBulk_ (many months in one call). dayLogs and
- * scheduledShiftsForMonth are already scoped to the one employee (the
- * EmployeeID-keyed lookup already done by the caller).
+ * one employee's one month, shared by handleKioskMyAttendance_ (one month),
+ * handleKioskMyAttendanceBulk_ (many months in one call), and
+ * handleKioskScheduleSyncAll_ (every active employee's current month, no
+ * PIN). dayLogs and scheduledShiftsForMonth are already scoped to the one
+ * employee (the EmployeeID-keyed lookup already done by the caller).
+ *
+ * Applies the same "fill in only the missing side" Event-day rule as
+ * writeMonthlyReportData_ (Report.gs) -- kept as two independent
+ * implementations (different branch shapes: one if/else here vs. three
+ * sequential if/continue there) rather than one shared helper, so if this
+ * rule ever needs to change, update both.
  */
 function buildMyAttendanceDays_(year, month, dayLogs, scheduledShiftsForMonth, tz) {
   var daysInMonth = new Date(year, month, 0).getDate();
@@ -753,11 +760,23 @@ function buildMyAttendanceDays_(year, month, dayLogs, scheduledShiftsForMonth, t
     // already uses (`!dayEntry || !dayEntry.timeIn`) -- otherwise this and
     // the Report sheet would show different things for the same employee/day.
     if (entry && entry.timeIn) {
+      // A real IN with no real OUT yet (forgot to tap out) on an Event day
+      // still gets the clean official end time shown here, same "fill in
+      // only the missing side" rule writeMonthlyReportData_ (Report.gs)
+      // applies -- previously this just left Time Out blank instead, the
+      // one case that function's own Event branch (below) never even saw
+      // since a real IN routes here instead of falling through to it.
+      var missingOutOnEventDay = !entry.timeOut && isEventShift_(scheduled);
+      var eventEndForIn = missingOutOnEventDay ? getShiftEndTime_(scheduled) : null;
       days.push({
         day: d,
         date: Utilities.formatDate(new Date(year, month - 1, d), tz, 'yyyy-MM-dd'),
         timeIn: Utilities.formatDate(entry.timeIn, tz, 'HH:mm'),
-        timeOut: entry.timeOut ? Utilities.formatDate(entry.timeOut, tz, 'HH:mm') : '',
+        timeOut: entry.timeOut
+          ? Utilities.formatDate(entry.timeOut, tz, 'HH:mm')
+          : eventEndForIn
+            ? minutesToHHMM_(eventEndForIn.hour * 60 + eventEndForIn.minute)
+            : '',
         shift: entry.shift || '',
         note: '',
         // isNoLateNoOt overrides a stale stored Late/OT the same way
@@ -788,13 +807,26 @@ function buildMyAttendanceDays_(year, month, dayLogs, scheduledShiftsForMonth, t
     // which shows that real time); Special's whole design point is the real
     // tap time is always what's recorded and shown, unlike Event.
     if (isEventShift_(scheduled)) {
+      // Time In is always synthesized here (this branch is only reached
+      // with no real IN at all -- see the comment above). Time Out,
+      // though, must not overwrite a real stray OUT tap (an offline-sync
+      // edge case, a backdated OUT, etc.) -- same "fill in only the
+      // missing side" rule as the real-IN branch above and
+      // writeMonthlyReportData_ (Report.gs); an earlier version of this
+      // branch synthesized both unconditionally, silently discarding a
+      // real OUT from what the employee sees here even though it stayed
+      // correctly recorded in AttendanceLog itself.
       var eventStart = getShiftStartTime_(scheduled);
-      var eventEnd = getShiftEndTime_(scheduled);
+      var eventEnd = entry && entry.timeOut ? null : getShiftEndTime_(scheduled);
       days.push({
         day: d,
         date: Utilities.formatDate(new Date(year, month - 1, d), tz, 'yyyy-MM-dd'),
         timeIn: eventStart ? minutesToHHMM_(eventStart.hour * 60 + eventStart.minute) : '',
-        timeOut: eventEnd ? minutesToHHMM_(eventEnd.hour * 60 + eventEnd.minute) : '',
+        timeOut: entry && entry.timeOut
+          ? Utilities.formatDate(entry.timeOut, tz, 'HH:mm')
+          : eventEnd
+            ? minutesToHHMM_(eventEnd.hour * 60 + eventEnd.minute)
+            : '',
         shift: scheduled,
         note: '',
         late: false,

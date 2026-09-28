@@ -88,33 +88,53 @@ function writeMonthlyReportData_(sheet, startRow, year, month, precomputedLogsBy
       var timeOut = dayEntry && dayEntry.timeOut ? Utilities.formatDate(dayEntry.timeOut, tz, 'HH:mm') : '';
       var shift = dayEntry ? dayEntry.shift : '';
       var scheduledShift = scheduledShiftsForMonth[emp.EmployeeID] && scheduledShiftsForMonth[emp.EmployeeID][d];
-      if (isEventShift_(scheduledShift) && (!dayEntry || !dayEntry.timeIn)) {
-        // An Event day always reads as the clean official hours whenever
-        // there's no real IN to show -- whether nobody clocked at all, or
-        // only a stray OUT landed that day with no matching IN (an
-        // offline-sync edge case, a backdated OUT, etc. -- dayEntry.shift
+      if (isEventShift_(scheduledShift)) {
+        // Same "fill in only the missing side" rule as buildMyAttendanceDays_
+        // (Attendance.gs) applies for the Kiosk's own My Schedule view --
+        // kept as two independent implementations (different branch shapes)
+        // rather than one shared helper, so if this rule ever needs to
+        // change, update both.
+        //
+        // An Event day always reads as the clean official hours for
+        // whichever side (Time In, Time Out, or both) has no real punch to
+        // show -- nobody clocked at all, a stray OUT with no matching IN
+        // (an offline-sync edge case, a backdated OUT, etc. -- dayEntry.shift
         // would otherwise come back blank here too, since Shift only ever
-        // gets recorded on the IN row -- see aggregateMonthLogs_). Same
-        // "same result either way" rule sumMonthTotals_ already enforces for
-        // the Days Worked/Late/OT totals below. A real IN already reads
-        // correctly straight off AttendanceLog's own Late/OT columns (now
-        // forced right by eventShiftOverrideTimestamp_ and
-        // recomputeLateAndOt_), so this only matters when there's no real IN.
+        // gets recorded on the IN row -- see aggregateMonthLogs_), OR an IN
+        // with no OUT yet (forgot to tap out). Same "same result either way"
+        // rule sumMonthTotals_ already enforces for the Days Worked/Late/OT
+        // totals below.
+        //
+        // Each side is filled in INDEPENDENTLY -- a real punch on either
+        // side must never be overwritten by the synthetic value just because
+        // the OTHER side is missing (an earlier version of this branch only
+        // synthesized when timeIn was missing, which then replaced a real
+        // Time Out too on a stray-OUT-only day -- silently discarding it
+        // from the display, even though the row still had it safely stored
+        // in AttendanceLog itself).
         //
         // Deliberately isEventShift_ here, NOT the wider isNoLateNoOtShift_ --
-        // Special must NEVER have this branch fabricate a synthetic Time
-        // Out. On the END day of an overnight Special Shift there's no real
-        // IN either, but there usually IS a real OUT (dayEntry.timeOut,
+        // Special must NEVER have this branch fabricate a synthetic time on
+        // either side. On the END day of an overnight Special Shift there's
+        // no real IN either, but there usually IS a real OUT (dayEntry.timeOut,
         // already captured into the `timeOut` var above); Special's whole
         // design point is that the REAL tap time is always what's recorded
         // and shown, unlike Event's "always the clean official hours" rule.
         // That day falls through to the branch below instead, which leaves
         // the already-real timeIn/timeOut alone.
-        shift = scheduledShift;
-        var startTime = getShiftStartTime_(scheduledShift);
-        var endTime = getShiftEndTime_(scheduledShift);
-        if (startTime) timeIn = minutesToHHMM_(startTime.hour * 60 + startTime.minute);
-        if (endTime) timeOut = minutesToHHMM_(endTime.hour * 60 + endTime.minute);
+        // !timeIn/!timeOut (not re-deriving from dayEntry again) -- both
+        // locals were already computed as '' in exactly these same cases
+        // two lines above, so this is the one place that needs to agree
+        // with itself if that computation ever changes.
+        if (!timeIn) {
+          shift = scheduledShift;
+          var startTime = getShiftStartTime_(scheduledShift);
+          if (startTime) timeIn = minutesToHHMM_(startTime.hour * 60 + startTime.minute);
+        }
+        if (!timeOut) {
+          var endTime = getShiftEndTime_(scheduledShift);
+          if (endTime) timeOut = minutesToHHMM_(endTime.hour * 60 + endTime.minute);
+        }
       } else if ((!dayEntry || !dayEntry.timeIn) && scheduledShift) {
         // Any other scheduled value (a normal shift name, Leave, Holiday,
         // Half Day Annual/Sick Leave, a Special Shift's END day, ...) with no
