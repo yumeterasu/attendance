@@ -1,6 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { View, Text, StyleSheet, Pressable, ScrollView, ActivityIndicator } from 'react-native';
-import Slider from '@react-native-community/slider';
+import { View, Text, StyleSheet, Pressable, ScrollView, ActivityIndicator, FlatList, NativeSyntheticEvent, NativeScrollEvent } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
 import Constants from 'expo-constants';
@@ -246,25 +245,157 @@ function Dots({
   );
 }
 
-// Special Shift's start/end time input -- two separate sliders (hour 0-23
-// step 1, minute 0/15/30/45 step 15) instead of one slider spanning the
-// whole day in 15-min steps. A single 0-1425 slider packs 96 steps into one
-// short drag, which reads as genuinely hard to land on precisely; splitting
-// hour and minute gives each its own much coarser, easier-to-hit range.
-// Still just two numbers in, two numbers out -- callers keep their existing
-// single "minutes since midnight" state (specialStartMinutes/
-// specialEndMinutes) and just split/recombine it here.
-//
-// onActivity (optional): the screen's idle-timeout reset -- passed through
-// to each slider's onValueChange, not just relied on via touch bubbling up
-// to some ancestor View. Two reasons this is necessary, not just extra
-// caution: (1) a native Slider (SeekBar on Android) can consume the touch
-// stream at the native level, so an ancestor's onTouchStart may never fire
-// for a touch that starts directly on the slider; (2) onTouchStart only
-// fires once per touch-down, never again for the rest of a single drag, so
-// a slow multi-second slide with the finger never lifted would otherwise
-// still hit the idle timeout mid-gesture. onValueChange fires continuously
-// as the value changes during a drag, so wiring it there covers both gaps.
+// Wheel geometry shared by every WheelColumn -- WHEEL_ROW_HEIGHT must match
+// wheelItemRow's fixed height in the stylesheet exactly, since getItemLayout
+// below tells FlatList each row's position/size without it ever having to
+// measure the real rendered views (required for scrollToOffset/
+// initialScrollIndex to work before the first layout pass completes).
+const WHEEL_ROW_HEIGHT = 40;
+const WHEEL_VISIBLE_ROWS = 4;
+const WHEEL_HEIGHT = WHEEL_ROW_HEIGHT * WHEEL_VISIBLE_ROWS;
+// So the first and last row can still scroll all the way to the center --
+// same reasoning a wheel-style UI always needs padding for, worked out as
+// (visible window - one row) / 2 on each side.
+const WHEEL_PADDING = (WHEEL_HEIGHT - WHEEL_ROW_HEIGHT) / 2;
+
+// One spinning column of a two-column wheel (Hour, or Minute) -- picked the
+// visual design the user approved from a set of mockup samples (mockup:
+// plain size/opacity tiers marking how far a row sits from the centered
+// selection, no colored highlight band). `values` is fixed for the whole
+// column's lifetime (the Hour column always gets WHEEL_HOUR_VALUES, Minute
+// always gets WHEEL_MINUTE_VALUES) -- only `selectedValue` changes.
+function WheelColumn({
+  values,
+  selectedValue,
+  onChange,
+  onActivity,
+  disabled
+}: {
+  values: number[];
+  selectedValue: number;
+  onChange: (value: number) => void;
+  onActivity?: () => void;
+  disabled?: boolean;
+}) {
+  const listRef = useRef<FlatList<number>>(null);
+  const selectedIndex = values.indexOf(selectedValue);
+  const [centeredIndex, setCenteredIndex] = useState(selectedIndex === -1 ? 0 : selectedIndex);
+  // Distinguishes a scroll caused by the user's own finger from one caused
+  // by the effect below reacting to an externally-changed selectedValue
+  // (e.g. the Hour column silently rolling from 23 back to 0 isn't a thing
+  // here, but Start/End are two independent columns sharing this same
+  // component -- nothing should fight a drag that's actively in progress).
+  const isDraggingRef = useRef(false);
+
+  useEffect(() => {
+    if (isDraggingRef.current) return;
+    const idx = values.indexOf(selectedValue);
+    if (idx === -1 || idx === centeredIndex) return;
+    setCenteredIndex(idx);
+    listRef.current?.scrollToOffset({ offset: idx * WHEEL_ROW_HEIGHT, animated: false });
+    // values is stable per column instance (never re-created with different
+    // contents), and centeredIndex updating from this same effect would
+    // otherwise re-run it pointlessly -- only selectedValue driving it is
+    // correct here.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedValue]);
+
+  const snapToNearest = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+    isDraggingRef.current = false;
+    const rawIndex = Math.round(e.nativeEvent.contentOffset.y / WHEEL_ROW_HEIGHT);
+    const idx = Math.max(0, Math.min(values.length - 1, rawIndex));
+    if (idx !== centeredIndex) {
+      setCenteredIndex(idx);
+      // Not awaited, and wrapped so a rejection can never surface -- same
+      // reasoning the onConfirm success paths already apply to Haptics
+      // calls elsewhere in this file (a real incident: haptics throwing on
+      // some devices was previously misread as the action itself failing).
+      // Nothing here depends on the tick actually landing.
+      Haptics.selectionAsync().catch(() => {});
+    }
+    const snapped = values[idx];
+    if (snapped !== selectedValue) onChange(snapped);
+  };
+
+  return (
+    <FlatList
+      ref={listRef}
+      data={values}
+      keyExtractor={(v) => String(v)}
+      style={styles.wheelColumn}
+      contentContainerStyle={styles.wheelColumnContent}
+      showsVerticalScrollIndicator={false}
+      // This FlatList sits inside the outer checkinScroll ScrollView, same
+      // vertical orientation -- without this, Android's touch-dispatch can
+      // hand a drag that started on the wheel to the outer ScrollView
+      // instead (RN's own VirtualizedList code warns about exactly this
+      // nesting shape), making the wheel intermittently unresponsive on the
+      // real tablet, which would defeat the entire point of replacing the
+      // sliders with something more reliably grabbable.
+      nestedScrollEnabled
+      snapToInterval={WHEEL_ROW_HEIGHT}
+      decelerationRate="fast"
+      getItemLayout={(_, index) => ({ length: WHEEL_ROW_HEIGHT, offset: WHEEL_ROW_HEIGHT * index, index })}
+      initialScrollIndex={centeredIndex}
+      scrollEnabled={!disabled}
+      onScrollBeginDrag={() => {
+        isDraggingRef.current = true;
+        onActivity?.();
+      }}
+      onScroll={(e) => {
+        // Same two reasons HourMinuteSliders' old onValueChange-based
+        // activity ping is documented for, applied to a scroll gesture
+        // instead of a drag one: a FlatList's own PanResponder can consume
+        // the touch stream before an ancestor View's onTouchStart ever
+        // fires, and a slow, still-in-progress scroll must keep resetting
+        // the idle timer for its whole duration, not just once at touch-down.
+        onActivity?.();
+        var rawIndex = Math.round(e.nativeEvent.contentOffset.y / WHEEL_ROW_HEIGHT);
+        var idx = Math.max(0, Math.min(values.length - 1, rawIndex));
+        if (idx !== centeredIndex) setCenteredIndex(idx);
+      }}
+      scrollEventThrottle={32}
+      onMomentumScrollEnd={snapToNearest}
+      onScrollEndDrag={(e) => {
+        // A short flick can end the drag without RN ever firing
+        // onMomentumScrollEnd (no/negligible residual velocity) -- snap here
+        // too so a tiny nudge never leaves the wheel resting between rows.
+        if (Math.abs(e.nativeEvent.velocity?.y ?? 0) < 0.05) snapToNearest(e);
+      }}
+      renderItem={({ item, index }) => {
+        const distance = Math.abs(index - centeredIndex);
+        const tierStyle = distance === 0 ? styles.wheelItemSelected : distance === 1 ? styles.wheelItemNear : styles.wheelItemFar;
+        return (
+          <View style={styles.wheelItemRow}>
+            <Text style={[styles.wheelItemText, tierStyle]}>{String(item).padStart(2, '0')}</Text>
+          </View>
+        );
+      }}
+    />
+  );
+}
+
+// Derived from SPECIAL_SHIFT_STEP_MINUTES instead of a hardcoded [0, 15, 30,
+// 45] -- WheelColumn falls back to showing "00" (index 0) whenever
+// selectedValue isn't one of `values` (see values.indexOf(selectedValue) ===
+// -1 in its effect/initial state), so a literal array that silently drifted
+// out of sync with the constant everything else derives its minute step
+// from would show a wheel stuck at :00 while specialStartMinutes/
+// specialEndMinutes -- and the value actually submitted -- held the real,
+// un-displayed number. Deriving it here makes that class of bug impossible
+// instead of relying on the comment next to a literal to be kept honest.
+const WHEEL_MINUTE_VALUES = Array.from({ length: Math.ceil(60 / SPECIAL_SHIFT_STEP_MINUTES) }, (_, i) => i * SPECIAL_SHIFT_STEP_MINUTES);
+const WHEEL_HOUR_VALUES = Array.from({ length: 24 }, (_, h) => h);
+
+// Special Shift's start/end time input -- a two-column spinning wheel (Hour
+// 0-23, Minute stopping only at 0/15/30/45), replacing the pair of sliders
+// this used to be (see git history for that version and why it existed --
+// a single 0-1425-minute slider was genuinely hard to land on precisely,
+// and even the split Hour/Minute sliders that followed it tested as fiddly
+// on the real tablet, which is what led to this wheel). Still just two
+// numbers in, two numbers out -- callers keep their existing single "minutes
+// since midnight" state (specialStartMinutes/specialEndMinutes) and just
+// split/recombine it here, same contract HourMinuteSliders always had.
 function HourMinuteSliders({
   hour,
   minute,
@@ -281,45 +412,10 @@ function HourMinuteSliders({
   disabled?: boolean;
 }) {
   return (
-    <View style={styles.hourMinuteRow}>
-      <View style={styles.hourMinuteCol}>
-        <Text style={styles.hourMinuteLabel}>
-          Hour{'\n'}
-          <Text style={styles.thaiTiny}>ชั่วโมง</Text>
-        </Text>
-        <Slider
-          style={styles.specialShiftSlider}
-          minimumValue={0}
-          maximumValue={23}
-          step={1}
-          value={hour}
-          onValueChange={(h) => {
-            onActivity?.();
-            onHourChange(h);
-          }}
-          minimumTrackTintColor={TEAL}
-          disabled={disabled}
-        />
-      </View>
-      <View style={styles.hourMinuteCol}>
-        <Text style={styles.hourMinuteLabel}>
-          Min{'\n'}
-          <Text style={styles.thaiTiny}>นาที</Text>
-        </Text>
-        <Slider
-          style={styles.specialShiftSlider}
-          minimumValue={0}
-          maximumValue={60 - SPECIAL_SHIFT_STEP_MINUTES}
-          step={SPECIAL_SHIFT_STEP_MINUTES}
-          value={minute}
-          onValueChange={(m) => {
-            onActivity?.();
-            onMinuteChange(m);
-          }}
-          minimumTrackTintColor={TEAL}
-          disabled={disabled}
-        />
-      </View>
+    <View style={styles.wheelRow}>
+      <WheelColumn values={WHEEL_HOUR_VALUES} selectedValue={hour} onChange={onHourChange} onActivity={onActivity} disabled={disabled} />
+      <Text style={styles.wheelColon}>:</Text>
+      <WheelColumn values={WHEEL_MINUTE_VALUES} selectedValue={minute} onChange={onMinuteChange} onActivity={onActivity} disabled={disabled} />
     </View>
   );
 }
@@ -1669,10 +1765,11 @@ export default function KioskScreen({ navigation }: Props) {
       // block the real Pressables underneath for the touch itself, they
       // just also observe that a touch happened. onTouchMove covers a
       // slow drag/hold that moves without a fresh touch-down (e.g.
-      // scrolling the ScrollView); the Special Shift sliders specifically
-      // also call resetIdleTimer straight from their own onValueChange
-      // (see HourMinuteSliders' onActivity) since a native Slider isn't
-      // guaranteed to bubble its touch up to here at all.
+      // scrolling the ScrollView); the Special Shift wheel picker
+      // specifically also calls resetIdleTimer straight from its own
+      // onScrollBeginDrag/onScroll (see HourMinuteSliders' onActivity, and
+      // WheelColumn's own use of it) since a FlatList's touch handling
+      // isn't guaranteed to bubble a touch up to here at all.
       onTouchStart={resetIdleTimer}
       onTouchMove={resetIdleTimer}
     >
@@ -2271,16 +2368,19 @@ const styles = StyleSheet.create({
   },
   specialShiftFieldLabel: { color: TEXT_MUTED, fontSize: 13, fontFamily: FONT_BODY_EXTRABOLD },
   specialShiftTimeValue: { color: TEAL, fontSize: 20, fontFamily: FONT_DISPLAY_EXTRABOLD },
-  specialShiftSlider: { width: '100%', height: 36 },
-  hourMinuteRow: { flexDirection: 'row', gap: 14, marginTop: 4 },
-  hourMinuteCol: { flex: 1 },
-  hourMinuteLabel: {
-    color: TEXT_MUTED,
-    fontSize: 12,
-    fontFamily: FONT_BODY_EXTRABOLD,
-    textAlign: 'center',
-    marginBottom: 2
-  },
+  // Wheel picker (replaces the old Hour/Minute sliders -- see
+  // HourMinuteSliders' own comment). Sizes/opacities below are the exact
+  // values from the approved mockup's "Minimal" variant, refined once more
+  // per request (selected size bumped two steps, 21->30).
+  wheelRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, marginTop: 4 },
+  wheelColon: { color: TEAL, fontSize: 26, fontFamily: FONT_DISPLAY_EXTRABOLD, paddingBottom: 2 },
+  wheelColumn: { flexGrow: 0, height: WHEEL_HEIGHT, width: 90 },
+  wheelColumnContent: { paddingVertical: WHEEL_PADDING },
+  wheelItemRow: { height: WHEEL_ROW_HEIGHT, alignItems: 'center', justifyContent: 'center' },
+  wheelItemText: { fontFamily: FONT_BODY_EXTRABOLD, textAlign: 'center' },
+  wheelItemSelected: { color: TEXT, fontSize: 30, opacity: 1 },
+  wheelItemNear: { color: TEXT_MUTED, fontSize: 19, opacity: 0.55 },
+  wheelItemFar: { color: TEXT_MUTED, fontSize: 15, opacity: 0.28 },
   specialShiftDayToggle: { flexDirection: 'row', gap: 8 },
   specialShiftDayOption: {
     borderRadius: 999,
