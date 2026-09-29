@@ -319,6 +319,66 @@ function computeThaiOtQuarters_(shiftOrEvent, outTimestamp) {
 }
 
 /**
+ * Whether OT of ANY kind (Japanese auto-computed or Thai button-pressed)
+ * can even be considered for this employee on this day -- shared by both
+ * regimes so the rule lives in exactly one place: isOtEligible_(emp)'s own
+ * column check, a genuinely-known `shift` (blank means no matching IN row
+ * was found -- e.g. a stray OUT-only tap, or an overnight Special Shift,
+ * which deliberately never resolves a same-day shift here, see
+ * recordAttendance_'s own doc comment on that), and never an Event/Special
+ * day (isNoLateNoOtShift_). Extracted after this exact formula drifted
+ * across four separate copies (three call sites' own eligibility variable,
+ * plus resolveThaiOt_ below) during a round of fixes to the Thai OT
+ * flag/amount decoupling -- see that function's own doc comment.
+ */
+function otEligibleForDay_(emp, shift) {
+  return isOtEligible_(emp) && !!shift && !isNoLateNoOtShift_(shift);
+}
+
+/**
+ * Shared by every write path that can record a Thai OUT (recordAttendance_,
+ * recordOfflineSyncedAttendance_, recordBackdatedAttendance_) -- one place
+ * for the OT flag/amount decoupling, after three near-identical copies of
+ * this logic drifted apart (two of them missing the Event/Special
+ * exemption the third had, a real regression found by code review).
+ *
+ * Returns { ot, otQuarters }. `ot` (the flag) and `otQuarters` (the paid
+ * amount) are DELIBERATELY decoupled: `ot` reflects only "was OUT OT
+ * actually pressed, by someone eligible, with a genuinely-known shift, on a
+ * day that isn't Event/Special" (see otEligibleForDay_) -- never the
+ * currently-computed quarters. A real incident: an employee's Shift was
+ * KNOWN but WRONG at the moment they pressed OUT OT (e.g. picked 8:00-17:00
+ * by mistake, really 7:00-16:00), so the quarters computed against the
+ * WRONG shift came out to 0/near-0 -- if the flag had also been forced
+ * false right there, correcting the Shift afterward and running Recompute
+ * could never recover it, since Recompute's own Thai branch only ever
+ * revisits a row that's already OT=TRUE (see its own wasOt comment).
+ * Keeping the flag TRUE regardless of quarters keeps that recovery path
+ * open -- otQuarters can sit at 0 in the meantime (genuinely 0 real paid
+ * minutes until the Shift is fixed), but the flag itself is never silently
+ * lost.
+ *
+ * This does NOT apply when `shift` is blank/unknown entirely (as opposed to
+ * known-but-wrong) -- otEligibleForDay_ requires a truthy shift, so a stray
+ * OUT-only tap or an overnight Special Shift with no same-day IN still
+ * correctly gets OT=FALSE here, same as before this decoupling existed;
+ * there's nothing to "recover" later for a day whose shift was never known
+ * at all, and Recompute's shiftByEmployeeDay would never populate that key
+ * either.
+ *
+ * `otRequested`: the raw "did they press/confirm OUT OT" input (the live
+ * Kiosk's `ot` param, or the admin's Yes/No answer for a backdated entry).
+ * `emp`: the Employees row. `shift`: that day's shift string (blank if
+ * unknown).
+ */
+function resolveThaiOt_(emp, otRequested, shift, outTimestamp) {
+  var eligible = otEligibleForDay_(emp, shift);
+  var ot = eligible && !!otRequested;
+  var otQuarters = ot ? computeThaiOtQuarters_(shift, outTimestamp) : 0;
+  return { ot: ot, otQuarters: otQuarters };
+}
+
+/**
  * Kiosk mode: a shared tablet (not logged in as any one employee) checks
  * someone in/out by their personal 4-digit KioskPIN, typed on a keypad.
  * The employee picks Check In or Check Out explicitly, so there's no
@@ -1263,7 +1323,7 @@ function recomputeLateAndOt_(year, month, startDay, endDay) {
 
     if (currentDept === 'Japanese') {
       var capMinutes = Number(currentEmp.row.OTMaxMinutes) || JP_OT_CAP_MINUTES;
-      var otMinutes = (isOtEligible_(currentEmp.row) && shift && !isEventDay) ? computeJapaneseOtMinutes_(shift, ts2, capMinutes) : 0;
+      var otMinutes = otEligibleForDay_(currentEmp.row, shift) ? computeJapaneseOtMinutes_(shift, ts2, capMinutes) : 0;
       sliceValues[j][otMinCol] = otMinutes;
       if (otQCol !== -1) sliceValues[j][otQCol] = 0; // clear a stale Thai-regime value left over from before a Department correction
       sliceValues[j][otCol] = otMinutes > 0;
@@ -1276,10 +1336,26 @@ function recomputeLateAndOt_(year, month, startDay, endDay) {
       // flag, since Event days never have OT.
       var wasOt = isTrue_(sliceValues[j][otCol]);
       if (!wasOt && !isEventDay) continue;
-      var otQuarters = (isOtEligible_(currentEmp.row) && shift && !isEventDay) ? computeThaiOtQuarters_(shift, ts2) : 0;
+      var currentlyOtEligible = isOtEligible_(currentEmp.row);
+      var otQuarters = (currentlyOtEligible && shift && !isEventDay) ? computeThaiOtQuarters_(shift, ts2) : 0;
       sliceValues[j][otQCol] = otQuarters;
       sliceValues[j][otMinCol] = 0; // clear a stale Japanese-regime value left over from before a Department correction
-      sliceValues[j][otCol] = otQuarters > 0;
+      // OT (the flag) is preserved as-is here -- NOT set from `otQuarters >
+      // 0` -- same "flag vs paid amount" decoupling the write paths
+      // (recordAttendance_/recordOfflineSyncedAttendance_/
+      // recordBackdatedAttendance_, via resolveThaiOt_) already apply. wasOt
+      // already gated entry into this branch above, so by this point OT is
+      // either already TRUE (preserve it -- if the Shift was wrong when OUT
+      // OT was pressed, otQuarters can still legitimately compute to 0 here
+      // even on a genuinely-earned OT day, e.g. the Shift still isn't fixed
+      // yet, and that must not silently erase the flag a second time) or
+      // this is an Event day (force OT off explicitly). A THIRD override:
+      // if the employee is no longer OT-eligible at all (OTEligible toggled
+      // off on the Employees sheet since this row was recorded), that must
+      // still clear the flag -- otherwise disabling someone's OT eligibility
+      // and re-running Recompute could never actually strip an existing
+      // OT=TRUE record, only zero out its paid quarters.
+      sliceValues[j][otCol] = (isEventDay || !currentlyOtEligible) ? false : wasOt;
       outRowsUpdated++;
     }
   }
@@ -1594,14 +1670,21 @@ function recordBackdatedAttendance_(employeeId, type, timestamp, ot, precomputed
       durationMinutes = Math.round((recordedTimestamp.getTime() - matchingIn.timestamp.getTime()) / 60000);
     }
 
-    var todayOtEligible = isOtEligible_(emp);
+    // otEligibleForDay_ folds in the shift-known and Event/Special-exemption
+    // checks -- an earlier version of this line was isOtEligible_(emp)
+    // alone, which meant a Japanese employee backdated on an Event/Special
+    // day could still get real, non-zero computeJapaneseOtMinutes_ output
+    // (it happily parses "Event 8:00-17:00"'s embedded time), contradicting
+    // the "Event/Special never has OT" rule.
+    var todayOtEligible = otEligibleForDay_(emp, todayShift);
     if (emp.Department === 'Japanese') {
       var capMinutes = Number(emp.OTMaxMinutes) || JP_OT_CAP_MINUTES;
-      otMinutesForRow = (todayOtEligible && todayShift) ? computeJapaneseOtMinutes_(todayShift, recordedTimestamp, capMinutes) : 0;
+      otMinutesForRow = todayOtEligible ? computeJapaneseOtMinutes_(todayShift, recordedTimestamp, capMinutes) : 0;
       otForRow = otMinutesForRow > 0;
     } else {
-      otQuartersForRow = (todayOtEligible && ot && todayShift) ? computeThaiOtQuarters_(todayShift, recordedTimestamp) : 0;
-      otForRow = otQuartersForRow > 0;
+      var thaiOt = resolveThaiOt_(emp, ot, todayShift, recordedTimestamp);
+      otForRow = thaiOt.ot;
+      otQuartersForRow = thaiOt.otQuarters;
     }
   }
 
@@ -1732,14 +1815,21 @@ function recordOfflineSyncedAttendance_(employeeId, type, timestamp, ot, clientI
       durationMinutes = Math.round((recordedTimestamp.getTime() - matchingIn.timestamp.getTime()) / 60000);
     }
 
-    var todayOtEligible = isOtEligible_(emp);
+    // otEligibleForDay_ folds in the shift-known and Event/Special-exemption
+    // checks -- an earlier version of this line was isOtEligible_(emp)
+    // alone, which meant a Japanese employee backdated on an Event/Special
+    // day could still get real, non-zero computeJapaneseOtMinutes_ output
+    // (it happily parses "Event 8:00-17:00"'s embedded time), contradicting
+    // the "Event/Special never has OT" rule.
+    var todayOtEligible = otEligibleForDay_(emp, todayShift);
     if (emp.Department === 'Japanese') {
       var capMinutes = Number(emp.OTMaxMinutes) || JP_OT_CAP_MINUTES;
-      otMinutesForRow = (todayOtEligible && todayShift) ? computeJapaneseOtMinutes_(todayShift, recordedTimestamp, capMinutes) : 0;
+      otMinutesForRow = todayOtEligible ? computeJapaneseOtMinutes_(todayShift, recordedTimestamp, capMinutes) : 0;
       otForRow = otMinutesForRow > 0;
     } else {
-      otQuartersForRow = (todayOtEligible && ot && todayShift) ? computeThaiOtQuarters_(todayShift, recordedTimestamp) : 0;
-      otForRow = otQuartersForRow > 0;
+      var thaiOt = resolveThaiOt_(emp, ot, todayShift, recordedTimestamp);
+      otForRow = thaiOt.ot;
+      otQuartersForRow = thaiOt.otQuarters;
     }
   }
 
@@ -1960,17 +2050,20 @@ function recordAttendance_(employeeId, method, rawScanValue, type, ot, punchBran
     // explicitly. (An overnight Special Shift never reaches here with a
     // truthy todayShift at all, since todayIn/todayShift only ever resolve
     // for an IN on the OUT's own calendar day -- see findTodayInLog_.)
-    var otEligible = isOtEligible_(emp) && !isNoLateNoOtShift_(todayShift);
+    var otEligible = otEligibleForDay_(emp, todayShift);
     if (emp.Department === 'Japanese') {
       // OUT and OUT OT are equivalent for Japanese -- always auto-computed.
       var capMinutes = Number(emp.OTMaxMinutes) || JP_OT_CAP_MINUTES;
-      otMinutesForRow = (otEligible && todayShift) ? computeJapaneseOtMinutes_(todayShift, recordedTimestamp, capMinutes) : 0;
+      otMinutesForRow = otEligible ? computeJapaneseOtMinutes_(todayShift, recordedTimestamp, capMinutes) : 0;
       otForRow = otMinutesForRow > 0;
     } else {
       // Everyone else: only counts if they explicitly pressed OUT OT (a plain
-      // OUT never earns OT, e.g. someone who just stayed chatting).
-      otQuartersForRow = (otEligible && ot && todayShift) ? computeThaiOtQuarters_(todayShift, recordedTimestamp) : 0;
-      otForRow = otQuartersForRow > 0;
+      // OUT never earns OT, e.g. someone who just stayed chatting). See
+      // resolveThaiOt_'s own doc comment for why the flag and the paid
+      // amount are deliberately computed separately.
+      var thaiOt = resolveThaiOt_(emp, ot, todayShift, recordedTimestamp);
+      otForRow = thaiOt.ot;
+      otQuartersForRow = thaiOt.otQuarters;
     }
   }
 
