@@ -426,10 +426,24 @@ function handleKioskLookupPin_(params) {
   // is the same call recordBreak_ already makes (bounded "recent log"
   // read, not a full-sheet scan), so the added cost here is the same one
   // other latency-sensitive Kiosk endpoints already pay successfully.
+  //
+  // onShift is exposed for the same reason, a second real incident: the
+  // Kiosk's own "already checked in today" flag (used to decide whether to
+  // show the Start Break button) used to live ONLY in that device's local
+  // storage, with no server round trip at all -- an employee who checked
+  // in on one tablet (e.g. one branch) and later tried to start a break on
+  // a DIFFERENT tablet (a different branch, or just a different physical
+  // unit) would never see the Break button, since the second tablet's own
+  // local storage never knew about the first one's check-in. Piggybacking
+  // on this same currentShiftBreakState_ call (already paid for above, no
+  // extra Sheets read) fixes that the same way onBreak already got fixed:
+  // real server state, self-healing on every online lookup instead of a
+  // per-device marker with no way to catch up.
   var breakState = currentShiftBreakState_(found.row.EmployeeID, new Date());
   return ok_({
     name: found.row.Name,
     shifts: shiftChoicesFor_(found.row),
+    onShift: breakState.onShift,
     onBreak: breakState.onBreak,
     breakStartedAt: breakState.onBreak && breakState.lastBreakTs ? breakState.lastBreakTs.toISOString() : null
   });
