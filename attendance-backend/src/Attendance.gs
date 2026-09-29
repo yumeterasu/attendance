@@ -629,7 +629,35 @@ function handleKioskBreak_(params) {
  * Shared duplicate-tap guard for every AttendanceLog writer (recordBreak_,
  * recordOfflineSyncedBreak_, recordAttendance_, recordOfflineSyncedAttendance_)
  * -- true if lastLog exists and referenceTime lands within DUPLICATE_GUARD_MS
- * after (never before) its own Timestamp.
+ * of its own Timestamp, EITHER direction.
+ *
+ * Checked both directions (not just "referenceTime after lastLog.Timestamp",
+ * which is all this originally checked) because of a real incident: the
+ * live path and the offline-sync path can both end up writing the SAME
+ * physical tap as two separate rows -- the live request actually succeeds
+ * server-side, but the client's own KIOSK_TIMEOUT_MS fires first (response
+ * lost/slow), so the app treats it as failed and ALSO queues the same tap
+ * offline as its zero-data-loss safety net (see queueOffline in
+ * KioskScreen.tsx). The offline row's Timestamp is the ORIGINAL on-device
+ * moment of the tap, which can end up a second or two EARLIER than the
+ * already-written live row's own Timestamp (server-side processing time) --
+ * a one-directional check never catches that ordering, so both rows
+ * survived as if they were two genuine, unrelated taps. Comparing the
+ * absolute difference instead closes that gap. For the live path,
+ * referenceTime is always "now" (see recordAttendance_/recordBreak_),
+ * which is normally after any already-recorded past row, so this is a
+ * no-op there in the common case -- with one narrow exception: an Event
+ * day's IN row has its stored Timestamp forced to the shift's own official
+ * start time (eventShiftOverrideTimestamp_), which can be LATER than the
+ * real moment it was tapped if the employee arrived early. A second,
+ * genuinely different live tap for that employee landing within
+ * DUPLICATE_GUARD_MS of real time around that forced timestamp (in
+ * practice: within ~60 real seconds of the Event's own scheduled
+ * start/end) would now also get caught by this guard, where the old
+ * one-directional check would have let it through. Accepted as a safe
+ * trade-off -- a same-type tap that close together is exactly the kind of
+ * accidental double-tap this guard exists to catch either way, and the
+ * rejection is a soft "please wait a moment" retry, not data loss.
  *
  * `options.ignoreTypes`: treat lastLog as if it doesn't exist when its Type
  * is in this list -- used by the IN/OUT callers so a Break row (a
@@ -649,8 +677,8 @@ function isWithinDuplicateGuard_(lastLog, referenceTime, options) {
   if (!lastLog || !lastLog.Timestamp) return false;
   if (options.ignoreTypes && options.ignoreTypes.indexOf(lastLog.Type) !== -1) return false;
   if (options.sameTypeOnly && lastLog.Type !== options.type) return false;
-  var delta = referenceTime.getTime() - new Date(lastLog.Timestamp).getTime();
-  return delta >= 0 && delta < DUPLICATE_GUARD_MS;
+  var delta = Math.abs(referenceTime.getTime() - new Date(lastLog.Timestamp).getTime());
+  return delta < DUPLICATE_GUARD_MS;
 }
 
 function recordBreak_(employeeId, type, durationMinutes) {
