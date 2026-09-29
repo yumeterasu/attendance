@@ -596,6 +596,21 @@ export default function KioskScreen({ navigation }: Props) {
     setSpecialShiftOpen(false);
   };
 
+  // Applies a live kioskLookupPin response's server-authoritative
+  // onBreak/onShift fields to both React state and the on-device markers
+  // (self-healing them) -- shared by lookupPin's own live branch and the
+  // background reconciliation fired after a local-directory hit, so this
+  // 4-statement sequence can't drift between the two copies the way an
+  // identical class of duplication already did once this session (see the
+  // Thai OT eligibility formula's own history in Attendance.gs).
+  const applyServerBreakAndShiftState = (pin: string, onBreak: boolean, breakStartedAt: string | null, onShift: boolean) => {
+    setOnBreak(onBreak);
+    setLocalOnBreak(pin, onBreak ? breakStartedAt : null);
+    setAlreadyCheckedInToday(onShift);
+    if (onShift) setLocalCheckedInToday(pin);
+    else clearLocalCheckedInToday(pin);
+  };
+
   // Opens the Special Shift panel with sensible defaults -- start "now"
   // (rounded to the nearest 15 min), end 8h later, auto-toggling to
   // Tomorrow if that 8h span crosses midnight. Fully adjustable afterward;
@@ -699,10 +714,17 @@ export default function KioskScreen({ navigation }: Props) {
       return;
     }
     const hour = new Date().getHours();
-    // alreadyCheckedInToday (see checkinState.ts) is resolved together with
-    // lookupName itself (see tryLocalLookup/lookupPin above), so it's
-    // already correct by the time this effect sees the new lookupName --
-    // no separate async read needed here. Skips the IN default specifically
+    // alreadyCheckedInToday is resolved together with lookupName itself
+    // (see tryLocalLookup/lookupPin above), so it's already correct by the
+    // time THIS EFFECT sees the new lookupName -- no separate async read
+    // needed here. One exception this effect does NOT handle: the
+    // background onShift reconciliation (fired after a local-directory hit,
+    // see lookupPin's local-hit branch above) can correct
+    // alreadyCheckedInToday LATER, asynchronously, well after this effect
+    // already ran against the stale local value -- this effect has no
+    // alreadyCheckedInToday dependency and won't re-fire for that, so the
+    // reconciliation's own callback clears a now-wrong IN default itself
+    // instead of relying on this effect to notice. Skips the IN default specifically
     // when this PIN already clocked IN today, so looking the same PIN up
     // again later in the same morning window doesn't re-default to IN even
     // though they already tapped it. The IN button itself is never hidden
@@ -814,8 +836,22 @@ export default function KioskScreen({ navigation }: Props) {
               // that lookup already set more recently.
               if (lookupGenerationRef.current !== myGeneration) return;
               if (res.success) {
-                setOnBreak(res.onBreak);
-                setLocalOnBreak(value, res.onBreak ? res.breakStartedAt : null);
+                applyServerBreakAndShiftState(value, res.onBreak, res.breakStartedAt, res.onShift);
+                // The morning auto-select effect (below) already ran once
+                // against the stale local-hit's alreadyCheckedInToday and
+                // may have defaulted the selection to IN -- if onShift just
+                // turned out true (e.g. checked in on a DIFFERENT tablet,
+                // which this device's own local marker had no way to know
+                // about), that default is now wrong, and IN would just get
+                // rejected server-side as a duplicate anyway. The effect
+                // itself won't re-fire to fix this on its own (it doesn't
+                // depend on alreadyCheckedInToday), so clear it here
+                // instead. Functional update reads whatever `selection`
+                // actually is at the moment this resolves, not a stale
+                // value captured when this background call started -- so a
+                // deliberate tap the employee made to something else in the
+                // meantime is left alone.
+                if (res.onShift) setSelection((prev) => (prev === 'IN' ? null : prev));
               }
             })
             .catch(() => {});
@@ -828,24 +864,17 @@ export default function KioskScreen({ navigation }: Props) {
       const res = await kioskLookupPin(value);
 
       if (res.success) {
-        // alreadyCheckedInToday still comes from the local marker (no live
-        // equivalent exists server-side for that one) -- resolved alongside
-        // the rest before any state is set, same reasoning as tryLocalLookup
-        // below (avoids a stale intermediate render between lookupName
-        // committing and alreadyCheckedInToday landing, which the
-        // auto-select effect is sensitive to).
-        const checkedInNow = await getLocalCheckedInToday(value);
         setLookupName(res.name);
         applyShiftChoices(res.shifts);
-        // Server-authoritative now (res.onBreak/breakStartedAt -- see
-        // client.ts/handleKioskLookupPin_), not the on-device marker this
-        // used to trust unconditionally. Also written back into that local
-        // marker so it self-heals here instead of staying wrong indefinitely
-        // if it had drifted (e.g. a BREAK_END that silently never reached
-        // the server -- see queueOffline's BREAK_END branch).
-        setOnBreak(res.onBreak);
-        setLocalOnBreak(value, res.onBreak ? res.breakStartedAt : null);
-        setAlreadyCheckedInToday(checkedInNow);
+        // Server-authoritative now (res.onShift/onBreak/breakStartedAt --
+        // see client.ts/handleKioskLookupPin_), not the on-device markers
+        // this used to trust unconditionally. Also written back into those
+        // local markers so they self-heal here instead of staying wrong
+        // indefinitely if they'd drifted -- onBreak: a BREAK_END that
+        // silently never reached the server (see queueOffline's BREAK_END
+        // branch); onShift: checked in on a DIFFERENT tablet, whose local
+        // marker this device's own storage never knew about.
+        applyServerBreakAndShiftState(value, res.onBreak, res.breakStartedAt, res.onShift);
       } else if (res.error === 'timeout' || res.error === 'network_error') {
         // Connection dropped mid-request -- try the local copy again in case
         // the directory refreshed in the meantime (see useOfflineSync).
@@ -1998,18 +2027,23 @@ export default function KioskScreen({ navigation }: Props) {
             </>
           )}
 
-          {/* onBreak included alongside alreadyCheckedInToday: the latter is
-              calendar-day-stamped (todayKey() in checkinState.ts) while the
-              on-device break marker isn't, so a break spanning midnight (IN
-              at 23:50, break starts/continues after the day rolls over)
-              would otherwise read alreadyCheckedInToday=false the next day
-              and hide "Back from Break" for someone who is actually on
-              break. onBreak=true always implies already checked in, so this
-              can't wrongly show the button for someone who never clocked
-              in. Styled as the primary action (breakButtonPrimary) when
-              onBreak, since typeRow is hidden above and this is the only
-              button on screen -- the smaller secondary look only makes sense
-              when it's sitting alongside IN/OUT/OUT OT. */}
+          {/* onBreak included alongside alreadyCheckedInToday: when ONLINE,
+              alreadyCheckedInToday now comes from the server's onShift (see
+              lookupPin's live branch above) -- a 48h lookback, not
+              calendar-day-stamped, so a shift/break spanning midnight
+              already stays correctly true on its own there. The OFFLINE
+              fallback (tryLocalLookup) still only has the on-device,
+              calendar-day-stamped marker (todayKey() in checkinState.ts)
+              to go on, which WOULD read false the next day for a break
+              that's actually still open across midnight -- onBreak is
+              OR'd in specifically to cover that offline case (the on-device
+              break marker isn't calendar-day-stamped the same way). onBreak
+              =true always implies already checked in, so this can't wrongly
+              show the button for someone who never clocked in. Styled as
+              the primary action (breakButtonPrimary) when onBreak, since
+              typeRow is hidden above and this is the only button on screen
+              -- the smaller secondary look only makes sense when it's
+              sitting alongside IN/OUT/OUT OT. */}
           {(alreadyCheckedInToday || onBreak) && (
             <Pressable
               style={[
