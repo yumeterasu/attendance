@@ -1225,6 +1225,51 @@ function getShiftStartMinutes_(shiftOrEvent) {
   return Number(match[1]) * 60 + Number(match[2]);
 }
 
+/** Last "H:MM" found in a shift/event string, as minutes since midnight -- the end time. Null for blank/Leave/Holiday/Half Day Annual Leave/a single-time string with no end (same cases getShiftEndTime_ itself returns null for). */
+function getShiftEndMinutes_(shiftOrEvent) {
+  var end = getShiftEndTime_(String(shiftOrEvent || ''));
+  return end ? end.hour * 60 + end.minute : null;
+}
+
+// Candidate-side predicates for findCloserShift_ below -- a candidate shift
+// only counts if it's on the correct side of the SCHEDULED value: later
+// starts for the IN check (does a later shift explain an on-time arrival),
+// earlier ends for the OUT check (does an earlier-ending shift explain an
+// on-time departure). Named instead of inlined so both call sites in
+// highlightShiftMismatches_ read as "which direction" at a glance.
+function isLaterThan_(candidateMinutes, scheduledMinutes) { return candidateMinutes > scheduledMinutes; }
+function isEarlierThan_(candidateMinutes, scheduledMinutes) { return candidateMinutes < scheduledMinutes; }
+
+/**
+ * Shared by highlightShiftMismatches_'s IN and OUT checks -- scans
+ * `timedShifts` for the option whose relevant time (start, via
+ * getShiftStartMinutes_, for the IN check; end, via getShiftEndMinutes_,
+ * for the OUT check) is closer to `actualMinutes` than `currentDistance`,
+ * considering only candidates where `isCandidateBeyondScheduled(candidate,
+ * scheduledMinutes)` holds (isLaterThan_ for IN, isEarlierThan_ for OUT --
+ * see their own comments for why only that one direction is ever a
+ * meaningful "did you mean this instead" candidate). Returns the closer
+ * shift string, or null if nothing beats `currentDistance`. Extracted
+ * 2026-10-01 when the OUT check was added as a near-exact mirror of the IN
+ * check -- two copies of this exact scan, differing only in which getter
+ * and which direction predicate they used, is exactly the kind of
+ * duplication this codebase has already been burned by drifting apart
+ * (e.g. the Thai OT eligibility formula's own history, Attendance.gs) --
+ * a future third dimension (e.g. a break-time mismatch check) should call
+ * this too, not copy the loop a third time.
+ */
+function findCloserShift_(actualMinutes, scheduledMinutes, currentDistance, timedShifts, getCandidateMinutes, isCandidateBeyondScheduled) {
+  var closerShift = null;
+  var closerDistance = currentDistance;
+  timedShifts.forEach(function (s) {
+    var candidateMinutes = getCandidateMinutes(s);
+    if (candidateMinutes === null || !isCandidateBeyondScheduled(candidateMinutes, scheduledMinutes)) return;
+    var dist = Math.abs(actualMinutes - candidateMinutes);
+    if (dist < closerDistance) { closerDistance = dist; closerShift = s; }
+  });
+  return closerShift;
+}
+
 function minutesToHHMM_(totalMinutes) {
   var h = Math.floor(totalMinutes / 60);
   var m = totalMinutes % 60;
@@ -1232,18 +1277,25 @@ function minutesToHHMM_(totalMinutes) {
 }
 
 /**
- * Highlights Schedule cells where the actual recorded check-in is a
- * noticeably better match for a DIFFERENT shift option than the one
+ * Highlights Schedule cells where the actual recorded check-in OR check-out
+ * is a noticeably better match for a DIFFERENT shift option than the one
  * currently entered -- usually means the real agreed shift changed but this
- * particular cell never got updated, so what looks like "Late" is really
- * just a stale schedule entry. A cell is flagged when the actual check-in is
- * more than SHIFT_MISMATCH_MINUTES_THRESHOLD minutes off the scheduled
- * shift's start AND some other SHIFTS option (with a real time -- Leave/
- * Holiday/Half Day Annual Leave never match anything) is closer to the actual time
- * than the one currently scheduled. Event shifts (e.g. "Event 8:00-17:00")
+ * particular cell never got updated, so what looks like "Late" (or an early
+ * departure) is really just a stale schedule entry. A cell is flagged when
+ * EITHER side finds a better-fitting shift:
+ *   - IN side: the actual check-in is more than SHIFT_MISMATCH_MINUTES_THRESHOLD
+ *     minutes AFTER the scheduled shift's start, and some LATER-starting
+ *     SHIFTS option's start is closer to the actual time.
+ *   - OUT side: the actual check-out is more than SHIFT_MISMATCH_MINUTES_THRESHOLD
+ *     minutes BEFORE the scheduled shift's end, and some EARLIER-ending
+ *     SHIFTS option's end is closer to the actual time. Added 2026-10-01 --
+ *     mirrors the IN side exactly, just checking the other end of the day
+ *     (leaving early instead of arriving late).
+ * Leave/Holiday/Half Day Annual Leave never match anything on either side,
+ * having no real time to compare. Event shifts (e.g. "Event 8:00-17:00")
  * are skipped entirely, both as a day to check and as a candidate "closer"
- * match -- they're one-off/irregular by nature, not a stale entry that
- * should get flagged or "corrected" back into the normal rotation.
+ * match on either side -- they're one-off/irregular by nature, not a stale
+ * entry that should get flagged or "corrected" back into the normal rotation.
  *
  * Snapshot check, not live -- resets every day-cell background (then
  * re-applies the weekend tint) before highlighting, so a mismatch fixed
@@ -1254,7 +1306,9 @@ function highlightShiftMismatches_(sheet, year, month) {
   // Event shifts are excluded both as a scheduled value to check (see the
   // loop below) and as a candidate "did you mean this instead" match here --
   // a one-off event isn't part of the normal shift rotation a stale entry
-  // would actually get corrected to.
+  // would actually get corrected to. Shared by both the IN and OUT checks
+  // below (every real SHIFTS entry is "H:MM-H:MM", so has both a start and
+  // an end -- no separate filter needed for the OUT side).
   var timedShifts = SHIFTS.filter(function (s) { return getShiftStartMinutes_(s) !== null && !isEventShift_(s); });
 
   var values = sheet.getDataRange().getValues();
@@ -1269,10 +1323,23 @@ function highlightShiftMismatches_(sheet, year, month) {
   }
   applyWeekendColors_(sheet, 1, lastRow, year, month, daysInMonth);
 
-  // Actual IN time (local minutes-since-midnight) per employeeId|day, read
-  // once instead of once per cell. Earliest IN wins on a day with more than
-  // one (offline-sync duplicate, etc.) -- same rule getMonthLogsByEmployee_
-  // already uses.
+  // Actual IN/OUT time (local minutes-since-midnight) per employeeId|day,
+  // read once instead of once per cell. Earliest IN wins and LATEST OUT
+  // wins on a day with more than one of either (offline-sync duplicate,
+  // etc.) -- same "earliest IN" rule getMonthLogsByEmployee_ already uses,
+  // and the same "latest OUT is the real end-of-day departure" rule
+  // handleDashboardDaily_ already uses.
+  //
+  // Known future limitation: keyed by the OUT event's OWN calendar date
+  // (ts.getDate() below), same as the IN side -- fine today since no SHIFTS
+  // entry crosses midnight, so an IN and its matching OUT always share a
+  // date. If an overnight shift (e.g. "22:00-6:00") is ever added to
+  // SHIFTS, its real OUT would land on the NEXT day's key and silently
+  // never match that day's Schedule cell -- the OUT check would just stop
+  // firing for that shift, no error. Not fixed here (no overnight shift
+  // exists to need it yet); if one's added, this needs the same kind of
+  // cross-midnight handling MAX_SHIFT_LOOKBACK_HOURS/findMostRecentInLog_
+  // (Attendance.gs) already went through for the live check-in path.
   var logSheet = getSheet_('AttendanceLog');
   var logValues = logSheet.getDataRange().getValues();
   var logHeaders = logValues[0];
@@ -1281,31 +1348,41 @@ function highlightShiftMismatches_(sheet, year, month) {
   var logTypeCol = logHeaders.indexOf('Type');
   var logShiftPickedCol = logHeaders.indexOf('ShiftPicked'); // -1 on a sheet from before this column existed -- pickedKeys just stays empty, same as always
   var actualInMinutesByKey = {};
+  var actualOutMinutesByKey = {};
   // Days the employee picked their own shift at the Kiosk -- never flagged
-  // below, no matter how the actual clock-in compares to any SHIFTS option.
-  // This heuristic exists to catch a STALE schedule entry (nobody updated
-  // it, so it drifted out of sync with reality); a picked shift is already
-  // exactly what the employee intended, by definition never stale, so
-  // "closer to a later shift" just means an ordinary late arrival within
-  // the shift they genuinely chose -- not a wrong entry to suggest fixing.
+  // below on EITHER side, no matter how the actual time compares to any
+  // SHIFTS option. This heuristic exists to catch a STALE schedule entry
+  // (nobody updated it, so it drifted out of sync with reality); a picked
+  // shift is already exactly what the employee intended, by definition
+  // never stale, so "closer to a different shift" just means an ordinary
+  // early/late punch within the shift they genuinely chose -- not a wrong
+  // entry to suggest fixing. Keyed off the IN row only (ShiftPicked is only
+  // ever written there -- see recordAttendance_/recordOfflineSyncedAttendance_)
+  // and shared by the OUT check below, since both describe the same chosen
+  // shift for that employee/day either way.
   // Set/overwritten IN THE SAME BRANCH as actualInMinutesByKey below, not
   // independently -- on a day with more than one IN row for the same
   // employee (offline-sync duplicate, admin backdated fix alongside a real
   // Kiosk tap, etc.), this must track whether the SPECIFIC row that ends
-  // up as the earliest-so-far (the one actualMinutes below is compared
+  // up as the earliest-so-far (the one actualInMinutes below is compared
   // against) was picked, not "was ANY row for this key picked" -- those
   // can disagree when the earliest row and the picked row aren't the same
   // one, which would wrongly suppress a genuinely stale entry.
   var pickedKeys = {};
   for (var i = 1; i < logValues.length; i++) {
-    if (logValues[i][logTypeCol] !== 'IN') continue;
+    var rowType = logValues[i][logTypeCol];
+    if (rowType !== 'IN' && rowType !== 'OUT') continue;
     var ts = new Date(logValues[i][logTsCol]);
     if (ts.getFullYear() !== year || ts.getMonth() + 1 !== month) continue;
     var key = String(logValues[i][logIdCol]) + '|' + ts.getDate();
     var minutes = ts.getHours() * 60 + ts.getMinutes();
-    if (!(key in actualInMinutesByKey) || minutes < actualInMinutesByKey[key]) {
-      actualInMinutesByKey[key] = minutes;
-      pickedKeys[key] = logShiftPickedCol !== -1 && isTrue_(logValues[i][logShiftPickedCol]);
+    if (rowType === 'IN') {
+      if (!(key in actualInMinutesByKey) || minutes < actualInMinutesByKey[key]) {
+        actualInMinutesByKey[key] = minutes;
+        pickedKeys[key] = logShiftPickedCol !== -1 && isTrue_(logValues[i][logShiftPickedCol]);
+      }
+    } else if (!(key in actualOutMinutesByKey) || minutes > actualOutMinutesByKey[key]) {
+      actualOutMinutesByKey[key] = minutes;
     }
   }
 
@@ -1322,41 +1399,52 @@ function highlightShiftMismatches_(sheet, year, month) {
       if (dayCol === -1) continue;
       var scheduledShift = String(values[r][dayCol] || '').trim();
       if (isNoLateNoOtShift_(scheduledShift)) continue; // Event or Special -- one-off/irregular by nature, not a normal recurring shift to flag as "wrong"
-      var scheduledStart = getShiftStartMinutes_(scheduledShift);
-      if (scheduledStart === null) continue; // blank, Leave, Holiday, Half Day Annual Leave, or unparseable -- nothing to compare
-
       var key = employeeId + '|' + d;
-      if (!(key in actualInMinutesByKey)) continue; // no check-in that day -- a different concern (see checkMissingAttendance_)
-      if (pickedKeys[key]) continue; // employee's own Kiosk pick -- see pickedKeys above
-      var actualMinutes = actualInMinutesByKey[key];
+      if (pickedKeys[key]) continue; // employee's own Kiosk pick -- see pickedKeys above, shared by both checks below
+      var flaggedThisCell = false;
 
-      // Arriving early never causes a false Late flag (isLate_ only fires
-      // when actual > scheduled start), so it's never worth flagging here --
-      // only look at check-ins AFTER the scheduled start, which is exactly
-      // what a stale (too-early) schedule entry would cause.
-      var currentDistance = actualMinutes - scheduledStart;
-      if (currentDistance <= SHIFT_MISMATCH_MINUTES_THRESHOLD) continue;
+      var scheduledStart = getShiftStartMinutes_(scheduledShift);
+      if (scheduledStart !== null && key in actualInMinutesByKey) {
+        var actualInMinutes = actualInMinutesByKey[key];
+        // Arriving early never causes a false Late flag (isLate_ only fires
+        // when actual > scheduled start), so it's never worth flagging here
+        // -- only look at check-ins AFTER the scheduled start, which is
+        // exactly what a stale (too-early) schedule entry would cause.
+        var inDistance = actualInMinutes - scheduledStart;
+        if (inDistance > SHIFT_MISMATCH_MINUTES_THRESHOLD) {
+          var closerStartShift = findCloserShift_(actualInMinutes, scheduledStart, inDistance, timedShifts, getShiftStartMinutes_, isLaterThan_);
+          if (closerStartShift) {
+            flaggedThisCell = true;
+            lines.push(
+              values[r][nameCol] + ', day ' + d + ': scheduled "' + scheduledShift + '" but checked in ' +
+              minutesToHHMM_(actualInMinutes) + ' -- closer to "' + closerStartShift + '"'
+            );
+          }
+        }
+      }
 
-      // Only compare against LATER shift options -- the question is "does a
-      // later shift explain this as on-time," not "is some earlier shift
-      // numerically closer" (that would just re-flag ordinary early
-      // arrivals relative to a later shift, the same false-positive noise
-      // this guards against).
-      var closerShift = null;
-      var closerDistance = currentDistance;
-      timedShifts.forEach(function (s) {
-        var start = getShiftStartMinutes_(s);
-        if (start <= scheduledStart) return;
-        var dist = Math.abs(actualMinutes - start);
-        if (dist < closerDistance) { closerDistance = dist; closerShift = s; }
-      });
-      if (!closerShift) continue; // no later shift fits better -- genuinely late, not a wrong entry
+      var scheduledEnd = getShiftEndMinutes_(scheduledShift);
+      if (scheduledEnd !== null && key in actualOutMinutesByKey) {
+        var actualOutMinutes = actualOutMinutesByKey[key];
+        // Mirror of the IN check above: leaving LATE never causes a false
+        // "stale schedule" read here (a genuinely later departure just
+        // means real OT, a separate concern already handled elsewhere) --
+        // only look at check-outs BEFORE the scheduled end, which is
+        // exactly what a stale (too-late) schedule entry would cause.
+        var outDistance = scheduledEnd - actualOutMinutes;
+        if (outDistance > SHIFT_MISMATCH_MINUTES_THRESHOLD) {
+          var closerEndShift = findCloserShift_(actualOutMinutes, scheduledEnd, outDistance, timedShifts, getShiftEndMinutes_, isEarlierThan_);
+          if (closerEndShift) {
+            flaggedThisCell = true;
+            lines.push(
+              values[r][nameCol] + ', day ' + d + ': scheduled "' + scheduledShift + '" but checked out ' +
+              minutesToHHMM_(actualOutMinutes) + ' -- closer to "' + closerEndShift + '"'
+            );
+          }
+        }
+      }
 
-      flaggedA1.push(sheet.getRange(r + 1, dayCol + 1).getA1Notation());
-      lines.push(
-        values[r][nameCol] + ', day ' + d + ': scheduled "' + scheduledShift + '" but checked in ' +
-        minutesToHHMM_(actualMinutes) + ' -- closer to "' + closerShift + '"'
-      );
+      if (flaggedThisCell) flaggedA1.push(sheet.getRange(r + 1, dayCol + 1).getA1Notation());
     }
   }
 

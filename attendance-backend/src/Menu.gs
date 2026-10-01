@@ -480,11 +480,13 @@ function menuCreateScheduleSheet_() {
 }
 
 /**
- * Highlights Schedule cells where the actual check-in looks like it belongs
- * to a different shift than what's entered -- see highlightShiftMismatches_
- * in Report.gs for the matching rule. Run this first to see what needs
- * fixing, fix those cells, then run "Recompute Late/OT for One Month" for
- * that month to update the Late/OT numbers to match.
+ * Highlights Schedule cells where the actual check-in OR check-out looks
+ * like it belongs to a different shift than what's entered -- see
+ * highlightShiftMismatches_ in Report.gs for the matching rule (checks both
+ * sides: arriving late past the scheduled start, or leaving early before
+ * the scheduled end). Run this first to see what needs fixing, fix those
+ * cells, then run "Recompute Late/OT for One Month" for that month to
+ * update the Late/OT numbers to match.
  */
 function menuHighlightShiftMismatches_() {
   var ui = SpreadsheetApp.getUi();
@@ -516,8 +518,12 @@ function menuHighlightShiftMismatches_() {
   ui.alert(
     'Done',
     result.flaggedCount === 0
-      ? 'No mismatches found -- every scheduled shift is within ' + SHIFT_MISMATCH_MINUTES_THRESHOLD + ' minutes of the actual check-in (or has no closer match among the other shift options).'
-      : 'Highlighted ' + result.flaggedCount + ' cell(s) in ' + sheetName + ' where the actual check-in looks closer to a different shift:\n\n' + result.lines.join('\n'),
+      ? 'No mismatches found -- every scheduled shift is within ' + SHIFT_MISMATCH_MINUTES_THRESHOLD + ' minutes of the actual check-in/check-out (or has no closer match among the other shift options).'
+      // flaggedCount counts CELLS, not lines -- a cell can produce two lines
+      // below (a check-in mismatch AND a check-out mismatch the same day),
+      // so the two numbers deliberately don't have to match; worded loosely
+      // ("the following") rather than "N cell(s):" to not imply they would.
+      : 'Highlighted ' + result.flaggedCount + ' cell(s) in ' + sheetName + ' -- the following check-ins/check-outs look closer to a different shift:\n\n' + result.lines.join('\n'),
     ui.ButtonSet.OK
   );
 }
