@@ -161,13 +161,14 @@ export async function getQueueLength(): Promise<number> {
 
 /**
  * Epoch ms of the oldest still-queued entry's own tap timestamp, or null if
- * the queue is empty (or unreadable). flushQueue is strict FIFO and stops
- * entirely at the first network_error/timeout (see its own doc comment) --
- * one stuck entry can silently block everyone behind it, including a real
- * BREAK_END, for as long as the device stays in that state. This doesn't
- * fix that (reordering risks breaking a single employee's own action
- * order), it just gives AdminScreen something to show so a stuck queue is
- * visible instead of invisible.
+ * the queue is empty (or unreadable). Since 2026-10-01, flushQueue only
+ * skips entries for a pin that's already failed THIS pass (see its own doc
+ * comment) -- a single stuck entry no longer blocks every OTHER employee's
+ * entries, but it still blocks that ONE employee's own later entries
+ * (preserving their action order), so this oldest-queued age is still worth
+ * surfacing: a pin stuck for a long time still means that one person's own
+ * taps (e.g. a real BREAK_END) aren't landing. Gives AdminScreen something
+ * to show so that's visible instead of invisible.
  */
 export async function getOldestQueuedAt(): Promise<number | null> {
   return withQueueLock(async () => {
@@ -178,10 +179,30 @@ export async function getOldestQueuedAt(): Promise<number | null> {
 }
 
 /**
- * Tries to sync every queued entry, oldest first, stopping at the first one
- * that still fails (keeps order -- a later entry shouldn't sync ahead of an
- * earlier one for the same day). Safe to call repeatedly/concurrently isn't
- * guaranteed -- callers should serialize their own calls (see useOfflineSync).
+ * Tries to sync every queued entry, oldest first PER EMPLOYEE (pin) --
+ * every request already carries its own real tap timestamp, and the
+ * server evaluates state as-of that timestamp (isWithinDuplicateGuard_,
+ * findTodayInLog_, isOnShiftToday_, etc.), not HTTP arrival order, so
+ * strict FIFO across DIFFERENT employees was never actually required for
+ * correctness -- only each employee's OWN entries need to stay in order
+ * (an IN always attempted before that same employee's later OUT/Break).
+ *
+ * Before 2026-10-01 this stopped the ENTIRE pass at the first
+ * network_error/timeout, meaning one employee's stuck entry (e.g. a
+ * request that keeps timing out for reasons specific to it, not a real
+ * device-wide outage) silently blocked every OTHER employee's queued
+ * entries too, with the Kiosk still showing "Saved offline" at tap time --
+ * the real incident this fixed: Shunya/Shiki/Mayuki's OUT taps never
+ * reaching AttendanceLog because they were queued behind someone else's
+ * stuck entry on the same shared device. Now: a pin that fails with
+ * network_error/timeout is skipped for the REST of this pass only (not
+ * removed -- still retried from the top next pass, see useOfflineSync's
+ * 30s interval), while every other pin's entries keep being attempted in
+ * the same pass. A device that's genuinely fully offline still behaves
+ * the same as before (every pin fails, nothing syncs, same total cost).
+ *
+ * Safe to call repeatedly/concurrently isn't guaranteed -- callers should
+ * serialize their own calls (see useOfflineSync).
  *
  * Storage access is serialized via withQueueLock, but each network call
  * (kioskSyncOffline) runs OUTSIDE the lock -- so an employee tapping the
@@ -191,6 +212,11 @@ export async function getOldestQueuedAt(): Promise<number | null> {
  */
 export async function flushQueue(): Promise<{ synced: number; remaining: number }> {
   let synced = 0;
+  // Pins that already failed with network_error/timeout this pass -- see
+  // this function's own doc comment. Reset on every flushQueue call, so
+  // the next pass (30s later, or on reconnect) always retries everyone
+  // from scratch.
+  const failedPins = new Set<string>();
 
   while (true) {
     // A read failure here (readQueue() can now throw, see above) means we
@@ -199,14 +225,16 @@ export async function flushQueue(): Promise<{ synced: number; remaining: number 
     // sync. useOfflineSync retries every 30s / on reconnect regardless.
     let next: QueuedCheckin | null;
     try {
-      next = await withQueueLock(async () => (await readQueue())[0] ?? null);
+      next = await withQueueLock(async () => {
+        const queue = await readQueue();
+        return queue.find((e) => !failedPins.has(e.pin)) ?? null;
+      });
     } catch {
       break;
     }
-    if (!next) break;
+    if (!next) break; // either truly empty, or every remaining entry's pin already failed this pass
 
     const res = await kioskSyncOffline(next.pin, next.type, next.ot, next.timestamp, next.clientId, next.branch, next.shift ?? undefined, next.breakDurationMinutes);
-    let stop = false;
 
     try {
       await withQueueLock(async () => {
@@ -221,7 +249,10 @@ export async function flushQueue(): Promise<{ synced: number; remaining: number 
         if (idx === -1) return; // already gone somehow -- nothing to do
 
         if (!res.success) {
-          if (res.error === 'network_error' || res.error === 'timeout') { stop = true; return; } // still offline or server issue -- stop, keep the rest queued in order
+          // Still offline (or a server issue) -- leave this ONE pin's
+          // remaining entries queued and skip them for the rest of this
+          // pass (see doc comment above), instead of stopping everyone.
+          if (res.error === 'network_error' || res.error === 'timeout') { failedPins.add(next.pin); return; }
           queue.splice(idx, 1); // permanent rejection (e.g. employee deactivated since) -- will never succeed, drop it instead of blocking everyone behind it
           await writeQueue(queue);
           if (next.type === 'BREAK_START' || next.type === 'BREAK_END') {
@@ -279,13 +310,13 @@ export async function flushQueue(): Promise<{ synced: number; remaining: number 
             // stuck in the estimate for the rest of the day.
             addEstimatedOfflineBreakMinutes(next.pin, -next.breakSessionMinutes);
           }
-          if (next.type === 'IN' && res.error !== 'duplicate') {
-            // Any permanent rejection OTHER than duplicate (not_found/
-            // inactive/bad_request) means this IN never actually landed --
-            // revert the optimistic marker queueOffline set at enqueue time,
-            // so the morning auto-select doesn't keep silently skipping IN
-            // for a check-in that never really happened. The IN button
-            // itself was never blocked either way.
+          if (next.type === 'IN' && res.error !== 'duplicate' && res.error !== 'already_clocked_in') {
+            // Any permanent rejection OTHER than duplicate/already_clocked_in
+            // (not_found/inactive/bad_request) means this IN never actually
+            // landed -- revert the optimistic marker queueOffline set at
+            // enqueue time, so the morning auto-select doesn't keep silently
+            // skipping IN for a check-in that never really happened. The IN
+            // button itself was never blocked either way.
             //
             // 'duplicate' is left alone deliberately, NOT because it proves
             // an earlier same-type IN synced -- unlike the Break guard above
@@ -299,6 +330,14 @@ export async function flushQueue(): Promise<{ synced: number; remaining: number 
             // first IN did succeed) as leaving it is to wrongly keep a
             // phantom one. Left as-is as the least-surprising default --
             // still only ever a wrong PRE-SELECTION, never a blocked tap.
+            //
+            // 'already_clocked_in' (isOnShiftToday_, added 2026-09-30) is
+            // left alone for the OPPOSITE reason from duplicate: unlike
+            // duplicate, this one IS decidable -- it only ever means the
+            // employee is genuinely on shift already (via some other IN,
+            // same day), so clearing the marker here would be actively
+            // wrong, not just uncertain. The next live lookupPin corrects
+            // the marker from the server's own onShift anyway.
             clearLocalCheckedInToday(next.pin);
           }
           return;
@@ -321,8 +360,6 @@ export async function flushQueue(): Promise<{ synced: number; remaining: number 
       // next pass against storage we now can't trust.
       break;
     }
-
-    if (stop) break;
   }
 
   // -1 here means "couldn't read the count" (a storage failure), never a

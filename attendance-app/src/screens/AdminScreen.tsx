@@ -18,11 +18,12 @@ const BRANCH_OPTIONS = Object.keys(DEVICE_BRANCH_LABELS) as DeviceBranch[];
 // bump (already done for every release), nothing to keep in sync by hand.
 const APP_VERSION = Constants.expoConfig?.version ?? 'unknown';
 
-// flushQueue is strict FIFO and stops entirely at the first network_error/
-// timeout, so one stuck entry can silently block everyone behind it
-// (including a real BREAK_END) indefinitely -- this tablet is expected to
-// stay online essentially all the time, so a queue entry still waiting
-// this long is worth an admin's attention, not a normal offline blip.
+// Since 2026-10-01, flushQueue only blocks a STUCK PIN's own later entries
+// (see offlineQueue.ts) -- a single stuck entry no longer blocks every
+// other employee's queue too, but it still means that one person's own
+// taps (including a real BREAK_END) aren't landing. This tablet is
+// expected to stay online essentially all the time, so a queue entry still
+// waiting this long is worth an admin's attention, not a normal offline blip.
 const STUCK_QUEUE_WARNING_MS = 15 * 60 * 1000;
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Admin'>;
@@ -240,10 +241,12 @@ export default function AdminScreen({ navigation }: Props) {
         </View>
       )}
       {oldestQueuedAt !== null && Date.now() - oldestQueuedAt > STUCK_QUEUE_WARNING_MS && (
-        // flushQueue is strict FIFO (see offlineQueue.ts) -- this specific
-        // entry being stuck this long means EVERYTHING behind it, of any
-        // type for any employee, is stuck too, even though pendingSyncCount
-        // above doesn't distinguish "just offline for a bit" from "stuck".
+        // See offlineQueue.ts's flushQueue doc comment -- this specific
+        // entry being stuck this long means that ONE employee's own later
+        // entries (if any) are stuck behind it too, not necessarily anyone
+        // else's; pendingSyncCount above doesn't distinguish "just offline
+        // for a bit" from "stuck", so this age-based banner is still the
+        // signal worth an admin's attention.
         <View style={[styles.pendingSyncBadge, styles.stuckQueueBadge]}>
           <Text style={[styles.pendingSyncText, styles.stuckQueueText]}>
             Oldest pending item is {Math.round((Date.now() - oldestQueuedAt) / 60000)} min old -- this tablet may need

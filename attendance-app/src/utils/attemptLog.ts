@@ -1,7 +1,12 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const STORAGE_KEY = 'kiosk_attempt_log_v1';
-const MAX_ENTRIES = 100;
+// Was 100 -- too short-lived in practice: diagnosing a real incident
+// (2026-10-01, missing OUT rows from the evening before) found the
+// relevant entries had already rolled off by the next morning on a busy
+// shared tablet. Each entry is tiny (a timestamp, an action name, a
+// result, a short message), so 1000 costs negligible storage.
+const MAX_ENTRIES = 1000;
 
 export type AttemptResult = 'success' | 'timeout' | 'network_error' | 'rejected';
 
