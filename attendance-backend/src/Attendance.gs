@@ -3,7 +3,7 @@
  */
 
 var DUPLICATE_GUARD_MS = 60 * 1000; // reject re-scans within 60s of the last log for the same employee
-var SHIFTS = ['7:00-16:00', '7:30-16:30', '8:00-17:00', '8:30-17:30', '7:00-17:00', '8:00-18:30', 'Event 8:00-17:00', 'Annual Leave', 'Sick Leave', 'Unpaid Leave', 'Paid Special Leave', 'Half Day Annual Leave', 'Half Day Sick Leave', 'Half Day Unpaid Leave', 'Holiday'];
+var SHIFTS = ['7:00-16:00', '7:30-16:30', '8:00-17:00', '8:30-17:30', '7:00-17:00', '7:00-17:30', '8:00-18:00', '8:00-18:30', 'Event 8:00-17:00', 'Annual Leave', 'Sick Leave', 'Unpaid Leave', 'Paid Special Leave', 'Half Day Annual Leave', 'Half Day Sick Leave', 'Half Day Unpaid Leave', 'Holiday'];
 // Shift values that mean "nobody's expected in at all that day" -- as
 // opposed to a blank cell (not scheduled yet) or "Half Day Annual
 // Leave"/"Half Day Sick Leave"/"Half Day Unpaid Leave" (still expected in
@@ -31,8 +31,8 @@ function normalizePunchBranch_(branch) {
 
 // Every employee can pick from these 3 at the Kiosk; a handful of people
 // also have one or more of their own (Employees.ExtraShift, blank for
-// everyone else) -- e.g. Kahana's 8:30-17:30, Shunya's 7:00-17:00 AND
-// 8:00-18:30 (comma-separated in the one cell -- see shiftChoicesFor_).
+// everyone else) -- e.g. Kahana's 8:30-17:30, Shunya's 7:00-17:00, 8:00-18:00,
+// AND 8:00-18:30 (comma-separated in the one cell -- see shiftChoicesFor_).
 // Kept separate from SHIFTS (which also lists every Leave/Holiday value,
 // none of which an employee should ever pick for themselves at check-in).
 var STANDARD_SHIFT_CHOICES = ['7:00-16:00', '7:30-16:30', '8:00-17:00'];
@@ -250,16 +250,22 @@ function minutesPastShiftEnd_(shiftOrEvent, outTimestamp) {
   return Math.round((outTimestamp.getTime() - shiftEnd.getTime()) / 60000);
 }
 
-// A few shifts cap Japanese OT on their own -- e.g. "7:00-17:00" and
-// "8:00-18:30" are longer than the other Japanese shifts, so real OT past
-// that already-long day is capped low on purpose. Keyed by the exact Shift
-// string; combined with capMinutes by taking whichever is STRICTER (see
-// computeJapaneseOtMinutes_) -- this is a ceiling, not a replacement, so it
-// can only lower an employee's own tighter OTMaxMinutes further, never
-// loosen it back up past what the employee's own cap already restricts.
-// Thai OT never reads this -- it has no cap at all (see
-// computeThaiOtQuarters_).
-var SHIFT_OT_CAP_MINUTES_OVERRIDE = { '7:00-17:00': 15, '8:00-18:30': 15 };
+// A few shifts cap Japanese OT on their own -- e.g. "7:00-17:00"/"8:00-18:00"
+// (10h) and "8:00-18:30"/"7:00-17:30" (10.5h) are longer than the other
+// Japanese shifts (9h), so real OT past that already-long day is capped low
+// on purpose. Keyed by the exact Shift string; combined with capMinutes by
+// taking whichever is STRICTER (see computeJapaneseOtMinutes_) -- this is a
+// ceiling, not a replacement, so it can only lower an employee's own
+// tighter OTMaxMinutes further, never loosen it back up past what the
+// employee's own cap already restricts. Thai OT never reads this -- it has
+// no cap at all (see computeThaiOtQuarters_).
+//
+// IMPORTANT: any future addition to SHIFTS that's as long as or longer than
+// these must be added here too -- "8:00-18:00" and "7:00-17:30" were
+// originally added to SHIFTS without this override, silently letting
+// Japanese OT run up to the full JP_OT_CAP_MINUTES/OTMaxMinutes on an
+// already-10h+ day until caught in code review.
+var SHIFT_OT_CAP_MINUTES_OVERRIDE = { '7:00-17:00': 15, '8:00-18:30': 15, '8:00-18:00': 15, '7:00-17:30': 15 };
 
 /**
  * Japanese OT, in minutes: always auto-computed from actual clock-out vs the
@@ -439,11 +445,26 @@ function handleKioskLookupPin_(params) {
   // extra Sheets read) fixes that the same way onBreak already got fixed:
   // real server state, self-healing on every online lookup instead of a
   // per-device marker with no way to catch up.
-  var breakState = currentShiftBreakState_(found.row.EmployeeID, new Date());
+  var now = new Date();
+  var log = getRecentAttendanceLog_(); // fetched once, shared below -- same cost-conscious reasoning as currentShiftBreakState_'s own call, just explicit here so isOnShiftToday_ doesn't pay for a second read
+  var breakState = currentShiftBreakState_(found.row.EmployeeID, now, log);
   return ok_({
     name: found.row.Name,
     shifts: shiftChoicesFor_(found.row),
     onShift: breakState.onShift,
+    // Real incident, 2026-10-01: the Kiosk's own background onShift
+    // reconciliation (see client.ts/KioskScreen.tsx) used to clear a
+    // just-made IN selection whenever this 48h-bounded onShift came back
+    // true -- correct in intent (don't let a stale pre-selected IN sail
+    // through to a server rejection), but it fired even when the employee
+    // had simply forgotten to tap OUT the day before, which the IN write
+    // path itself (isOnShiftToday_, see its own doc comment) now happily
+    // allows. The employee would pick a shift, then watch the screen
+    // silently clear the pick a moment later for a reason that no longer
+    // actually blocks them. onShiftToday mirrors the SAME day-bounded
+    // check the write path uses, specifically so the Kiosk can stop
+    // correcting a selection that the server would now accept anyway.
+    onShiftToday: isOnShiftToday_(found.row.EmployeeID, now, log),
     onBreak: breakState.onBreak,
     breakStartedAt: breakState.onBreak && breakState.lastBreakTs ? breakState.lastBreakTs.toISOString() : null
   });
@@ -535,6 +556,51 @@ function currentShiftBreakState_(employeeId, now, log) {
     // need to compute how long that session lasted once it ends.
     lastBreakTs: lastBreakTs
   };
+}
+
+/**
+ * Like currentShiftBreakState_, but bounded to TODAY's own IN only (via
+ * findTodayInLog_), not the 48h MAX_SHIFT_LOOKBACK_HOURS window. Two
+ * callers: the IN branches of recordAttendance_/recordOfflineSyncedAttendance_
+ * (decides whether a fresh IN should be rejected as "already on shift" --
+ * its original purpose), and handleKioskLookupPin_'s onShiftToday (lets the
+ * Kiosk stop clearing a just-picked IN selection for a reason the write
+ * path itself no longer enforces -- see that field's own comment). Both
+ * need the exact same day-bounded answer, which is the whole point of
+ * sharing this one function instead of each growing its own copy.
+ * Deliberately a separate, narrower check from currentShiftBreakState_'s
+ * own onShift: a real incident (2026-09-30,
+ * 3 employees forgot to tap OUT the evening before) showed that gating a
+ * fresh IN on the 48h-bounded onShift means a single forgotten OUT
+ * permanently blocks that employee's IN the NEXT day too, with no
+ * self-service way to recover -- worse than the duplicate-IN bug this guard
+ * exists to prevent (that bug only ever produced a messy extra row, never
+ * blocked a real check-in). currentShiftBreakState_ itself must stay 48h-
+ * bounded -- do not "fix" this by unifying the two windows -- the Kiosk's
+ * button visibility and the Break validity checks genuinely need that wider
+ * window to handle a real overnight/spans-next-day shift correctly; only
+ * this IN-duplicate guard wants same-day-only. Accepted trade-off: a
+ * genuine overnight shift's duplicate-IN case (tapping IN again just after
+ * midnight, before tapping OUT) is no longer caught here -- narrower and
+ * far rarer than the incident this change fixes.
+ */
+function isOnShiftToday_(employeeId, now, log) {
+  log = log || getRecentAttendanceLog_();
+  var todayIn = findTodayInLog_(employeeId, now, log);
+  if (!todayIn) return false;
+
+  var idCol = log.headers.indexOf('EmployeeID');
+  var tsCol = log.headers.indexOf('Timestamp');
+  var typeCol = log.headers.indexOf('Type');
+
+  for (var i = 0; i < log.rows.length; i++) {
+    if (String(log.rows[i][idCol]) !== String(employeeId)) continue;
+    var ts = new Date(log.rows[i][tsCol]);
+    if (ts.getTime() <= todayIn.timestamp.getTime()) continue;
+    if (ts.getTime() > now.getTime()) continue;
+    if (log.rows[i][typeCol] === 'OUT') return false;
+  }
+  return true;
 }
 
 // The employee picks one of these when starting a break -- purely
@@ -825,6 +891,7 @@ function handleKioskSyncOffline_(params) {
   var result = recordOfflineSyncedAttendance_(
     found.row.EmployeeID, params.type, timestamp, params.ot === 'true', params.clientId, params.branch, params.shift
   );
+  if (result.error) return fail_(result.error, result.message);
   if (result.duplicate) return fail_('duplicate', 'Already recorded around this time, skipped as a duplicate');
   return ok_(result);
 }
@@ -1824,6 +1891,16 @@ function recordOfflineSyncedAttendance_(employeeId, type, timestamp, ot, clientI
     return { duplicate: true, name: emp.Name };
   }
 
+  // Same already-on-shift guard as the live path (recordAttendance_) -- see
+  // isOnShiftToday_'s own doc comment for why this is deliberately
+  // same-day-only, not currentShiftBreakState_'s 48h-bounded onShift --
+  // evaluated as of the queued tap's own timestamp, not "now" (sync can
+  // happen minutes or hours later), consistent with the duplicate-guard
+  // check just above.
+  if (type === 'IN' && isOnShiftToday_(employeeId, timestamp, log)) {
+    return { error: 'already_clocked_in', message: 'Already checked in, please check out first' };
+  }
+
   var punchBranchForRow = normalizePunchBranch_(punchBranch);
 
   var shiftForRow = '';
@@ -2033,6 +2110,22 @@ function recordAttendance_(employeeId, method, rawScanValue, type, ot, punchBran
   // having happened moments earlier -- see isWithinDuplicateGuard_.
   if (isWithinDuplicateGuard_(lastLog, now, { ignoreTypes: ['BREAK_START', 'BREAK_END'] })) {
     return fail_('duplicate', 'Already recorded, please wait a moment before scanning again');
+  }
+
+  // A second IN more than DUPLICATE_GUARD_MS after the first used to sail
+  // straight through with no check at all -- unlike Break (recordBreak_
+  // already rejects on !state.onShift), IN had no equivalent guard, so an
+  // accidental re-tap (or the Kiosk's cross-device onShift display lagging
+  // reality for a moment) silently appended a second, unpaired IN row with
+  // no OUT between them, corrupting whichever IN the next OUT's
+  // findTodayInLog_/findMostRecentInLog_ happened to pick for duration/OT
+  // math. Mirrors recordBreak_'s own already_clocked_out guard -- but
+  // deliberately checks isOnShiftToday_ (same-day only), NOT
+  // currentShiftBreakState_'s 48h-bounded onShift -- see isOnShiftToday_'s
+  // own doc comment for the incident that made the 48h version of this
+  // check block real check-ins the day after a forgotten OUT.
+  if (type === 'IN' && isOnShiftToday_(employeeId, now, log)) {
+    return fail_('already_clocked_in', 'Already checked in, please check out first');
   }
 
   var punchBranchForRow = normalizePunchBranch_(punchBranch);
