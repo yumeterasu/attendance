@@ -1942,27 +1942,28 @@ export default function KioskScreen({ navigation }: Props) {
           {!onBreak && (
             <>
               <View style={styles.typeRow}>
-                {/* Hidden once genuinely on shift today (onShiftToday) --
-                    there's no legitimate reason to tap IN again while
-                    already clocked in, only ever a mistake (meant OUT) or a
-                    true duplicate; recordAttendance_/recordOfflineSyncedAttendance_
-                    already reject it server-side (already_clocked_in), but
-                    removing the button itself stops the mis-tap from ever
-                    reaching an optimistic "Saved offline" confirmation that
-                    later turns out to be a silent no-op -- real incident,
-                    2026-10-01. */}
-                {!onShiftToday && (
-                  <Pressable
-                    style={[styles.typeButton, styles.typeButtonIn, selection === 'IN' && styles.typeButtonInSelected]}
-                    onPress={() => selectType('IN')}
-                    disabled={isProcessing}
-                  >
-                    <Text style={[styles.typeButtonInText, selection === 'IN' && styles.typeButtonTextSelected]}>
-                      IN{'\n'}
-                      <Text style={styles.thaiSmall}>เข้างาน</Text>
-                    </Text>
-                  </Pressable>
-                )}
+                {/* Tried hiding this once onShiftToday was true (2026-10-01,
+                    v1.16.0) -- correct in principle, but the cache-first
+                    display means IN visibly pops in then vanishes a couple
+                    seconds later once the live correction lands, which an
+                    employee watching it happen read as confusing/buggy
+                    rather than reassuring. Reverted same day: IN always
+                    shows again, same as before that change. The
+                    already_clocked_in guard (recordAttendance_/
+                    recordOfflineSyncedAttendance_, server-side) still
+                    rejects a genuine duplicate regardless of this button's
+                    visibility -- this only affects the UI, not whether a
+                    duplicate IN can actually land. */}
+                <Pressable
+                  style={[styles.typeButton, styles.typeButtonIn, selection === 'IN' && styles.typeButtonInSelected]}
+                  onPress={() => selectType('IN')}
+                  disabled={isProcessing}
+                >
+                  <Text style={[styles.typeButtonInText, selection === 'IN' && styles.typeButtonTextSelected]}>
+                    IN{'\n'}
+                    <Text style={styles.thaiSmall}>เข้างาน</Text>
+                  </Text>
+                </Pressable>
                 <Pressable
                   style={[styles.typeButton, styles.typeButtonOut, selection === 'OUT' && styles.typeButtonOutSelected]}
                   onPress={() => selectType('OUT')}
