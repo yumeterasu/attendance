@@ -118,8 +118,19 @@ export function kioskBreak(pin: string, type: 'BREAK_START' | 'BREAK_END', durat
 // and writes them back into the local marker; the offline/local-directory
 // path (tryLocalLookup) has no live data and keeps using the local marker
 // alone.
+//
+// onShiftToday: NOT the same thing as onShift, and must not be used in its
+// place -- onShift is deliberately 48h-bounded (so the Break button/marker
+// stay correct across an overnight shift); onShiftToday mirrors the
+// same-day-only check the server's IN write path actually enforces
+// (isOnShiftToday_, Attendance.gs). Real incident, 2026-10-01: using
+// `onShift` to decide whether to clear a just-picked IN selection cleared
+// it even when the employee had only forgotten to tap OUT the day before --
+// which the write path itself no longer blocks -- so the shift picker
+// would silently vanish out from under someone mid-pick for a reason that
+// no longer applied. Use onShiftToday for that decision instead.
 export function kioskLookupPin(pin: string) {
-  return postAction<{ name: string; shifts: string[]; onShift: boolean; onBreak: boolean; breakStartedAt: string | null }>(
+  return postAction<{ name: string; shifts: string[]; onShift: boolean; onShiftToday: boolean; onBreak: boolean; breakStartedAt: string | null }>(
     'kioskLookupPin',
     { pin },
     KIOSK_TIMEOUT_MS

@@ -857,19 +857,29 @@ export default function KioskScreen({ navigation }: Props) {
                 applyServerBreakAndShiftState(value, res.onBreak, res.breakStartedAt, res.onShift);
                 // The morning auto-select effect (below) already ran once
                 // against the stale local-hit's alreadyCheckedInToday and
-                // may have defaulted the selection to IN -- if onShift just
-                // turned out true (e.g. checked in on a DIFFERENT tablet,
-                // which this device's own local marker had no way to know
-                // about), that default is now wrong, and IN would just get
-                // rejected server-side as a duplicate anyway. The effect
-                // itself won't re-fire to fix this on its own (it doesn't
-                // depend on alreadyCheckedInToday), so clear it here
+                // may have defaulted the selection to IN -- if the employee
+                // is genuinely already on shift TODAY (e.g. checked in on a
+                // DIFFERENT tablet, which this device's own local marker had
+                // no way to know about), that default is now wrong, and IN
+                // would just get rejected server-side as a duplicate anyway.
+                // The effect itself won't re-fire to fix this on its own (it
+                // doesn't depend on alreadyCheckedInToday), so clear it here
                 // instead. Functional update reads whatever `selection`
                 // actually is at the moment this resolves, not a stale
                 // value captured when this background call started -- so a
                 // deliberate tap the employee made to something else in the
                 // meantime is left alone.
-                if (res.onShift) setSelection((prev) => (prev === 'IN' ? null : prev));
+                //
+                // Deliberately res.onShiftToday here, NOT res.onShift (see
+                // client.ts's own comment on kioskLookupPin) -- a real
+                // incident, 2026-10-01: using the 48h-bounded onShift
+                // cleared a just-picked IN whenever the employee had simply
+                // forgotten to tap OUT the day before, even though the IN
+                // write path (isOnShiftToday_, same-day-only since
+                // 2026-09-30) no longer blocks that case at all. The
+                // employee would pick a shift and watch it silently vanish
+                // moments later for a reason that no longer applied.
+                if (res.onShiftToday) setSelection((prev) => (prev === 'IN' ? null : prev));
               }
             })
             .catch(() => {});
