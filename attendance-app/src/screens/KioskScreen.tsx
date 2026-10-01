@@ -482,6 +482,13 @@ export default function KioskScreen({ navigation }: Props) {
   // synchronously instead of doing its own AsyncStorage round trip with
   // manual cancellation bookkeeping on every lookupName change.
   const [alreadyCheckedInToday, setAlreadyCheckedInToday] = useState(false);
+  // Day-bounded (unlike alreadyCheckedInToday, which is 48h-bounded online --
+  // see its own comment and client.ts's onShiftToday doc) -- the ONLY signal
+  // the IN button's own visibility should use (see the typeRow render
+  // below), so someone who merely forgot to tap OUT yesterday still sees
+  // IN today, while someone genuinely still on shift (checked in today,
+  // not yet out) never sees a second IN to mis-tap in the first place.
+  const [onShiftToday, setOnShiftToday] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   // Mirrors isProcessing but read/written synchronously -- same reasoning as
   // isChangingScheduleMonthRef below: state doesn't land until the next
@@ -573,6 +580,7 @@ export default function KioskScreen({ navigation }: Props) {
     setSelection(null);
     setOnBreak(false);
     setAlreadyCheckedInToday(false);
+    setOnShiftToday(false);
     setLookupIssue(null);
     setForcedOffline(false);
   };
@@ -597,17 +605,32 @@ export default function KioskScreen({ navigation }: Props) {
   };
 
   // Applies a live kioskLookupPin response's server-authoritative
-  // onBreak/onShift fields to both React state and the on-device markers
-  // (self-healing them) -- shared by lookupPin's own live branch and the
-  // background reconciliation fired after a local-directory hit, so this
-  // 4-statement sequence can't drift between the two copies the way an
+  // onBreak/onShift/onShiftToday fields to both React state and the
+  // on-device markers (self-healing them) -- shared by lookupPin's own live
+  // branch and the background reconciliation fired after a local-directory
+  // hit, so this sequence can't drift between the two copies the way an
   // identical class of duplication already did once this session (see the
   // Thai OT eligibility formula's own history in Attendance.gs).
-  const applyServerBreakAndShiftState = (pin: string, onBreak: boolean, breakStartedAt: string | null, onShift: boolean) => {
+  //
+  // setLocalCheckedInToday/clearLocalCheckedInToday are keyed off
+  // onShiftToday, NOT onShift -- checkinState.ts's own marker is inherently
+  // day-scoped ("did this PIN clock IN TODAY"), so writing it from the 48h
+  // onShift would stamp TODAY's date onto a shift that's actually just
+  // stale from yesterday, so this device's very next offline-fallback read
+  // (tryLocalLookup) would wrongly say "checked in today" and hide the IN
+  // button for someone the server would actually let clock in.
+  const applyServerBreakAndShiftState = (
+    pin: string,
+    onBreak: boolean,
+    breakStartedAt: string | null,
+    onShift: boolean,
+    onShiftToday: boolean
+  ) => {
     setOnBreak(onBreak);
     setLocalOnBreak(pin, onBreak ? breakStartedAt : null);
     setAlreadyCheckedInToday(onShift);
-    if (onShift) setLocalCheckedInToday(pin);
+    setOnShiftToday(onShiftToday);
+    if (onShiftToday) setLocalCheckedInToday(pin);
     else clearLocalCheckedInToday(pin);
   };
 
@@ -732,28 +755,29 @@ export default function KioskScreen({ navigation }: Props) {
       return;
     }
     const hour = new Date().getHours();
-    // alreadyCheckedInToday is resolved together with lookupName itself
-    // (see tryLocalLookup/lookupPin above), so it's already correct by the
-    // time THIS EFFECT sees the new lookupName -- no separate async read
-    // needed here. One exception this effect does NOT handle: the
-    // background onShift reconciliation (fired after a local-directory hit,
-    // see lookupPin's local-hit branch above) can correct
-    // alreadyCheckedInToday LATER, asynchronously, well after this effect
-    // already ran against the stale local value -- this effect has no
-    // alreadyCheckedInToday dependency and won't re-fire for that, so the
-    // reconciliation's own callback clears a now-wrong IN default itself
-    // instead of relying on this effect to notice. Skips the IN default specifically
-    // when this PIN already clocked IN today, so looking the same PIN up
-    // again later in the same morning window doesn't re-default to IN even
-    // though they already tapped it. The IN button itself is never hidden
-    // or disabled by this, only which button starts pre-selected.
+    // onShiftToday is resolved together with lookupName itself (see
+    // tryLocalLookup/lookupPin above), so it's already correct by the time
+    // THIS EFFECT sees the new lookupName -- no separate async read needed
+    // here. One exception this effect does NOT handle: the background
+    // onShift reconciliation (fired after a local-directory hit, see
+    // lookupPin's local-hit branch above) can correct onShiftToday LATER,
+    // asynchronously, well after this effect already ran against the stale
+    // local value -- this effect has no onShiftToday dependency and won't
+    // re-fire for that, so the reconciliation's own callback clears a
+    // now-wrong IN default itself instead of relying on this effect to
+    // notice. Skips the IN default specifically when this PIN already
+    // clocked IN today, so looking the same PIN up again later in the same
+    // morning window doesn't re-default to IN even though they already
+    // tapped it -- matches onShiftToday also hiding the IN button entirely
+    // in that case (see the typeRow render below), so there'd be nothing
+    // to default to anyway.
     //
     // No afternoon/evening OUT default (removed -- some employees take
     // their break around the same hour this used to fire at; a distracted
     // tap on an already-selected OUT could clock them out entirely when
     // they only meant to start a break). Only the morning IN default
     // remains; every other case leaves nothing pre-selected.
-    if (hour >= AUTO_IN_START_HOUR && hour < AUTO_IN_END_HOUR && !alreadyCheckedInToday) setSelection('IN');
+    if (hour >= AUTO_IN_START_HOUR && hour < AUTO_IN_END_HOUR && !onShiftToday) setSelection('IN');
   }, [lookupName, onBreak]);
 
   // Falls back to the on-device PIN->Name->shifts copy (see
@@ -777,6 +801,20 @@ export default function KioskScreen({ navigation }: Props) {
     // BREAK_START/BREAK_END of this PIN's own (see breakState.ts).
     setOnBreak(onBreakNow);
     setAlreadyCheckedInToday(checkedInNow);
+    // Deliberately NOT setOnShiftToday(checkedInNow) here, unlike
+    // alreadyCheckedInToday just above -- checkedInNow is THIS device's own
+    // local marker, which checkinState.ts's own doc comment says can be
+    // stale-true (e.g. IN'd on this tablet, OUT'd on a different one, this
+    // device never saw it) with "never a block on actually clocking in" as
+    // the explicit invariant. onShiftToday drives whether the IN button
+    // renders at all now, so trusting a stale-true local marker here could
+    // hide IN entirely for someone who's genuinely free to clock in, with
+    // no button left to even queue the attempt until connectivity returns
+    // -- a real zero-data-loss violation, not just a wrong default. Leaving
+    // it false (IN stays visible) is the same safe fallback this marker
+    // always had before onShiftToday existed; the background reconciliation
+    // (see lookupPin's local-hit branch below) corrects it from the live
+    // server answer within moments whenever one's reachable.
     return true;
   };
 
@@ -854,7 +892,7 @@ export default function KioskScreen({ navigation }: Props) {
               // that lookup already set more recently.
               if (lookupGenerationRef.current !== myGeneration) return;
               if (res.success) {
-                applyServerBreakAndShiftState(value, res.onBreak, res.breakStartedAt, res.onShift);
+                applyServerBreakAndShiftState(value, res.onBreak, res.breakStartedAt, res.onShift, res.onShiftToday);
                 // The morning auto-select effect (below) already ran once
                 // against the stale local-hit's alreadyCheckedInToday and
                 // may have defaulted the selection to IN -- if the employee
@@ -902,7 +940,7 @@ export default function KioskScreen({ navigation }: Props) {
         // silently never reached the server (see queueOffline's BREAK_END
         // branch); onShift: checked in on a DIFFERENT tablet, whose local
         // marker this device's own storage never knew about.
-        applyServerBreakAndShiftState(value, res.onBreak, res.breakStartedAt, res.onShift);
+        applyServerBreakAndShiftState(value, res.onBreak, res.breakStartedAt, res.onShift, res.onShiftToday);
       } else if (res.error === 'timeout' || res.error === 'network_error') {
         // Connection dropped mid-request -- try the local copy again in case
         // the directory refreshed in the meantime (see useOfflineSync).
@@ -1904,16 +1942,27 @@ export default function KioskScreen({ navigation }: Props) {
           {!onBreak && (
             <>
               <View style={styles.typeRow}>
-                <Pressable
-                  style={[styles.typeButton, styles.typeButtonIn, selection === 'IN' && styles.typeButtonInSelected]}
-                  onPress={() => selectType('IN')}
-                  disabled={isProcessing}
-                >
-                  <Text style={[styles.typeButtonInText, selection === 'IN' && styles.typeButtonTextSelected]}>
-                    IN{'\n'}
-                    <Text style={styles.thaiSmall}>เข้างาน</Text>
-                  </Text>
-                </Pressable>
+                {/* Hidden once genuinely on shift today (onShiftToday) --
+                    there's no legitimate reason to tap IN again while
+                    already clocked in, only ever a mistake (meant OUT) or a
+                    true duplicate; recordAttendance_/recordOfflineSyncedAttendance_
+                    already reject it server-side (already_clocked_in), but
+                    removing the button itself stops the mis-tap from ever
+                    reaching an optimistic "Saved offline" confirmation that
+                    later turns out to be a silent no-op -- real incident,
+                    2026-10-01. */}
+                {!onShiftToday && (
+                  <Pressable
+                    style={[styles.typeButton, styles.typeButtonIn, selection === 'IN' && styles.typeButtonInSelected]}
+                    onPress={() => selectType('IN')}
+                    disabled={isProcessing}
+                  >
+                    <Text style={[styles.typeButtonInText, selection === 'IN' && styles.typeButtonTextSelected]}>
+                      IN{'\n'}
+                      <Text style={styles.thaiSmall}>เข้างาน</Text>
+                    </Text>
+                  </Pressable>
+                )}
                 <Pressable
                   style={[styles.typeButton, styles.typeButtonOut, selection === 'OUT' && styles.typeButtonOutSelected]}
                   onPress={() => selectType('OUT')}
@@ -2332,6 +2381,7 @@ const styles = StyleSheet.create({
   subtitle: { color: 'rgba(255,255,255,0.6)', fontSize: 15, marginBottom: 24 },
   typeRow: { flexDirection: 'row', gap: 12, marginTop: 20, marginBottom: 8 },
   typeButton: {
+    flex: 1, // fills typeRow evenly whether it's showing 2 buttons (IN hidden, onShiftToday) or 3
     borderRadius: 20,
     paddingVertical: 22, // was 18 -- bigger touch target + room for the Thai sub-line
     paddingHorizontal: 22,
