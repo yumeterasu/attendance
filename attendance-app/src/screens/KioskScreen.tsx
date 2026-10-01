@@ -637,6 +637,24 @@ export default function KioskScreen({ navigation }: Props) {
     setSelectedShift(null);
   };
 
+  // Shared by both halves of the shift-picker list (the 3 standard choices
+  // and this employee's own ExtraShift ones, split by a divider -- see the
+  // shiftGrid JSX below) so the two groups can never visually/behaviorally
+  // drift apart from each other.
+  const renderShiftButton = (s: string) => (
+    <Pressable
+      key={s}
+      style={[styles.shiftButton, selectedShift === s && styles.shiftButtonSelected]}
+      onPress={() => {
+        closeSpecialShift(); // closeSpecialShift's own setSelectedShift(null) is superseded by this one, same batch
+        setSelectedShift(s);
+      }}
+      disabled={isProcessing}
+    >
+      <Text style={[styles.shiftButtonText, selectedShift === s && styles.shiftButtonTextSelected]}>{s}</Text>
+    </Pressable>
+  );
+
   // Same-day end at or before the start time is almost certainly a mis-tap
   // (forgot to toggle to Tomorrow), not a real request for a zero/negative
   // -length shift -- blocked rather than silently wrapped to next day.
@@ -1915,19 +1933,18 @@ export default function KioskScreen({ navigation }: Props) {
                     <Text style={styles.thaiTiny}>เลือกกะทำงาน</Text>
                   </Text>
                   <View style={styles.shiftGrid}>
-                    {shiftChoices.map((s) => (
-                      <Pressable
-                        key={s}
-                        style={[styles.shiftButton, selectedShift === s && styles.shiftButtonSelected]}
-                        onPress={() => {
-                          closeSpecialShift(); // closeSpecialShift's own setSelectedShift(null) is superseded by this one, same batch
-                          setSelectedShift(s);
-                        }}
-                        disabled={isProcessing}
-                      >
-                        <Text style={[styles.shiftButtonText, selectedShift === s && styles.shiftButtonTextSelected]}>{s}</Text>
-                      </Pressable>
-                    ))}
+                    {/* First 3 are always STANDARD_SHIFT_CHOICES (Attendance.gs) --
+                        same for every employee, in this exact order (see
+                        DEFAULT_SHIFT_CHOICES above). Anything past index 2 is
+                        this specific employee's own ExtraShift. The divider
+                        below only renders when there IS at least one, so
+                        someone with none sees a plain, unbroken list straight
+                        into the always-present Special Shift button (which is
+                        never treated as an ExtraShift itself, and so never
+                        gets separated by this divider either). */}
+                    {shiftChoices.slice(0, 3).map(renderShiftButton)}
+                    {shiftChoices.length > 3 && <View style={styles.shiftDivider} />}
+                    {shiftChoices.slice(3).map(renderShiftButton)}
                     <Pressable
                       style={[styles.shiftButton, styles.specialShiftButton, specialShiftOpen && styles.shiftButtonSelected]}
                       onPress={() => (specialShiftOpen ? closeSpecialShift() : openSpecialShift())}
@@ -2370,6 +2387,13 @@ const styles = StyleSheet.create({
     letterSpacing: 0.3
   },
   shiftGrid: { gap: 10 },
+  // Separates the 3 always-the-same STANDARD_SHIFT_CHOICES from this one
+  // employee's own ExtraShift options below -- only rendered when there's
+  // at least one (see the shiftGrid JSX), so it never appears between the
+  // 3 standard ones and a bare Special Shift button. shiftGrid's own
+  // `gap: 10` already spaces this the same as every other item -- no
+  // margin needed here.
+  shiftDivider: { height: 1, backgroundColor: BORDER },
   shiftButton: {
     borderRadius: 16,
     borderWidth: 2,
