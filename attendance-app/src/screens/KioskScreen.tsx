@@ -755,29 +755,42 @@ export default function KioskScreen({ navigation }: Props) {
       return;
     }
     const hour = new Date().getHours();
-    // onShiftToday is resolved together with lookupName itself (see
-    // tryLocalLookup/lookupPin above), so it's already correct by the time
-    // THIS EFFECT sees the new lookupName -- no separate async read needed
-    // here. One exception this effect does NOT handle: the background
-    // onShift reconciliation (fired after a local-directory hit, see
-    // lookupPin's local-hit branch above) can correct onShiftToday LATER,
-    // asynchronously, well after this effect already ran against the stale
-    // local value -- this effect has no onShiftToday dependency and won't
-    // re-fire for that, so the reconciliation's own callback clears a
-    // now-wrong IN default itself instead of relying on this effect to
-    // notice. Skips the IN default specifically when this PIN already
-    // clocked IN today, so looking the same PIN up again later in the same
-    // morning window doesn't re-default to IN even though they already
-    // tapped it -- matches onShiftToday also hiding the IN button entirely
-    // in that case (see the typeRow render below), so there'd be nothing
-    // to default to anyway.
+    // Deliberately alreadyCheckedInToday here, NOT onShiftToday -- this is
+    // just a non-blocking convenience default (which button starts
+    // highlighted), never a hard gate, so it doesn't need onShiftToday's
+    // stricter guarantee. Real incident, 2026-10-02: using onShiftToday
+    // here looked right in principle but broke in practice -- tryLocalLookup
+    // (the common path; the directory refreshes every 30s while online, so
+    // most lookups hit it) deliberately never sets onShiftToday at all
+    // (see its own comment -- a stale-true local marker must never hide the
+    // IN button, a real block), so it always read as its default `false`
+    // regardless of true state. Every single re-lookup in the morning
+    // window defaulted to IN, then the background reconciliation corrected
+    // it a moment later (see lookupPin's local-hit branch below), producing
+    // a visible "pops in, then vanishes" flicker on EVERY already-checked-in
+    // re-lookup, not just the rare cross-device race that correction exists
+    // for. alreadyCheckedInToday doesn't have this problem -- tryLocalLookup
+    // DOES set it, from the already-accurate, already-day-bounded
+    // getLocalCheckedInToday local marker (checkinState.ts), whose own doc
+    // comment already accepts being wrong here as "a minor annoyance, never
+    // a block" -- exactly the tolerance this decision needs. The rarer
+    // cross-device case (checked in on a different tablet, this one's local
+    // marker doesn't know) can still flicker once -- the reconciliation's
+    // own `setSelection` correction (below) still uses onShiftToday, since
+    // THAT consequence (a real tap landing wrong) does need the stricter
+    // guarantee. Also skips the IN default once this PIN already clocked IN
+    // today, so looking the same PIN up again later in the same morning
+    // window doesn't re-default to IN even though they already tapped it --
+    // the IN button itself stays visible either way (never hidden, see the
+    // typeRow render below), this only decides which button starts
+    // pre-selected.
     //
     // No afternoon/evening OUT default (removed -- some employees take
     // their break around the same hour this used to fire at; a distracted
     // tap on an already-selected OUT could clock them out entirely when
     // they only meant to start a break). Only the morning IN default
     // remains; every other case leaves nothing pre-selected.
-    if (hour >= AUTO_IN_START_HOUR && hour < AUTO_IN_END_HOUR && !onShiftToday) setSelection('IN');
+    if (hour >= AUTO_IN_START_HOUR && hour < AUTO_IN_END_HOUR && !alreadyCheckedInToday) setSelection('IN');
   }, [lookupName, onBreak]);
 
   // Falls back to the on-device PIN->Name->shifts copy (see
@@ -2380,12 +2393,26 @@ const styles = StyleSheet.create({
   },
   cancelLinkText: { color: TEXT_MUTED, fontSize: 14.5, fontFamily: FONT_BODY_BOLD, textAlign: 'center' },
   subtitle: { color: 'rgba(255,255,255,0.6)', fontSize: 15, marginBottom: 24 },
-  typeRow: { flexDirection: 'row', gap: 12, marginTop: 20, marginBottom: 8 },
+  // justifyContent: 'center' -- added alongside typeButton's fixed width
+  // below (was flex: 1, stretching to fill this row's whole width) so the
+  // now-narrower group of 3 buttons sits centered instead of hugging the
+  // screen edges.
+  typeRow: { flexDirection: 'row', gap: 12, marginTop: 20, marginBottom: 8, justifyContent: 'center' },
   typeButton: {
-    flex: 1, // fills typeRow evenly whether it's showing 2 buttons (IN hidden, onShiftToday) or 3
+    // Fixed, uniform width -- was flex: 1 (each button stretched to fill
+    // whatever share of the row it happened to get, so IN ended up
+    // narrower than OUT OT). A user mockup comparison (2026-10-02, "แบบ A")
+    // settled on a uniform-width look; 130 (not the mockup's naive scaled
+    // value, bumped up after code review) leaves ~100px of content width
+    // after padding/border, comfortably fitting "OUT OT" at this button's
+    // actual fontSize (19, typeButtonOtText) on one line -- a narrower
+    // width risked wrapping that one label onto 2 lines, making that
+    // button visibly taller than IN/OUT next to it since none of the
+    // three has a fixed/matching height. Text size itself is unchanged.
+    width: 130,
     borderRadius: 20,
     paddingVertical: 22, // was 18 -- bigger touch target + room for the Thai sub-line
-    paddingHorizontal: 22,
+    paddingHorizontal: 13, // was 22 -- tightened alongside the width reduction above
     borderWidth: 2,
     alignItems: 'center'
   },
