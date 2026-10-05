@@ -562,7 +562,40 @@ function menuRecomputeLateOtOneMonth_() {
   if (confirm !== ui.Button.YES) return;
 
   var daysInMonth = new Date(year, month, 0).getDate();
-  var result = recomputeLateAndOt_(year, month, 1, daysInMonth);
+  var preview = previewRecomputeLateAndOt_(year, month, 1, daysInMonth);
+
+  // Second confirm, only when something's actually at risk: a row whose OT
+  // is already real and non-zero would drop to 0 under the newly-resolved
+  // shift (see previewRecomputeLateAndOt_'s own doc comment -- the Half Day
+  // Leave fix is the main cause, but this catches any cause). Declining
+  // reverts ONLY those specific rows' OT columns back to what they already
+  // were, in memory, before the write below -- everything else this month
+  // (every IN row's Shift/Late, every other OUT row's OT) still recomputes
+  // normally either way.
+  var skippedCount = 0;
+  if (preview.otRegressions.length > 0) {
+    var regressionLines = preview.otRegressions.map(function (reg) {
+      var oldAmount = reg.department === 'Japanese' ? reg.originalOtMinutes + ' min' : reg.originalOtQuarters + ' quarter(s)';
+      return reg.name + ', day ' + reg.day + ': currently has ' + oldAmount + ' OT recorded -- would become 0 under this recompute.';
+    });
+    var otResp = ui.alert(
+      title,
+      'The following ' + preview.otRegressions.length + ' row(s) currently have real OT recorded, but the Schedule now shown for that day computes 0 OT instead (e.g. a Half Day Leave cell with no matching work hours):\n\n' +
+      regressionLines.join('\n') +
+      '\n\nOverwrite these with 0 anyway? Choose No to leave just these specific row(s)\' OT untouched while everything else this month still recomputes normally.',
+      ui.ButtonSet.YES_NO
+    );
+    if (otResp !== ui.Button.YES) {
+      preview.otRegressions.forEach(function (reg) {
+        preview.sliceValues[reg.rowIndex][preview.cols.otMinCol] = reg.originalOtMinutes;
+        preview.sliceValues[reg.rowIndex][preview.cols.otCol] = reg.originalOtFlag;
+        if (preview.cols.otQCol !== -1) preview.sliceValues[reg.rowIndex][preview.cols.otQCol] = reg.originalOtQuarters;
+      });
+      skippedCount = preview.otRegressions.length;
+    }
+  }
+
+  commitRecomputeResult_(preview);
 
   // Report/Summary only pull fresh data when their Year/Month dropdown is
   // edited (see onEdit in Report.gs) -- refresh both here too so whatever
@@ -580,9 +613,13 @@ function menuRecomputeLateOtOneMonth_() {
   checkMissingAttendance_(missingFindings, activeEmployees, year, month);
 
   var message = 'Recomputed ' + sheetName + ':\n\n' +
-    result.inRowsUpdated + ' IN row(s), ' + result.outRowsUpdated + ' OUT row(s) updated ' +
+    preview.inRowsUpdated + ' IN row(s), ' + preview.outRowsUpdated + ' OUT row(s) updated ' +
     '(OT -- Japanese: minutes, Thai/other: quarters, only where OT was already TRUE).\n\n' +
     'Report and Summary tabs have been refreshed to match (whichever month each is currently showing).';
+
+  if (skippedCount > 0) {
+    message += '\n\n' + skippedCount + ' row(s) left unchanged at your request, to avoid losing existing OT.';
+  }
 
   if (missingFindings.length > 0) {
     var missingLines = missingFindings.map(function (f, i) { return (i + 1) + '. ' + f.message; });
@@ -740,8 +777,8 @@ function getOrCreateDriveFolder_(name) {
  * worked-off-site day only needs one trip through this menu item instead of
  * two. IN is always recorded before OUT when both are given, because OUT's
  * duration/OT calculation (recordBackdatedAttendance_ ->
- * findLogEntryForDate_) looks up the matching IN row -- recording OUT first
- * would silently come out with no duration and no OT.
+ * findStintStartInForDate_) looks up the matching IN row -- recording OUT
+ * first would silently come out with no duration and no OT.
  *
  * Uses a chain of native ui.prompt()/ui.alert() calls rather than an
  * HtmlService dialog with IN/OUT/OT as actual form fields -- an earlier
@@ -882,6 +919,10 @@ function menuAddBackdatedAttendance_() {
  * (whatever was already entered stays saved). No OT prompt here on
  * purpose -- this tool is for completing an ordinary forgotten punch, not
  * for backdating an OT claim; use Add Backdated Check-in/Check-out for that.
+ *
+ * An overnight Special Shift's IN-today/OUT-tomorrow split is never
+ * flagged as two separate missing punches -- see
+ * overnightSpecialShiftPairSatisfies_ (Attendance.gs).
  */
 function menuFillMissedPunches_() {
   var ui = SpreadsheetApp.getUi();
@@ -890,6 +931,7 @@ function menuFillMissedPunches_() {
   var year = now.getFullYear();
   var month = now.getMonth() + 1;
   var lastDayToCheck = now.getDate() - 1;
+  var daysInMonth = new Date(year, month, 0).getDate(); // the WHOLE month, not lastDayToCheck -- needed so overnightSpecialShiftPairSatisfies_ can check a day's own adjacent day even when that adjacent day is today (not yet "yesterday")
 
   if (lastDayToCheck < 1) {
     ui.alert(title, 'No days have passed yet this month to check.', ui.ButtonSet.OK);
@@ -949,7 +991,14 @@ function menuFillMissedPunches_() {
       var hasOut = !!hasOutByKey[key];
       var missingIn = !hasIn;
       var missingOut = !hasOut;
-      if (!missingIn && !missingOut) continue; // already complete
+      // Overnight Special Shift (IN today, OUT tomorrow, or vice versa) --
+      // see overnightSpecialShiftPairSatisfies_'s own doc comment. Checked
+      // before the "already complete" short-circuit below so a day that's
+      // ONLY missing-by-this-false-positive gets skipped entirely, same as
+      // a genuinely complete day.
+      if (missingOut && overnightSpecialShiftPairSatisfies_(emp.EmployeeID, shiftsByDay, hasInByKey, hasOutByKey, day, daysInMonth, 'OUT')) missingOut = false;
+      if (missingIn && overnightSpecialShiftPairSatisfies_(emp.EmployeeID, shiftsByDay, hasInByKey, hasOutByKey, day, daysInMonth, 'IN')) missingIn = false;
+      if (!missingIn && !missingOut) continue; // already complete (directly, or via an overnight Special Shift pairing with the adjacent day)
 
       var isRealShiftDay = !!shift;
       if (!isRealShiftDay && !hasIn && !hasOut) continue; // no shift and nothing punched -- no evidence this was a workday

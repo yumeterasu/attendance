@@ -372,10 +372,16 @@ function recomputeLateAndOtEveryMonthOnce_() {
     var year = Number(m[1]);
     var month = Number(m[2]);
     var daysInMonth = new Date(year, month, 0).getDate();
-    var result = recomputeLateAndOt_(year, month, 1, daysInMonth);
-    totalIn += result.inRowsUpdated;
-    totalOut += result.outRowsUpdated;
-    Logger.log(m[0] + ': ' + result.inRowsUpdated + ' IN row(s), ' + result.outRowsUpdated + ' OUT row(s) updated.');
+    // No OT-regression check here, unlike the menu's interactive version --
+    // this function predates that safeguard (see previewRecomputeLateAndOt_'s
+    // own doc comment) and is a one-off cleanup already marked for removal,
+    // not worth retrofitting. commitRecomputeResult_ applies the preview
+    // exactly as computed, same as this function's own original behavior.
+    var preview = previewRecomputeLateAndOt_(year, month, 1, daysInMonth);
+    commitRecomputeResult_(preview);
+    totalIn += preview.inRowsUpdated;
+    totalOut += preview.outRowsUpdated;
+    Logger.log(m[0] + ': ' + preview.inRowsUpdated + ' IN row(s), ' + preview.outRowsUpdated + ' OUT row(s) updated.');
   });
 
   refreshLiveReportSheet_();

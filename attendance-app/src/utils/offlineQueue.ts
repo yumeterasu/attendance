@@ -182,7 +182,7 @@ export async function getOldestQueuedAt(): Promise<number | null> {
  * Tries to sync every queued entry, oldest first PER EMPLOYEE (pin) --
  * every request already carries its own real tap timestamp, and the
  * server evaluates state as-of that timestamp (isWithinDuplicateGuard_,
- * findTodayInLog_, isOnShiftToday_, etc.), not HTTP arrival order, so
+ * findTodayFirstInLog_, isOnShiftToday_, etc.), not HTTP arrival order, so
  * strict FIFO across DIFFERENT employees was never actually required for
  * correctness -- only each employee's OWN entries need to stay in order
  * (an IN always attempted before that same employee's later OUT/Break).
@@ -310,13 +310,17 @@ export async function flushQueue(): Promise<{ synced: number; remaining: number 
             // stuck in the estimate for the rest of the day.
             addEstimatedOfflineBreakMinutes(next.pin, -next.breakSessionMinutes);
           }
-          if (next.type === 'IN' && res.error !== 'duplicate' && res.error !== 'already_clocked_in') {
-            // Any permanent rejection OTHER than duplicate/already_clocked_in
-            // (not_found/inactive/bad_request) means this IN never actually
-            // landed -- revert the optimistic marker queueOffline set at
-            // enqueue time, so the morning auto-select doesn't keep silently
-            // skipping IN for a check-in that never really happened. The IN
-            // button itself was never blocked either way.
+          if (next.type === 'IN' && res.error !== 'duplicate') {
+            // Any permanent rejection OTHER than duplicate (not_found/
+            // inactive/bad_request -- 'already_clocked_in' no longer exists
+            // as of 2026-10-02, see Attendance.gs's recordAttendance_/
+            // recordOfflineSyncedAttendance_: a same-day duplicate IN is now
+            // recorded like any other tap instead of rejected) means this IN
+            // never actually landed -- revert the optimistic marker
+            // queueOffline set at enqueue time, so the morning auto-select
+            // doesn't keep silently skipping IN for a check-in that never
+            // really happened. The IN button itself was never blocked either
+            // way.
             //
             // 'duplicate' is left alone deliberately, NOT because it proves
             // an earlier same-type IN synced -- unlike the Break guard above
@@ -330,14 +334,6 @@ export async function flushQueue(): Promise<{ synced: number; remaining: number 
             // first IN did succeed) as leaving it is to wrongly keep a
             // phantom one. Left as-is as the least-surprising default --
             // still only ever a wrong PRE-SELECTION, never a blocked tap.
-            //
-            // 'already_clocked_in' (isOnShiftToday_, added 2026-09-30) is
-            // left alone for the OPPOSITE reason from duplicate: unlike
-            // duplicate, this one IS decidable -- it only ever means the
-            // employee is genuinely on shift already (via some other IN,
-            // same day), so clearing the marker here would be actively
-            // wrong, not just uncertain. The next live lookupPin corrects
-            // the marker from the server's own onShift anyway.
             clearLocalCheckedInToday(next.pin);
           }
           return;

@@ -3,15 +3,30 @@
  */
 
 var DUPLICATE_GUARD_MS = 60 * 1000; // reject re-scans within 60s of the last log for the same employee
-var SHIFTS = ['7:00-16:00', '7:30-16:30', '8:00-17:00', '8:30-17:30', '7:00-17:00', '7:00-17:30', '8:00-18:00', '8:00-18:30', 'Event 8:00-17:00', 'Annual Leave', 'Sick Leave', 'Unpaid Leave', 'Paid Special Leave', 'Half Day Annual Leave', 'Half Day Sick Leave', 'Half Day Unpaid Leave', 'Holiday'];
+// Half Day Leave: the business runs this as one of exactly two FIXED,
+// known half-shifts (confirmed 2026-10-02) -- "AM" (works the morning
+// half, 8:00-12:30, off in the afternoon -- ลาบ่าย) and "PM" (works the
+// afternoon half, 12:30-17:00, off in the morning -- ลาเช้า, which CAN
+// still earn real OT). Embedding the real H:MM range directly in the
+// label (same convention "Event 8:00-17:00" already uses) is deliberate --
+// isLate_/getShiftStartTime_/getShiftEndTime_/minutesPastShiftEnd_ all just
+// regex-match the first/last "H:MM" anywhere in the string, so this reuses
+// every bit of existing Late/OT machinery for free, instead of a plain
+// "Half Day X Leave" label with no parseable time, which used to leave
+// Late wrongly TRUE (computed against whatever shift the employee picked
+// before the admin corrected it) and, worse, silently zero out genuinely
+// -earned ลาเช้า OT the moment Recompute ran (no end time to compute OT
+// against) -- see isHalfDayLeaveShift_ and previewRecomputeLateAndOt_'s own
+// comments for the rest of this fix.
+var SHIFTS = ['7:00-16:00', '7:30-16:30', '8:00-17:00', '8:30-17:30', '7:00-17:00', '7:00-17:30', '8:00-18:00', '8:00-18:30', 'Event 8:00-17:00', 'Annual Leave', 'Sick Leave', 'Unpaid Leave', 'Paid Special Leave', 'Half Day Annual Leave AM 8:00-12:30', 'Half Day Annual Leave PM 12:30-17:00', 'Half Day Sick Leave AM 8:00-12:30', 'Half Day Sick Leave PM 12:30-17:00', 'Half Day Unpaid Leave AM 8:00-12:30', 'Half Day Unpaid Leave PM 12:30-17:00', 'Holiday'];
 // Shift values that mean "nobody's expected in at all that day" -- as
-// opposed to a blank cell (not scheduled yet) or "Half Day Annual
-// Leave"/"Half Day Sick Leave"/"Half Day Unpaid Leave" (still expected in
-// for half the day). Used wherever a scheduled-but-not-working day should
-// be excluded from an absence/attendance check: "Annual Leave", "Sick
-// Leave", "Unpaid Leave" and "Paid Special Leave" are one person's own day
-// off (paid or not doesn't matter here, just whether they're expected in),
-// "Holiday" is the whole company closed.
+// opposed to a blank cell (not scheduled yet) or a Half Day Leave entry
+// (still expected in for half the day -- see isHalfDayLeaveShift_). Used
+// wherever a scheduled-but-not-working day should be excluded from an
+// absence/attendance check: "Annual Leave", "Sick Leave", "Unpaid Leave"
+// and "Paid Special Leave" are one person's own day off (paid or not
+// doesn't matter here, just whether they're expected in), "Holiday" is the
+// whole company closed.
 var FULL_DAY_OFF_SHIFTS = ['Annual Leave', 'Sick Leave', 'Unpaid Leave', 'Paid Special Leave', 'Holiday'];
 var BRANCHES = ['PP', 'TL']; // Phrom Phong, Thonglor -- Schedule sheet row order: this branch order first, then Japanese before Thai within each branch
 
@@ -242,6 +257,74 @@ function isNoLateNoOtShift_(scheduledShift) {
   return isEventShift_(scheduledShift) || isSpecialShift_(scheduledShift);
 }
 
+/**
+ * True for any Half Day Leave label -- both the current AM/PM variants
+ * (see SHIFTS' own comment) and the legacy plain "Half Day X Leave" labels
+ * still sitting in older "Schedule YYYY-MM" sheets from before 2026-10-02.
+ * Deliberately NOT folded into isNoLateNoOtShift_ -- unlike Event/Special,
+ * Half Day Leave WANTS normal Late/OT computation against its own embedded
+ * time (that's the whole point of this fix); this helper exists only for
+ * the one place that needs to tell Half Day apart from an ordinary shift:
+ * highlightShiftMismatches_ (Report.gs), which must never flag a Half Day
+ * cell as "stale" just because the admin always corrects it after the
+ * fact, long after the employee's own check-in time was recorded against
+ * whatever shift they originally picked.
+ */
+function isHalfDayLeaveShift_(scheduledShift) {
+  return !!scheduledShift && /^Half Day /.test(scheduledShift);
+}
+
+/**
+ * True if `day`'s missing IN or OUT is actually the OTHER half of a
+ * genuine overnight Special Shift pairing with the ADJACENT day -- e.g. IN
+ * at 23:50 today, OUT at 00:30 tomorrow. recordAttendance_'s own comment
+ * explains why an overnight Special Shift writes the SAME "Special ..."
+ * string onto both days' Schedule cells; this is what lets this check
+ * confirm it's really the same pick, not two coincidentally-adjacent
+ * Special Shifts. Without this, every overnight Special Shift falsely
+ * reads as "missing OUT" on its IN day AND "missing IN" on its OUT day --
+ * two findings for one complete shift. Shared by all three "did this
+ * employee forget to punch" detectors (menuFillMissedPunches_'s own check,
+ * and HealthCheck.gs's checkMissingAttendance_/checkMissingCheckouts_) so
+ * the fix can't independently drift across copies the way this codebase
+ * has been burned by before (e.g. the Thai OT eligibility formula's own
+ * history).
+ *
+ * Deliberately scoped to WITHIN the same month only -- a Special Shift
+ * picked on the very last day of a month, spanning into the 1st of the
+ * next, isn't recognized here (would need a second month's Schedule sheet
+ * and AttendanceLog slice); accepted as a narrow, rare edge case rather
+ * than adding that cross-month complexity, same spirit as this codebase's
+ * other accepted narrow trade-offs (see e.g. highlightShiftMismatches_'s
+ * own "no overnight shift exists to need it yet" comment).
+ *
+ * `missingSide` is 'OUT' (today has an IN with no OUT -- does tomorrow's
+ * OUT complete it) or 'IN' (today has an OUT with no IN -- does
+ * yesterday's IN complete it). `shiftsByDay`/`hasInByKey`/`hasOutByKey`
+ * are the same { day: shift } map and employeeId+'|'+day -keyed presence
+ * maps every caller already builds for its own month scan.
+ *
+ * Considered and rejected as a false-positive risk: a recurring night-
+ * shift worker typing the identical "Special H:MM-H:MM" string on several
+ * separate, unrelated nights. This does NOT actually confuse the check --
+ * for the adjacent day to satisfy this one, a REAL OUT (or IN) row must
+ * exist on that SPECIFIC adjacent day for this SAME employee, and an
+ * overnight Special Shift's own OUT can only ever land on the day right
+ * after its own IN (shifts are a few hours, not 24+), so an unrelated
+ * night's IN/OUT always lands one day further out than this check looks --
+ * see the worked trace in this function's own commit/review history if
+ * revisiting this reasoning.
+ */
+function overnightSpecialShiftPairSatisfies_(employeeId, shiftsByDay, hasInByKey, hasOutByKey, day, daysInMonth, missingSide) {
+  var shift = shiftsByDay[day];
+  if (!isSpecialShift_(shift)) return false;
+  var adjacentDay = missingSide === 'OUT' ? day + 1 : day - 1;
+  if (adjacentDay < 1 || adjacentDay > daysInMonth) return false; // month boundary -- accepted narrow gap, see this function's own doc comment
+  if (shiftsByDay[adjacentDay] !== shift) return false; // not the SAME overnight pick -- a coincidentally-different Special shift the next/prev day must not be treated as pairing
+  var key = employeeId + '|' + adjacentDay;
+  return missingSide === 'OUT' ? !!hasOutByKey[key] : !!hasInByKey[key];
+}
+
 /** Minutes actually worked past shift end, or null if the shift/event string has no end time. */
 function minutesPastShiftEnd_(shiftOrEvent, outTimestamp) {
   var end = getShiftEndTime_(shiftOrEvent);
@@ -452,18 +535,14 @@ function handleKioskLookupPin_(params) {
     name: found.row.Name,
     shifts: shiftChoicesFor_(found.row),
     onShift: breakState.onShift,
-    // Real incident, 2026-10-01: the Kiosk's own background onShift
-    // reconciliation (see client.ts/KioskScreen.tsx) used to clear a
-    // just-made IN selection whenever this 48h-bounded onShift came back
-    // true -- correct in intent (don't let a stale pre-selected IN sail
-    // through to a server rejection), but it fired even when the employee
-    // had simply forgotten to tap OUT the day before, which the IN write
-    // path itself (isOnShiftToday_, see its own doc comment) now happily
-    // allows. The employee would pick a shift, then watch the screen
-    // silently clear the pick a moment later for a reason that no longer
-    // actually blocks them. onShiftToday mirrors the SAME day-bounded
-    // check the write path uses, specifically so the Kiosk can stop
-    // correcting a selection that the server would now accept anyway.
+    // Used to also drive the Kiosk's background reconciliation clearing a
+    // just-made IN selection (real incident, 2026-10-01, with the earlier
+    // 48h-bounded onShift doing that job instead -- see git history) --
+    // that whole mechanism was removed 2026-10-02 along with the
+    // already_clocked_in write-path guard it existed to pre-empt (see
+    // isOnShiftToday_'s own doc comment). onShiftToday's one remaining job
+    // is keeping the Kiosk's local day-scoped "checked in today" marker
+    // accurate (see client.ts's own comment on kioskLookupPin).
     onShiftToday: isOnShiftToday_(found.row.EmployeeID, now, log),
     onBreak: breakState.onBreak,
     breakStartedAt: breakState.onBreak && breakState.lastBreakTs ? breakState.lastBreakTs.toISOString() : null
@@ -475,8 +554,9 @@ function handleKioskLookupPin_(params) {
  * ordinary AttendanceLog rows with Type BREAK_START/BREAK_END -- visibility
  * only, deliberately never feeds Late/OT/duration (Late/OT/Duration columns
  * are left blank on these rows). Every existing Type-column consumer
- * (findTodayInLog_, findLogEntryForDate_, getEmployeeIdsWithInOnDate_,
- * recomputeLateAndOt_, Report.gs's sumMonthTotals_/dashboard readers) filters
+ * (findTodayInLog_, findStintStartInLog_, findLogEntryForDate_,
+ * getEmployeeIdsWithInOnDate_, recomputeLateAndOt_, Report.gs's
+ * sumMonthTotals_/dashboard readers) filters
  * on exact Type equality against 'IN'/'OUT', so these new Type values are
  * inert to all of them without any further changes there.
  */
@@ -492,10 +572,11 @@ var MAX_SHIFT_LOOKBACK_HOURS = 48;
 
 /**
  * Figures out whether an employee is currently clocked in and/or on break,
- * by scanning rows for them since their most recent IN (see
- * findMostRecentInLog_ -- deliberately NOT day-bounded like findTodayInLog_,
- * which every OTHER caller of that function correctly wants for
- * day-specific reporting). Shared by handleKioskLookupPin_ (so the kiosk
+ * by scanning rows for them since their most recent IN within
+ * MAX_SHIFT_LOOKBACK_HOURS (see bulkShiftBreakState_, which this is now a
+ * thin 1-employee wrapper over -- deliberately NOT day-bounded like
+ * findTodayInLog_/findStintStartInLog_, which every OTHER caller correctly
+ * wants for day-specific reporting). Shared by handleKioskLookupPin_ (so the kiosk
  * knows which buttons to show -- including reconciling a stale on-device
  * marker against server truth on every live lookup) and
  * recordBreak_/recordOfflineSyncedBreak_ (to validate a BREAK_START/
@@ -520,69 +601,174 @@ var MAX_SHIFT_LOOKBACK_HOURS = 48;
  */
 function currentShiftBreakState_(employeeId, now, log) {
   log = log || getRecentAttendanceLog_();
-  var todayIn = findMostRecentInLog_(employeeId, now, log);
-  if (!todayIn) return { onShift: false, onBreak: false, todayIn: null };
-
-  var idCol = log.headers.indexOf('EmployeeID');
-  var tsCol = log.headers.indexOf('Timestamp');
-  var typeCol = log.headers.indexOf('Type');
-
-  var clockedOut = false;
-  var lastBreakType = null;
-  var lastBreakTs = null;
-  for (var i = 0; i < log.rows.length; i++) {
-    if (String(log.rows[i][idCol]) !== String(employeeId)) continue;
-    var ts = new Date(log.rows[i][tsCol]);
-    if (ts.getTime() <= todayIn.timestamp.getTime()) continue;
-    if (ts.getTime() > now.getTime()) continue;
-    var rowType = log.rows[i][typeCol];
-    if (rowType === 'OUT') {
-      clockedOut = true;
-    } else if (rowType === 'BREAK_START' || rowType === 'BREAK_END') {
-      if (!lastBreakTs || ts.getTime() > lastBreakTs.getTime()) {
-        lastBreakTs = ts;
-        lastBreakType = rowType;
-      }
-    }
-  }
-
+  // Single source of truth for the onShift/onBreak derivation is
+  // bulkShiftBreakState_ -- this is a thin wrapper over the 1-employee
+  // case of that same function, not a second independent implementation,
+  // specifically so the two can never drift apart the way near-identical
+  // copies have before in this codebase (see bulkShiftBreakState_'s own
+  // doc comment). Returns the same shape this function always has.
+  var state = bulkShiftBreakState_([employeeId], now, log)[String(employeeId)];
+  if (!state.todayIn) return { onShift: false, onBreak: false, todayIn: null, lastBreakTs: null };
   return {
-    onShift: !clockedOut,
-    onBreak: !clockedOut && lastBreakType === 'BREAK_START',
-    todayIn: todayIn,
+    onShift: state.onShift,
+    onBreak: state.onBreak,
+    todayIn: state.todayIn,
     // Timestamp of the most recent BREAK_START/BREAK_END event found (null
     // if none today) -- when onBreak is true this IS the open session's own
     // BREAK_START timestamp, which recordBreak_/recordOfflineSyncedBreak_
     // need to compute how long that session lasted once it ends.
-    lastBreakTs: lastBreakTs
+    lastBreakTs: state.lastBreakTs
   };
 }
 
 /**
- * Like currentShiftBreakState_, but bounded to TODAY's own IN only (via
- * findTodayInLog_), not the 48h MAX_SHIFT_LOOKBACK_HOURS window. Two
- * callers: the IN branches of recordAttendance_/recordOfflineSyncedAttendance_
- * (decides whether a fresh IN should be rejected as "already on shift" --
- * its original purpose), and handleKioskLookupPin_'s onShiftToday (lets the
- * Kiosk stop clearing a just-picked IN selection for a reason the write
- * path itself no longer enforces -- see that field's own comment). Both
- * need the exact same day-bounded answer, which is the whole point of
- * sharing this one function instead of each growing its own copy.
+ * Same answer as currentShiftBreakState_, for every one of `employeeIds` at
+ * once, in ONE pass over `log.rows` instead of one O(rows) scan per
+ * employee -- calling currentShiftBreakState_ in a loop for the whole
+ * active roster would be O(rows * employees), too slow for
+ * handleKioskDirectory_, which needs this for everyone on every refresh.
+ * currentShiftBreakState_ is ALSO just a thin 1-employee wrapper around
+ * this function now (see its own comment) -- this is the single
+ * implementation of the "most recent IN, then OUT/Break after it" rule,
+ * not two that could drift apart. Returns { [employeeId]: { onShift,
+ * onBreak, breakStartedAt, todayIn, lastBreakTs } } -- breakStartedAt is
+ * already ISO-stringified (ready to send to the app); todayIn
+ * ({timestamp, shift} or null) and lastBreakTs (raw Date or null) are the
+ * same shapes currentShiftBreakState_'s own fields always were.
+ *
+ * Real incident this exists to fix (2026-10-05): a cross-branch employee
+ * (checked IN at one branch, walks to another to take a break) wouldn't
+ * see Start Break on the second branch's Kiosk until a LIVE lookup
+ * succeeded -- fine when online, but on bad internet that live call could
+ * be slow enough that the employee gave up and tried an unintended
+ * workaround (re-tapping IN). Folding this into the directory
+ * (handleKioskDirectory_), which every Kiosk already refreshes every 30s
+ * regardless of which branch it's at, means any device already has a
+ * reasonably fresh (<=30s old) picture of EVERY active employee's current
+ * onShift/onBreak state before they ever walk up to it -- the local-hit
+ * lookup (tryLocalLookup, KioskScreen.tsx) can show the right button
+ * immediately from that cache, no live round-trip needed at the moment of
+ * lookup at all. The existing live reconciliation on every lookup is left
+ * completely unchanged -- this only improves the STARTING value a local
+ * hit shows while that (still authoritative) correction is in flight.
+ *
+ * Same accepted bound as sumCompletedBreakMinutesToday_ above (and as this
+ * function's single-employee predecessor always had): `log` is capped at
+ * RECENT_LOG_ROWS (1000) rows ACROSS EVERY EMPLOYEE, so on an implausibly
+ * high-volume 48h window (1000+ combined punches org-wide) a genuinely-open
+ * shift's IN could theoretically scroll out of the window before 48h
+ * elapses, wrongly reading as not on shift. Not fixed here for the same
+ * reason: an unbounded read would defeat the point of RECENT_LOG_ROWS on
+ * this latency-sensitive path (now paid on every 30s directory refresh,
+ * not just a single lookup), and this org's actual punch volume is nowhere
+ * near 1000 rows in any 48h span.
+ */
+function bulkShiftBreakState_(employeeIds, now, log) {
+  var idCol = log.headers.indexOf('EmployeeID');
+  var tsCol = log.headers.indexOf('Timestamp');
+  var typeCol = log.headers.indexOf('Type');
+  var shiftCol = log.headers.indexOf('Shift');
+  var earliestAllowed = now.getTime() - MAX_SHIFT_LOOKBACK_HOURS * 60 * 60 * 1000;
+
+  var idSet = {};
+  employeeIds.forEach(function (id) { idSet[String(id)] = true; });
+
+  // Pass 1: each employee's own most recent IN within MAX_SHIFT_LOOKBACK_HOURS
+  // -- batched across everyone in idSet in one scan instead of one call (and
+  // one scan) per employee. Also captures that winning row's own Shift, for
+  // this function's own todayIn.shift field below.
+  var mostRecentInTs = {};
+  var mostRecentInShift = {};
+  for (var i = 0; i < log.rows.length; i++) {
+    var empId = String(log.rows[i][idCol]);
+    if (!idSet[empId]) continue;
+    if (log.rows[i][typeCol] !== 'IN') continue;
+    var ts = new Date(log.rows[i][tsCol]).getTime();
+    if (ts > now.getTime() || ts < earliestAllowed) continue;
+    if (!(empId in mostRecentInTs) || ts > mostRecentInTs[empId]) {
+      mostRecentInTs[empId] = ts;
+      mostRecentInShift[empId] = shiftCol !== -1 ? String(log.rows[i][shiftCol] || '') : '';
+    }
+  }
+
+  // Pass 2: same "anything after that IN" scan currentShiftBreakState_
+  // used to do per-employee, batched the same way.
+  var clockedOut = {};
+  var lastBreakType = {};
+  var lastBreakTs = {};
+  for (var j = 0; j < log.rows.length; j++) {
+    var empId2 = String(log.rows[j][idCol]);
+    if (!(empId2 in mostRecentInTs)) continue;
+    var ts2 = new Date(log.rows[j][tsCol]).getTime();
+    if (ts2 <= mostRecentInTs[empId2] || ts2 > now.getTime()) continue;
+    var rowType = log.rows[j][typeCol];
+    if (rowType === 'OUT') {
+      clockedOut[empId2] = true;
+    } else if (rowType === 'BREAK_START' || rowType === 'BREAK_END') {
+      if (!(empId2 in lastBreakTs) || ts2 > lastBreakTs[empId2]) {
+        lastBreakTs[empId2] = ts2;
+        lastBreakType[empId2] = rowType;
+      }
+    }
+  }
+
+  var result = {};
+  employeeIds.forEach(function (id) {
+    var key = String(id);
+    var hasIn = key in mostRecentInTs;
+    var onShift = hasIn && !clockedOut[key];
+    var onBreak = onShift && lastBreakType[key] === 'BREAK_START';
+    var lastBreakTsDate = (key in lastBreakTs) ? new Date(lastBreakTs[key]) : null;
+    result[key] = {
+      onShift: onShift,
+      onBreak: onBreak,
+      breakStartedAt: onBreak ? lastBreakTsDate.toISOString() : null,
+      todayIn: hasIn ? { timestamp: new Date(mostRecentInTs[key]), shift: mostRecentInShift[key] } : null,
+      lastBreakTs: lastBreakTsDate
+    };
+  });
+  return result;
+}
+
+/**
+ * Like currentShiftBreakState_, but bounded to TODAY's own MOST RECENT IN
+ * only (via findTodayInLog_), not the 48h MAX_SHIFT_LOOKBACK_HOURS window.
+ * Deliberately most-recent, NOT findStintStartInLog_'s earliest-wins (even
+ * though both are "today-bounded") -- this function answers "is this
+ * employee on shift RIGHT NOW," which needs whichever IN opened the
+ * employee's CURRENT stint, same reasoning as bulkShiftBreakState_'s own
+ * 48h version (what currentShiftBreakState_ is built on). An employee who
+ * clocks OUT and back IN again the same day
+ * (an explicitly anticipated pattern -- see DAILY_BREAK_BUDGET_MINUTES'
+ * own comment) is genuinely on shift again after that second IN; pairing
+ * against the EARLIEST IN instead would find the OUT between the two
+ * stints and wrongly report them as not on shift. (findStintStartInLog_'s
+ * earliest-wins tie-break is for a different job entirely -- pairing an
+ * OUT with "today's IN" for DurationMinutes/OT math, see its own doc
+ * comment -- not for this "on shift right now" question.)
+ *
+ * Used to be ALSO the thing recordAttendance_/
+ * recordOfflineSyncedAttendance_'s IN branches called to reject a fresh IN
+ * as "already on shift" -- removed 2026-10-02 (a mis-tapped IN instead of
+ * OUT at day's end used to be silently rejected with no trace, see
+ * offlineQueue.ts's own history; now it's just recorded as an extra row,
+ * same as any other tap, and Fill Missed Punches/Fix Mis-tapped IN After
+ * 16:00 already handle cleaning up whatever that extra row implies). Its
+ * one remaining caller is handleKioskLookupPin_'s onShiftToday field, which
+ * exists purely so the Kiosk's local "checked in today" marker
+ * (setLocalCheckedInToday/clearLocalCheckedInToday, see
+ * applyServerBreakAndShiftState) stays accurately day-scoped -- see that
+ * field's own comment in client.ts.
  * Deliberately a separate, narrower check from currentShiftBreakState_'s
  * own onShift: a real incident (2026-09-30,
  * 3 employees forgot to tap OUT the evening before) showed that gating a
  * fresh IN on the 48h-bounded onShift means a single forgotten OUT
  * permanently blocks that employee's IN the NEXT day too, with no
- * self-service way to recover -- worse than the duplicate-IN bug this guard
- * exists to prevent (that bug only ever produced a messy extra row, never
- * blocked a real check-in). currentShiftBreakState_ itself must stay 48h-
+ * self-service way to recover. currentShiftBreakState_ itself must stay 48h-
  * bounded -- do not "fix" this by unifying the two windows -- the Kiosk's
  * button visibility and the Break validity checks genuinely need that wider
  * window to handle a real overnight/spans-next-day shift correctly; only
- * this IN-duplicate guard wants same-day-only. Accepted trade-off: a
- * genuine overnight shift's duplicate-IN case (tapping IN again just after
- * midnight, before tapping OUT) is no longer caught here -- narrower and
- * far rarer than the incident this change fixes.
+ * this same-day marker-accuracy use wants same-day-only.
  */
 function isOnShiftToday_(employeeId, now, log) {
   log = log || getRecentAttendanceLog_();
@@ -615,14 +801,45 @@ var VALID_BREAK_DURATIONS = [15, 30, 45, 60];
 // value was picked at Start Break (that pick stays purely informational).
 var DAILY_BREAK_BUDGET_MINUTES = 60;
 
+// Employees have to physically walk to/from the shared Kiosk to tap Start
+// Break/Back from Break, which eats into their actual rest -- this many
+// minutes are discounted off EVERY complete break round (one BREAK_START ->
+// BREAK_END pair) before it counts against DAILY_BREAK_BUDGET_MINUTES, as a
+// deliberate policy decision (2026-10-05) to not penalize that walking time.
+// See discountedBreakMinutes_ for where this is actually applied -- NEVER
+// in aggregateMonthLogs_/aggregateYearSummary_ (Report.gs)'s "Break (min)"
+// column, which stays the true, undiscounted elapsed time on purpose (a
+// real payroll/audit figure, not a budget-consumption one).
+var BREAK_WALK_DISCOUNT_MINUTES = 4;
+
+/**
+ * Applies BREAK_WALK_DISCOUNT_MINUTES to one completed break round's real
+ * elapsed minutes, floored at 0 (a round shorter than the discount itself
+ * -- an accidental near-instant Start/Back tap -- must never go negative
+ * and silently reduce the day's running total). Shared by every DAILY_
+ * BREAK_BUDGET_MINUTES consumer that needs to agree with the Kiosk's own
+ * number (sumCompletedBreakMinutesToday_/recordBreak_/
+ * recordOfflineSyncedBreak_ here, and handleDashboardDaily_'s own pairing
+ * in Report.gs) -- deliberately NOT used by the Report tab's own break
+ * pairing (aggregateMonthLogs_/aggregateYearSummary_), which reports the
+ * real, undiscounted figure instead. One function so the discount can
+ * never drift between these call sites the way near-identical copies have
+ * before in this codebase.
+ */
+function discountedBreakMinutes_(rawMinutes) {
+  return Math.max(0, rawMinutes - BREAK_WALK_DISCOUNT_MINUTES);
+}
+
 /** Midnight (00:00:00) of the same calendar day as `date`, local time. */
 function startOfDay_(date) {
   return new Date(date.getFullYear(), date.getMonth(), date.getDate(), 0, 0, 0);
 }
 
 /**
- * Sums real elapsed minutes across every COMPLETE BREAK_START->BREAK_END
- * pair for one employee within (sinceTs, now] -- used to compute how much of
+ * Sums every COMPLETE BREAK_START->BREAK_END pair's DISCOUNTED minutes (see
+ * discountedBreakMinutes_ -- real elapsed time minus
+ * BREAK_WALK_DISCOUNT_MINUTES per pair, floored at 0) for one employee
+ * within (sinceTs, now] -- used to compute how much of
  * DAILY_BREAK_BUDGET_MINUTES is left after a break ends. `now` here is
  * always strictly after the just-appended BREAK_END's own timestamp would
  * be (callers run this BEFORE appending that row), so an open/unmatched
@@ -632,9 +849,10 @@ function startOfDay_(date) {
  *
  * `sinceTs` should be startOfDay_(now) (midnight), NOT state.todayIn.timestamp
  * -- DAILY_BREAK_BUDGET_MINUTES is a whole-CALENDAR-DAY budget, and an
- * employee can clock OUT and back IN again the same day (findTodayInLog_
- * always returns the LATEST IN); scoping from todayIn would silently drop
- * break minutes taken during an earlier stint that same day.
+ * employee can clock OUT and back IN again the same day (state.todayIn comes
+ * from currentShiftBreakState_/bulkShiftBreakState_, which always return the
+ * LATEST IN within the 48h window); scoping from todayIn would silently
+ * drop break minutes taken during an earlier stint that same day.
  *
  * Known accepted bound: `log` comes from getRecentAttendanceLog_, capped at
  * RECENT_LOG_ROWS (1000) most recent rows ACROSS EVERY EMPLOYEE, not just
@@ -668,7 +886,7 @@ function sumCompletedBreakMinutesToday_(employeeId, sinceTs, now, log) {
     if (events[j].type === 'BREAK_START') {
       openStart = events[j].ts;
     } else if (openStart) {
-      totalMinutes += Math.round((events[j].ts.getTime() - openStart.getTime()) / 60000);
+      totalMinutes += discountedBreakMinutes_(Math.round((events[j].ts.getTime() - openStart.getTime()) / 60000));
       openStart = null;
     }
   }
@@ -770,8 +988,8 @@ function recordBreak_(employeeId, type, durationMinutes) {
   var log = getRecentAttendanceLog_();
   var state = currentShiftBreakState_(employeeId, now, log);
   // Message says just "Not clocked in" (not "...today") since state.todayIn
-  // is now populated by findMostRecentInLog_'s 48h lookback, not a same-day
-  // check -- see currentShiftBreakState_'s doc comment.
+  // is now populated by a 48h lookback (MAX_SHIFT_LOOKBACK_HOURS), not a
+  // same-day check -- see currentShiftBreakState_'s doc comment.
   if (!state.todayIn) return fail_('not_clocked_in', 'Not clocked in');
   // Same "not just today" wording fix as the not_clocked_in message above.
   if (!state.onShift) return fail_('already_clocked_out', 'Already clocked out');
@@ -791,14 +1009,24 @@ function recordBreak_(employeeId, type, durationMinutes) {
   var remainingMinutes, totalMinutesUsedToday;
   if (type === 'BREAK_END') {
     var priorMinutes = sumCompletedBreakMinutesToday_(employeeId, startOfDay_(now), now, log);
-    var thisSessionMinutes = Math.round((now.getTime() - state.lastBreakTs.getTime()) / 60000);
+    // discountedBreakMinutes_ applied to THIS round too -- see its own doc
+    // comment (BREAK_WALK_DISCOUNT_MINUTES). Walking time off every
+    // completed round, not just prior ones, so a single-break day gets the
+    // same treatment as a multi-break one.
+    var thisSessionMinutes = discountedBreakMinutes_(Math.round((now.getTime() - state.lastBreakTs.getTime()) / 60000));
     totalMinutesUsedToday = priorMinutes + thisSessionMinutes;
     // Sent alongside remainingMinutes (not just derived client-side as
     // 60-remainingMinutes) because remainingMinutes is clamped at 0 -- if
     // actual usage ever exceeds the budget, "60 - remainingMinutes" would
-    // silently lie about the true total. The app uses this raw total as the
-    // authoritative baseline to correct its own offline running estimate
-    // against once a sync actually succeeds (see breakMinutesCache.ts).
+    // silently lie about the true total. The app uses this total (already
+    // net of BREAK_WALK_DISCOUNT_MINUTES, not the raw elapsed figure -- see
+    // discountedBreakMinutes_) as the authoritative baseline to correct its
+    // own offline running estimate against once a sync actually succeeds
+    // (see breakMinutesCache.ts) -- that on-device estimate doesn't know
+    // about the discount yet (no APK change made alongside this), so it
+    // runs slightly stricter than reality while offline; this sync-time
+    // correction is what fixes it back up, same self-healing pattern every
+    // other offline estimate in this app already uses.
     remainingMinutes = Math.max(0, DAILY_BREAK_BUDGET_MINUTES - totalMinutesUsedToday);
   }
 
@@ -838,13 +1066,38 @@ function recordBreak_(employeeId, type, durationMinutes) {
  * by the app whenever it does have a connection (see the app's
  * employeeDirectory util) -- adding/renaming/deactivating someone just
  * takes effect on the next refresh, no app rebuild involved.
+ *
+ * Also carries each employee's onShift/onBreak/breakStartedAt (see
+ * bulkShiftBreakState_, added 2026-10-05 for the cross-branch Start Break
+ * delay -- its own doc comment has the full incident) -- computed for
+ * EVERYONE in one bounded-log pass here, piggybacking on this same
+ * already-every-30s-refreshed call rather than a separate endpoint/poll, so
+ * there's no new request volume added, just a bit more per-call work and a
+ * slightly bigger response.
  */
 function handleKioskDirectory_(params) {
   if (!checkApiKey_(params.apiKey)) return fail_('unauthorized', 'Invalid API key');
 
-  var employees = getAllEmployees_()
-    .filter(function (emp) { return isTrue_(emp.Active) && emp.KioskPIN; })
-    .map(function (emp) { return { pin: pad4_(emp.KioskPIN), name: emp.Name, shifts: shiftChoicesFor_(emp) }; });
+  var activeEmployees = getAllEmployees_().filter(function (emp) { return isTrue_(emp.Active) && emp.KioskPIN; });
+  var now = new Date();
+  var log = getRecentAttendanceLog_();
+  var statusByEmployeeId = bulkShiftBreakState_(
+    activeEmployees.map(function (emp) { return emp.EmployeeID; }),
+    now,
+    log
+  );
+
+  var employees = activeEmployees.map(function (emp) {
+    var status = statusByEmployeeId[String(emp.EmployeeID)];
+    return {
+      pin: pad4_(emp.KioskPIN),
+      name: emp.Name,
+      shifts: shiftChoicesFor_(emp),
+      onShift: status.onShift,
+      onBreak: status.onBreak,
+      breakStartedAt: status.breakStartedAt
+    };
+  });
 
   return ok_({ employees: employees });
 }
@@ -1264,12 +1517,24 @@ function handleKioskScheduleSyncAll_(params) {
  * Safe to run repeatedly on the same range. Edit YEAR/MONTH/START_DAY/END_DAY
  * below, then select runRecomputeLateAndOt in the editor's toolbar dropdown
  * and Run. Check View > Logs for a summary.
+ *
+ * Split 2026-10-02 into this preview (all computation, no sheet write) and
+ * commitRecomputeResult_ below (just the write) -- a real risk surfaced by
+ * the Half Day Leave fix (see SHIFTS/isHalfDayLeaveShift_'s own comments):
+ * recomputing a day whose Schedule cell now says Half Day AM (never has OT)
+ * when it used to say an ordinary shift would silently zero out already-
+ * earned, genuinely correct OT with no way to tell afterward it ever had a
+ * different value. Splitting the write out lets a caller inspect
+ * `otRegressions` and let an admin confirm (or decline, and keep those
+ * specific rows' OT untouched) BEFORE anything lands on the sheet -- see
+ * menuRecomputeLateOtOneMonth_ (Menu.gs) for the interactive version and
+ * runRecomputeLateAndOt below for the auto-skip-and-log version.
  */
-function recomputeLateAndOt_(year, month, startDay, endDay) {
+function previewRecomputeLateAndOt_(year, month, startDay, endDay) {
   var sheet = getSheet_('AttendanceLog');
   var lastRow = sheet.getLastRow();
   var lastCol = sheet.getLastColumn();
-  if (lastRow < 2) return { inRowsUpdated: 0, outRowsUpdated: 0 };
+  if (lastRow < 2) return { empty: true, inRowsUpdated: 0, outRowsUpdated: 0, otRegressions: [] };
 
   var headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
   var tsCol = headers.indexOf('Timestamp');
@@ -1299,7 +1564,7 @@ function recomputeLateAndOt_(year, month, startDay, endDay) {
       maxRow = r + 2;
     }
   }
-  if (minRow === -1) return { inRowsUpdated: 0, outRowsUpdated: 0 }; // nothing recorded for this month at all
+  if (minRow === -1) return { empty: true, inRowsUpdated: 0, outRowsUpdated: 0, otRegressions: [] }; // nothing recorded for this month at all
 
   // Now read full width, but only the row range that could possibly matter
   // -- everything from here down is IDENTICAL logic to before, just working
@@ -1321,17 +1586,32 @@ function recomputeLateAndOt_(year, month, startDay, endDay) {
   // separate setValue() network round-trip per row.
   var shiftByEmployeeDay = {};
   // Tracks which IN row's timestamp currently "owns" shiftByEmployeeDay for
-  // each employee/day -- LATEST IN wins, matching findTodayInLog_/
-  // findLogEntryForDate_ (what the live/offline paths actually use to pair
-  // an OUT with "today's IN"). Needed because a day can have more than one
-  // IN row (offline-sync duplicate, admin backdated fix alongside a real
-  // Kiosk tap) processed in arbitrary sheet order here -- without this,
-  // whichever row happened to be LAST in sheet order would silently decide
-  // shiftByEmployeeDay, which could be the wrong one (e.g. clobbering a
-  // genuinely later, correctly-picked shift with an earlier row's).
-  var latestInTsByKey = {};
+  // each employee/day -- EARLIEST IN wins. Note this is a coarser, DAY-level
+  // model than the live/offline/backdated write paths' own OUT pairing
+  // (findStintStartInLog_/findStintStartInForDate_, since 2026-10-02): this
+  // function never touches DurationMinutes at all (only Shift/Late on IN
+  // rows and OT on OUT rows), and applies ONE shift value to every OUT that
+  // day for OT-eligibility purposes, rather than pairing each OUT with its
+  // own specific stint's IN -- a simplification that predates this change
+  // and isn't being revisited here. In ordinary use every IN that day
+  // already carries the SAME shift anyway (same Schedule-sheet cell), so
+  // this tie-break only matters on the rarer day a picked/special shift (or
+  // a mis-tap) makes them differ -- earliest-wins is simply a deterministic,
+  // documented choice for that case, not a claim of stint-level precision.
+  // Needed because a day can have more than one IN row (a genuine mis-tap,
+  // offline-sync duplicate, admin backdated fix alongside a real Kiosk tap)
+  // processed in arbitrary sheet order here -- without this, whichever row
+  // happened to be LAST in sheet order would silently decide
+  // shiftByEmployeeDay, which could be the wrong one.
+  var earliestInTsByKey = {};
   var inRowsUpdated = 0;
   var outRowsUpdated = 0;
+  // Rows where a real, already-recorded non-zero OT is about to become 0
+  // under the newly-resolved shift (the Half Day Leave failure mode this
+  // split exists for, but general enough to catch any cause) -- collected
+  // here, acted on by the caller, never silently written. See this
+  // function's own doc comment.
+  var otRegressions = [];
 
   for (var i = 0; i < sliceValues.length; i++) {
     var ts = new Date(sliceValues[i][tsCol]);
@@ -1342,7 +1622,12 @@ function recomputeLateAndOt_(year, month, startDay, endDay) {
 
     var employeeId = String(sliceValues[i][idCol]);
     var key = employeeId + '|' + day;
-    var isLatestSoFar = !(key in latestInTsByKey) || ts.getTime() >= latestInTsByKey[key];
+    // Strict < (first-encountered-in-sheet-order wins an exact tie), not <=
+    // -- matches findStintStartInLog_/findStintStartInForDate_'s own
+    // first-encountered tie-break, for the rare case two IN rows land at
+    // the identical timestamp (e.g. an admin-backdated entry, written with
+    // seconds=0, colliding with a real Kiosk tap's own minute).
+    var isEarliestSoFar = !(key in earliestInTsByKey) || ts.getTime() < earliestInTsByKey[key];
 
     var scheduledShift = (shiftsForMonth[employeeId] && shiftsForMonth[employeeId][day]) || '';
 
@@ -1374,8 +1659,8 @@ function recomputeLateAndOt_(year, month, startDay, endDay) {
     // tracking column, and the failure this depends on is already logged
     // (Logger.log) and rare enough that a full redesign isn't justified yet.
     if (shiftPickedCol !== -1 && isTrue_(sliceValues[i][shiftPickedCol]) && !scheduledShift) {
-      if (isLatestSoFar) {
-        latestInTsByKey[key] = ts.getTime();
+      if (isEarliestSoFar) {
+        earliestInTsByKey[key] = ts.getTime();
         shiftByEmployeeDay[key] = sliceValues[i][shiftCol];
       }
       continue;
@@ -1392,8 +1677,8 @@ function recomputeLateAndOt_(year, month, startDay, endDay) {
 
     sliceValues[i][shiftCol] = scheduledShift;
     sliceValues[i][lateCol] = late;
-    if (isLatestSoFar) {
-      latestInTsByKey[key] = ts.getTime();
+    if (isEarliestSoFar) {
+      earliestInTsByKey[key] = ts.getTime();
       shiftByEmployeeDay[key] = scheduledShift;
     }
     inRowsUpdated++;
@@ -1430,9 +1715,19 @@ function recomputeLateAndOt_(year, month, startDay, endDay) {
     // genuinely late real tap would recompute real positive OT.
     var isEventDay = isNoLateNoOtShift_(shift);
 
+    // Captured BEFORE either branch below mutates anything -- the ONLY way
+    // to later tell "this row's OT is about to drop to 0" apart from "it
+    // was already 0", see otRegressions above.
+    var originalOtMinutes = Number(sliceValues[j][otMinCol]) || 0;
+    var originalOtQuarters = otQCol !== -1 ? (Number(sliceValues[j][otQCol]) || 0) : 0;
+    var originalOtFlag = sliceValues[j][otCol];
+
     if (currentDept === 'Japanese') {
       var capMinutes = Number(currentEmp.row.OTMaxMinutes) || JP_OT_CAP_MINUTES;
       var otMinutes = otEligibleForDay_(currentEmp.row, shift) ? computeJapaneseOtMinutes_(shift, ts2, capMinutes) : 0;
+      if (originalOtMinutes > 0 && otMinutes === 0) {
+        otRegressions.push({ rowIndex: j, employeeId: employeeId2, name: currentEmp.row.Name, day: day2, department: currentDept, originalOtMinutes: originalOtMinutes, originalOtQuarters: originalOtQuarters, originalOtFlag: originalOtFlag });
+      }
       sliceValues[j][otMinCol] = otMinutes;
       if (otQCol !== -1) sliceValues[j][otQCol] = 0; // clear a stale Thai-regime value left over from before a Department correction
       sliceValues[j][otCol] = otMinutes > 0;
@@ -1447,6 +1742,9 @@ function recomputeLateAndOt_(year, month, startDay, endDay) {
       if (!wasOt && !isEventDay) continue;
       var currentlyOtEligible = isOtEligible_(currentEmp.row);
       var otQuarters = (currentlyOtEligible && shift && !isEventDay) ? computeThaiOtQuarters_(shift, ts2) : 0;
+      if (originalOtQuarters > 0 && otQuarters === 0) {
+        otRegressions.push({ rowIndex: j, employeeId: employeeId2, name: currentEmp.row.Name, day: day2, department: currentDept, originalOtMinutes: originalOtMinutes, originalOtQuarters: originalOtQuarters, originalOtFlag: originalOtFlag });
+      }
       sliceValues[j][otQCol] = otQuarters;
       sliceValues[j][otMinCol] = 0; // clear a stale Japanese-regime value left over from before a Department correction
       // OT (the flag) is preserved as-is here -- NOT set from `otQuarters >
@@ -1469,18 +1767,39 @@ function recomputeLateAndOt_(year, month, startDay, endDay) {
     }
   }
 
-  if (inRowsUpdated > 0 || outRowsUpdated > 0) {
-    var numRows = sliceValues.length;
-    sheet.getRange(minRow, shiftCol + 1, numRows, 1).setValues(sliceValues.map(function (r) { return [r[shiftCol]]; }));
-    sheet.getRange(minRow, lateCol + 1, numRows, 1).setValues(sliceValues.map(function (r) { return [r[lateCol]]; }));
-    sheet.getRange(minRow, otCol + 1, numRows, 1).setValues(sliceValues.map(function (r) { return [r[otCol]]; }));
-    sheet.getRange(minRow, otMinCol + 1, numRows, 1).setValues(sliceValues.map(function (r) { return [r[otMinCol]]; }));
-    if (otQCol !== -1) {
-      sheet.getRange(minRow, otQCol + 1, numRows, 1).setValues(sliceValues.map(function (r) { return [r[otQCol]]; }));
-    }
-  }
+  return {
+    empty: false,
+    sheet: sheet,
+    minRow: minRow,
+    sliceValues: sliceValues,
+    cols: { shiftCol: shiftCol, lateCol: lateCol, otCol: otCol, otMinCol: otMinCol, otQCol: otQCol },
+    inRowsUpdated: inRowsUpdated,
+    outRowsUpdated: outRowsUpdated,
+    otRegressions: otRegressions
+  };
+}
 
-  return { inRowsUpdated: inRowsUpdated, outRowsUpdated: outRowsUpdated };
+/**
+ * Performs the actual sheet write for a previewRecomputeLateAndOt_ result --
+ * pulled out as its own step so a caller can inspect/revert specific rows
+ * in `preview.sliceValues` (see previewRecomputeLateAndOt_'s own doc
+ * comment on `otRegressions`) before anything lands on the sheet. Safe to
+ * call on an `empty` preview (no-op, matching the old "nothing to do"
+ * short-circuit).
+ */
+function commitRecomputeResult_(preview) {
+  if (preview.empty) return;
+  if (preview.inRowsUpdated === 0 && preview.outRowsUpdated === 0) return;
+  var sliceValues = preview.sliceValues;
+  var cols = preview.cols;
+  var numRows = sliceValues.length;
+  preview.sheet.getRange(preview.minRow, cols.shiftCol + 1, numRows, 1).setValues(sliceValues.map(function (r) { return [r[cols.shiftCol]]; }));
+  preview.sheet.getRange(preview.minRow, cols.lateCol + 1, numRows, 1).setValues(sliceValues.map(function (r) { return [r[cols.lateCol]]; }));
+  preview.sheet.getRange(preview.minRow, cols.otCol + 1, numRows, 1).setValues(sliceValues.map(function (r) { return [r[cols.otCol]]; }));
+  preview.sheet.getRange(preview.minRow, cols.otMinCol + 1, numRows, 1).setValues(sliceValues.map(function (r) { return [r[cols.otMinCol]]; }));
+  if (cols.otQCol !== -1) {
+    preview.sheet.getRange(preview.minRow, cols.otQCol + 1, numRows, 1).setValues(sliceValues.map(function (r) { return [r[cols.otQCol]]; }));
+  }
 }
 
 /**
@@ -1502,7 +1821,7 @@ function recomputeLateAndOt_(year, month, startDay, endDay) {
  * check (or `headers.indexOf(dayNumber)`, which requires the same exact
  * type match) then silently drops that whole day for EVERY employee --
  * which, for anyone who already picked their own shift at the Kiosk, also
- * trips recomputeLateAndOt_'s "blank schedule, leave their Kiosk pick
+ * trips previewRecomputeLateAndOt_'s "blank schedule, leave their Kiosk pick
  * alone" skip, so a later Schedule override for that day (e.g. setting it
  * to an Event shift) never actually reaches Late/OT.
  *
@@ -1563,6 +1882,15 @@ function getScheduledShiftsForMonth_(year, month) {
  * currently open in the spreadsheet (open that tab first). Select this
  * function in the editor's toolbar dropdown and click Run. Check View > Logs
  * for a summary.
+ *
+ * No interactive confirm here, unlike "Recompute Late/OT for One Month" in
+ * the Sheets menu (menuRecomputeLateOtOneMonth_, Menu.gs) -- this entry
+ * point has never had a ui.alert-style prompt (it's meant to be run
+ * unattended from the editor), so a row whose OT would drop from non-zero
+ * to 0 (see previewRecomputeLateAndOt_'s own doc comment) is auto-skipped
+ * and clearly logged instead of silently committed. Re-run "Recompute
+ * Late/OT for One Month" from the menu if you want to force those specific
+ * rows through after reviewing the log.
  */
 function runRecomputeLateAndOt() {
   var activeSheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
@@ -1576,10 +1904,24 @@ function runRecomputeLateAndOt() {
   var month = Number(match[2]);
   var daysInMonth = new Date(year, month, 0).getDate();
 
-  var result = recomputeLateAndOt_(year, month, 1, daysInMonth);
+  var preview = previewRecomputeLateAndOt_(year, month, 1, daysInMonth);
+  if (preview.otRegressions.length > 0) {
+    preview.otRegressions.forEach(function (reg) {
+      var oldAmount = reg.department === 'Japanese' ? reg.originalOtMinutes + ' min' : reg.originalOtQuarters + ' quarter(s)';
+      Logger.log(
+        'SKIPPED (would have lost OT): ' + reg.name + ', day ' + reg.day + ' -- had ' + oldAmount +
+        ' OT recorded, new schedule computes 0. Left untouched. Re-run "Recompute Late/OT for One Month" from the menu to force this through.'
+      );
+      preview.sliceValues[reg.rowIndex][preview.cols.otMinCol] = reg.originalOtMinutes;
+      preview.sliceValues[reg.rowIndex][preview.cols.otCol] = reg.originalOtFlag;
+      if (preview.cols.otQCol !== -1) preview.sliceValues[reg.rowIndex][preview.cols.otQCol] = reg.originalOtQuarters;
+    });
+  }
+  commitRecomputeResult_(preview);
   Logger.log(
-    'Recomputed ' + activeSheet.getName() + ': updated ' + result.inRowsUpdated + ' IN row(s) (Shift/Late) and ' +
-    result.outRowsUpdated + ' OUT row(s) (OT -- Japanese: minutes, Thai/other: quarters, only where OT was already TRUE).'
+    'Recomputed ' + activeSheet.getName() + ': updated ' + preview.inRowsUpdated + ' IN row(s) (Shift/Late) and ' +
+    preview.outRowsUpdated + ' OUT row(s) (OT -- Japanese: minutes, Thai/other: quarters, only where OT was already TRUE). ' +
+    preview.otRegressions.length + ' row(s) skipped to avoid losing existing OT -- see above.'
   );
 }
 
@@ -1599,14 +1941,18 @@ function handleVerifyKioskExitPin_(params) {
 }
 
 /**
- * Shared core for findTodayInLog_ and findMostRecentInLog_ below -- both
- * want "this employee's latest IN row matching some timestamp bound," and
- * previously duplicated that whole scan independently, which is exactly how
- * findTodayInLog_'s day-boundary assumption ended up silently baked into
- * a second, similar-looking function (see findMostRecentInLog_'s own doc
- * comment for the incident that exposed it) -- one scan, two different
- * `isValidTimestamp` predicates, so a future fix to the scan itself (column
- * lookups, tie-breaking) can't be applied to only one of them by accident.
+ * Core scan for findTodayInLog_ below (its only caller -- bulkShiftBreakState_
+ * grew its own equivalent batched scan instead of using this, since it needs
+ * every employee's answer in one pass over the log, not one call per
+ * employee -- see bulkShiftBreakState_'s own doc comment). Pulled out as its
+ * own function, not inlined into findTodayInLog_, so a future fix to the
+ * scan itself (column lookups, tie-breaking) has one place to land instead
+ * of risking a second, independently-drifting copy -- exactly how
+ * findTodayInLog_'s own day-boundary assumption once went wrong unnoticed
+ * (see the admin-backdated-row reasoning below, written for that incident).
+ * NOT shared by findStintStartInLog_ (added 2026-10-02) -- that one needs
+ * the opposite, earliest-wins tie-break for a different job entirely; see
+ * its own doc comment for why.
  *
  * Deliberately does NOT special-case admin-backdated (Method
  * 'AdminBackdated', see recordBackdatedAttendance_) rows differently from a
@@ -1618,17 +1964,17 @@ function handleVerifyKioskExitPin_(params) {
  * would get wrongly excluded the moment the calendar day rolled over, same
  * as findTodayInLog_'s original bug. The only bound that can't have that
  * failure mode is the SAME one already applied to every other IN row here
- * (`isValidTimestamp` -- same-day for findTodayInLog_, MAX_SHIFT_LOOKBACK_HOURS
- * for findMostRecentInLog_): if a backdated entry is recent enough to pass
- * that bound, a live tap at the identical timestamp would count too, so
- * there's no consistent way to treat them differently without resurrecting
- * a day/hour-boundary edge case. The accepted narrow residual risk (an
- * admin bulk-catches-up a day-old forgotten punch with no OUT, and no more
- * recent real IN exists yet, briefly making the Kiosk show that employee as
- * still on the old shift) is judged strictly less harmful than the
- * alternative -- wrongly blocking a currently-working employee from Break/
- * OUT outright, which is the literal incident this fix was written for --
- * and self-corrects on their next real tap either way.
+ * (`isValidTimestamp` -- same-day, via findTodayInLog_'s own predicate): if
+ * a backdated entry is recent enough to pass that bound, a live tap at the
+ * identical timestamp would count too, so there's no consistent way to
+ * treat them differently without resurrecting a day/hour-boundary edge
+ * case. The accepted narrow residual risk (an admin bulk-catches-up a
+ * day-old forgotten punch with no OUT, and no more recent real IN exists
+ * yet, briefly making the Kiosk show that employee as still on the old
+ * shift) is judged strictly less harmful than the alternative -- wrongly
+ * blocking a currently-working employee from Break/OUT outright, which is
+ * the literal incident this fix was written for -- and self-corrects on
+ * their next real tap either way.
  */
 function findMostRecentInLogWhere_(employeeId, log, isValidTimestamp) {
   var idCol = log.headers.indexOf('EmployeeID');
@@ -1649,7 +1995,7 @@ function findMostRecentInLogWhere_(employeeId, log, isValidTimestamp) {
   return found;
 }
 
-/** Finds today's most recent IN row for an employee. Returns {timestamp, shift} or null. Pass a pre-fetched `log` (see getRecentAttendanceLog_) to avoid re-reading the sheet. Includes admin-backdated entries -- day-specific reporting callers want the real historical IN either way, and see findMostRecentInLogWhere_'s own doc comment for why treating them differently here isn't safe anyway. */
+/** Finds today's most recent IN row for an employee. Returns {timestamp, shift} or null. Pass a pre-fetched `log` (see getRecentAttendanceLog_) to avoid re-reading the sheet. Includes admin-backdated entries -- day-specific reporting callers want the real historical IN either way, and see findMostRecentInLogWhere_'s own doc comment for why treating them differently here isn't safe anyway. Used only by isOnShiftToday_ (its own doc comment explains why THAT caller specifically wants most-recent, not findStintStartInLog_'s earliest -- the two are not interchangeable). */
 function findTodayInLog_(employeeId, now, log) {
   log = log || getRecentAttendanceLog_();
   return findMostRecentInLogWhere_(
@@ -1660,29 +2006,77 @@ function findTodayInLog_(employeeId, now, log) {
 }
 
 /**
- * Finds an employee's most recent IN row within MAX_SHIFT_LOOKBACK_HOURS of
- * `now` (NOT just today -- see currentShiftBreakState_ below for why).
- * Includes admin-backdated entries within that same window -- see
- * findMostRecentInLogWhere_'s own doc comment for why excluding them isn't
- * actually safer. Returns {timestamp, shift} or null.
+ * Finds the IN that opened the CURRENT, still-open stint as of `now` for
+ * pairing against an OUT's DurationMinutes/OT math -- the earliest IN today
+ * AFTER the most recent OUT before `now` (or the earliest IN of the day at
+ * all, if no OUT precedes it). Returns {timestamp, shift} or null. Pass a
+ * pre-fetched `log` (see getRecentAttendanceLog_) to avoid re-reading the
+ * sheet. Includes admin-backdated entries, same reasoning as
+ * findMostRecentInLogWhere_'s own doc comment.
  *
- * Same accepted bound as sumCompletedBreakMinutesToday_ above: `log` is
- * capped at RECENT_LOG_ROWS (1000) rows ACROSS EVERY EMPLOYEE, so on an
- * implausibly high-volume 48h window (1000+ combined punches org-wide) a
- * genuinely-open shift's IN could theoretically scroll out of the window
- * before 48h elapses, wrongly falling back to not_clocked_in. Not fixed
- * here for the same reason: an unbounded read would defeat the point of
- * RECENT_LOG_ROWS on this latency-sensitive path, and this org's actual
- * punch volume is nowhere near 1000 rows in any 48h span.
+ * NEITHER simply "most recent IN" NOR simply "earliest IN of the day" is
+ * correct here once a same-day duplicate/mis-tapped IN is no longer
+ * rejected (2026-10-02 -- see recordAttendance_/
+ * recordOfflineSyncedAttendance_'s own comments):
+ *  - "Most recent IN" (findTodayInLog_ -- correct for ITS OWN callers,
+ *    see its own doc comment) breaks the moment a mis-tapped IN lands
+ *    AFTER the real one with no OUT between them: the OUT would pair with
+ *    the mis-tap, producing a tiny/wrong duration.
+ *  - "Earliest IN of the whole day" (this function's own first version,
+ *    caught in review before shipping) breaks the moment a LEGITIMATE
+ *    same-day clock-out-and-back-in has already happened (a real lunch
+ *    OUT/IN, an explicitly anticipated pattern -- see
+ *    DAILY_BREAK_BUDGET_MINUTES' own comment): the day's FINAL OUT would
+ *    wrongly pair against the MORNING's IN, inflating duration by the
+ *    whole lunch gap.
+ * Walking back to the most recent REAL OUT first, then taking the earliest
+ * IN after it, handles both at once: a stray duplicate IN sitting inside an
+ * already-open stint is ignored (the stint's own original IN still wins),
+ * while a genuinely new stint (opened after a real OUT) is still correctly
+ * recognized as its own pairing. Accepted edge case: two INs both landing
+ * before any OUT exists yet today, with no way to know which was the "real"
+ * one and which was a mistake (e.g. a duplicate right after returning from
+ * lunch, before a genuine re-entry) -- earliest-of-the-two wins, erring
+ * toward not shortchanging the employee's recorded hours rather than
+ * undercounting them.
+ *
+ * Both scans also require the candidate row be strictly BEFORE `now` --
+ * not just "today" -- since rows can land out of chronological order (an
+ * offline-queued tap syncing later, an admin backdating entries out of
+ * sequence). Without that bound, an IN written AFTER this OUT's own
+ * timestamp could still get picked as its pairing, producing a negative
+ * DurationMinutes.
  */
-function findMostRecentInLog_(employeeId, now, log) {
+function findStintStartInLog_(employeeId, now, log) {
   log = log || getRecentAttendanceLog_();
-  var earliestAllowed = now.getTime() - MAX_SHIFT_LOOKBACK_HOURS * 60 * 60 * 1000;
-  return findMostRecentInLogWhere_(
-    employeeId,
-    log,
-    function (ts) { return ts.getTime() <= now.getTime() && ts.getTime() >= earliestAllowed; }
-  );
+  var idCol = log.headers.indexOf('EmployeeID');
+  var tsCol = log.headers.indexOf('Timestamp');
+  var typeCol = log.headers.indexOf('Type');
+  var shiftCol = log.headers.indexOf('Shift');
+
+  var mostRecentOutTs = null;
+  for (var i = 0; i < log.rows.length; i++) {
+    if (String(log.rows[i][idCol]) !== String(employeeId)) continue;
+    if (log.rows[i][typeCol] !== 'OUT') continue;
+    var outTs = new Date(log.rows[i][tsCol]);
+    if (!isSameDay_(outTs, now)) continue;
+    if (outTs.getTime() >= now.getTime()) continue; // only an OUT strictly before this pairing's own reference time counts as closing a prior stint
+    if (!mostRecentOutTs || outTs.getTime() > mostRecentOutTs.getTime()) mostRecentOutTs = outTs;
+  }
+
+  var found = null;
+  for (var j = 0; j < log.rows.length; j++) {
+    if (String(log.rows[j][idCol]) !== String(employeeId)) continue;
+    if (log.rows[j][typeCol] !== 'IN') continue;
+    var ts = new Date(log.rows[j][tsCol]);
+    if (!isSameDay_(ts, now)) continue;
+    if (ts.getTime() >= now.getTime()) continue; // can't be the IN that opened THIS OUT's stint if it didn't even happen before this OUT -- matters once rows can land out of chronological order (offline sync, admin backdating out of sequence)
+    if (mostRecentOutTs && ts.getTime() <= mostRecentOutTs.getTime()) continue; // belongs to an already-closed earlier stint
+    if (!found || ts.getTime() < found.timestamp.getTime()) {
+      found = { timestamp: ts, shift: shiftCol !== -1 ? String(log.rows[j][shiftCol] || '') : '' };
+    }
+  }
+  return found;
 }
 
 /**
@@ -1711,7 +2105,18 @@ function getEmployeeIdsWithInOnDate_(date) {
   return ids;
 }
 
-/** Finds an employee's row for a specific type (IN or OUT) on a specific date, searching the whole AttendanceLog (not just the recent window) since a backdated entry can be from any point in the past. */
+/**
+ * Finds an employee's row for a specific type (IN or OUT) on a specific
+ * date, searching the whole AttendanceLog (not just the recent window)
+ * since a backdated entry can be from any point in the past. On more than
+ * one matching row the same day, the MOST RECENT wins -- an arbitrary but
+ * harmless choice for its only remaining callers (Menu.gs's
+ * existence/warning checks, any `type`), which don't depend on which
+ * specific row comes back when more than one exists, only on whether one
+ * does. NOT used for OUT-side DurationMinutes/OT pairing any more (that
+ * needs stint-aware matching, not a simple tie-break either way -- see
+ * findStintStartInForDate_, its dedicated replacement for that job).
+ */
 function findLogEntryForDate_(employeeId, type, date) {
   var sheet = getSheet_('AttendanceLog');
   var values = sheet.getDataRange().getValues();
@@ -1729,6 +2134,52 @@ function findLogEntryForDate_(employeeId, type, date) {
     if (!isSameDay_(ts, date)) continue;
     if (!found || ts > found.timestamp) {
       found = { timestamp: ts, shift: shiftCol !== -1 ? String(values[i][shiftCol] || '') : '' };
+    }
+  }
+  return found;
+}
+
+/**
+ * Like findStintStartInLog_, but for the offline-sync/backdated write paths
+ * (recordOfflineSyncedAttendance_/recordBackdatedAttendance_): does its own
+ * full, unbounded AttendanceLog read (same reasoning as findLogEntryForDate_'s
+ * own doc comment -- a queued offline tap or a deliberate historical
+ * backfill can target any day in the past, not just within the "recent"
+ * bounded window getRecentAttendanceLog_ covers) instead of taking a
+ * pre-fetched `log`. See findStintStartInLog_'s own doc comment for the full
+ * "why not most-recent, why not earliest-of-the-whole-day" reasoning --
+ * identical here, just sourced from a full sheet scan instead of a bounded
+ * one.
+ */
+function findStintStartInForDate_(employeeId, date) {
+  var sheet = getSheet_('AttendanceLog');
+  var values = sheet.getDataRange().getValues();
+  var headers = values[0];
+  var idCol = headers.indexOf('EmployeeID');
+  var tsCol = headers.indexOf('Timestamp');
+  var typeCol = headers.indexOf('Type');
+  var shiftCol = headers.indexOf('Shift');
+
+  var mostRecentOutTs = null;
+  for (var i = 1; i < values.length; i++) {
+    if (String(values[i][idCol]) !== String(employeeId)) continue;
+    if (values[i][typeCol] !== 'OUT') continue;
+    var outTs = new Date(values[i][tsCol]);
+    if (!isSameDay_(outTs, date)) continue;
+    if (outTs.getTime() >= date.getTime()) continue;
+    if (!mostRecentOutTs || outTs.getTime() > mostRecentOutTs.getTime()) mostRecentOutTs = outTs;
+  }
+
+  var found = null;
+  for (var j = 1; j < values.length; j++) {
+    if (String(values[j][idCol]) !== String(employeeId)) continue;
+    if (values[j][typeCol] !== 'IN') continue;
+    var ts = new Date(values[j][tsCol]);
+    if (!isSameDay_(ts, date)) continue;
+    if (ts.getTime() >= date.getTime()) continue; // can't be the IN that opened THIS OUT's stint if it didn't even happen before this OUT -- a real possibility here specifically: an offline-queued tap synced out of chronological order, or an admin backdating entries out of sequence (see menuAddBackdatedAttendance_/menuFillMissedPunches_ in Menu.gs)
+    if (mostRecentOutTs && ts.getTime() <= mostRecentOutTs.getTime()) continue;
+    if (!found || ts.getTime() < found.timestamp.getTime()) {
+      found = { timestamp: ts, shift: shiftCol !== -1 ? String(values[j][shiftCol] || '') : '' };
     }
   }
   return found;
@@ -1772,7 +2223,7 @@ function recordBackdatedAttendance_(employeeId, type, timestamp, ot, precomputed
       late = isLate_(scheduledShift, recordedTimestamp);
     }
   } else {
-    var matchingIn = findLogEntryForDate_(employeeId, 'IN', timestamp);
+    var matchingIn = findStintStartInForDate_(employeeId, timestamp);
     var todayShift = matchingIn ? matchingIn.shift : '';
     recordedTimestamp = eventShiftOverrideTimestamp_(todayShift, timestamp, 'OUT');
     if (matchingIn) {
@@ -1891,15 +2342,14 @@ function recordOfflineSyncedAttendance_(employeeId, type, timestamp, ot, clientI
     return { duplicate: true, name: emp.Name };
   }
 
-  // Same already-on-shift guard as the live path (recordAttendance_) -- see
-  // isOnShiftToday_'s own doc comment for why this is deliberately
-  // same-day-only, not currentShiftBreakState_'s 48h-bounded onShift --
-  // evaluated as of the queued tap's own timestamp, not "now" (sync can
-  // happen minutes or hours later), consistent with the duplicate-guard
-  // check just above.
-  if (type === 'IN' && isOnShiftToday_(employeeId, timestamp, log)) {
-    return { error: 'already_clocked_in', message: 'Already checked in, please check out first' };
-  }
+  // Used to reject a second same-day IN here (already_clocked_in) -- removed
+  // 2026-10-02 so a mis-tapped IN instead of OUT at day's end gets recorded
+  // like any other tap instead of being silently dropped with no trace once
+  // the offline queue synced it (see offlineQueue.ts's flushQueue, which used
+  // to special-case this exact error). The OUT-side pairing below (via
+  // findStintStartInForDate_) already pairs with whichever IN actually
+  // opened the CURRENT stint, so an extra same-day IN row no longer
+  // corrupts DurationMinutes/OT math.
 
   var punchBranchForRow = normalizePunchBranch_(punchBranch);
 
@@ -1927,7 +2377,7 @@ function recordOfflineSyncedAttendance_(employeeId, type, timestamp, ot, clientI
       // AFTER appendRow_ below, not here -- see the comment there for why.
     }
   } else {
-    var matchingIn = findLogEntryForDate_(employeeId, 'IN', timestamp);
+    var matchingIn = findStintStartInForDate_(employeeId, timestamp);
     var todayShift = matchingIn ? matchingIn.shift : '';
     recordedTimestamp = eventShiftOverrideTimestamp_(todayShift, timestamp, 'OUT');
     if (matchingIn) {
@@ -2048,11 +2498,12 @@ function recordOfflineSyncedBreak_(employeeId, type, timestamp, clientId, durati
   }
 
   // Same "computed from the pre-append log snapshot" reasoning as
-  // recordBreak_'s own remainingMinutes -- see its comment.
+  // recordBreak_'s own remainingMinutes -- see its comment (including why
+  // discountedBreakMinutes_ applies to thisSessionMinutes here too).
   var remainingMinutes, totalMinutesUsedToday;
   if (type === 'BREAK_END') {
     var priorMinutes = sumCompletedBreakMinutesToday_(employeeId, startOfDay_(timestamp), timestamp, log);
-    var thisSessionMinutes = Math.round((timestamp.getTime() - state.lastBreakTs.getTime()) / 60000);
+    var thisSessionMinutes = discountedBreakMinutes_(Math.round((timestamp.getTime() - state.lastBreakTs.getTime()) / 60000));
     totalMinutesUsedToday = priorMinutes + thisSessionMinutes;
     remainingMinutes = Math.max(0, DAILY_BREAK_BUDGET_MINUTES - totalMinutesUsedToday);
   }
@@ -2112,21 +2563,22 @@ function recordAttendance_(employeeId, method, rawScanValue, type, ot, punchBran
     return fail_('duplicate', 'Already recorded, please wait a moment before scanning again');
   }
 
-  // A second IN more than DUPLICATE_GUARD_MS after the first used to sail
-  // straight through with no check at all -- unlike Break (recordBreak_
-  // already rejects on !state.onShift), IN had no equivalent guard, so an
-  // accidental re-tap (or the Kiosk's cross-device onShift display lagging
-  // reality for a moment) silently appended a second, unpaired IN row with
-  // no OUT between them, corrupting whichever IN the next OUT's
-  // findTodayInLog_/findMostRecentInLog_ happened to pick for duration/OT
-  // math. Mirrors recordBreak_'s own already_clocked_out guard -- but
-  // deliberately checks isOnShiftToday_ (same-day only), NOT
-  // currentShiftBreakState_'s 48h-bounded onShift -- see isOnShiftToday_'s
-  // own doc comment for the incident that made the 48h version of this
-  // check block real check-ins the day after a forgotten OUT.
-  if (type === 'IN' && isOnShiftToday_(employeeId, now, log)) {
-    return fail_('already_clocked_in', 'Already checked in, please check out first');
-  }
+  // A second same-day IN used to be rejected here (already_clocked_in,
+  // via isOnShiftToday_) -- removed 2026-10-02. That guard existed to stop a
+  // duplicate IN row from corrupting the OUT side's duration/OT math (the
+  // OUT branch below used to pair with whichever IN findTodayInLog_'s
+  // "most recent" tie-break happened to pick, which a later mis-tapped IN
+  // would hijack), but it also meant a genuine mis-tap of IN instead of OUT
+  // at day's end got silently rejected with zero trace once synced from the
+  // offline queue -- the employee walks away believing they clocked out,
+  // and nothing anywhere records that the tap ever happened. Fixed at the
+  // root instead of re-adding the block: the OUT branch below now pairs
+  // with whichever IN actually opened the CURRENT stint (findStintStartInLog_,
+  // see its own doc comment), so a stray duplicate/mis-tapped IN sitting
+  // after the real one can never get picked instead and corrupt that math,
+  // and every tap -- mistaken or not -- always lands as a real row. A
+  // resulting "two INs, one OUT" day reads clearly in AttendanceLog and is
+  // exactly what Fix Mis-tapped IN After 16:00 (Menu.gs) is for.
 
   var punchBranchForRow = normalizePunchBranch_(punchBranch);
 
@@ -2169,7 +2621,7 @@ function recordAttendance_(employeeId, method, rawScanValue, type, ot, punchBran
       // AFTER appendRow_ below, not here -- see the comment there for why.
     }
   } else {
-    var todayIn = findTodayInLog_(employeeId, now, log);
+    var todayIn = findStintStartInLog_(employeeId, now, log);
     var todayShift = todayIn ? todayIn.shift : '';
     recordedTimestamp = eventShiftOverrideTimestamp_(todayShift, now, 'OUT');
     if (todayIn) {
@@ -2184,7 +2636,7 @@ function recordAttendance_(employeeId, method, rawScanValue, type, ot, punchBran
     // otherwise compute real positive OT -- isNoLateNoOtShift_ guards that
     // explicitly. (An overnight Special Shift never reaches here with a
     // truthy todayShift at all, since todayIn/todayShift only ever resolve
-    // for an IN on the OUT's own calendar day -- see findTodayInLog_.)
+    // for an IN on the OUT's own calendar day -- see findStintStartInLog_.)
     var otEligible = otEligibleForDay_(emp, todayShift);
     if (emp.Department === 'Japanese') {
       // OUT and OUT OT are equivalent for Japanese -- always auto-computed.

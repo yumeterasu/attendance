@@ -391,7 +391,7 @@ function checkEmployeesSheet_(findings) {
   });
 }
 
-/** Active employees missing from this month's Schedule, and shift cells that don't match the SHIFTS dropdown. */
+/** Active employees missing from this month's Schedule, and shift cells that don't match the SHIFTS dropdown, a valid Special Shift, or a known Half Day Leave label. */
 function checkCurrentSchedule_(findings, activeEmployees) {
   var now = new Date();
   var year = now.getFullYear();
@@ -451,7 +451,22 @@ function checkCurrentSchedule_(findings, activeEmployees) {
       if (dayCol === -1) continue;
       var cellValue = String(values[r][dayCol] || '').trim();
       if (!cellValue) continue;
-      if (SHIFTS.indexOf(cellValue) === -1) {
+      // A well-formed Special Shift (isValidSpecialShiftSubmission_) is
+      // never in SHIFTS by design -- it's a custom, employee-typed one-off,
+      // not a pre-approved dropdown option -- so an exact-match-only check
+      // here flagged EVERY Special Shift as "typed instead of picked",
+      // real incident 2026-10-05. The HALF_DAY_LEAVE_COUNTS_AS_ check
+      // alongside it is specifically for the LEGACY pre-2026-10-02 plain
+      // Half Day labels ("Half Day Annual Leave", no embedded time) that
+      // the Half Day AM/PM fix removed from SHIFTS -- the current AM/PM
+      // variants are still literally in SHIFTS and already pass the first
+      // check on their own; this one just keeps an old Schedule sheet's
+      // not-yet-migrated label from being wrongly flagged too. Don't drop
+      // this check as "redundant" -- it's the legacy labels' only path to
+      // passing, even though it looks like a no-op for the current ones.
+      // Only a value that fails ALL THREE checks is a real typo/corruption
+      // worth flagging.
+      if (SHIFTS.indexOf(cellValue) === -1 && !isValidSpecialShiftSubmission_(cellValue) && !HALF_DAY_LEAVE_COUNTS_AS_.hasOwnProperty(cellValue)) {
         findings.push({
           sheetName: sheetName,
           a1: sheet.getRange(r + 1, dayCol + 1).getA1Notation(),
@@ -462,7 +477,19 @@ function checkCurrentSchedule_(findings, activeEmployees) {
   }
 }
 
-/** IN rows with no matching OUT, for days that have already fully passed (not today -- they may still be at work). */
+/**
+ * IN rows with no matching OUT, for days that have already fully passed
+ * (not today -- they may still be at work).
+ *
+ * An overnight Special Shift's IN-today/OUT-tomorrow split is never
+ * flagged -- see overnightSpecialShiftPairSatisfies_ (Attendance.gs). That
+ * needs the shift text (not read by this function before) and OUT rows
+ * timestamped TODAY (excluded from the main scan below for every other
+ * purpose, since today's own IN is never flagged here either -- "may still
+ * be at work"): today's OUT rows are still collected into `outByKey`, just
+ * never used to flag anything on their own, only to confirm a PRIOR day's
+ * overnight pairing.
+ */
 function checkMissingCheckouts_(findings) {
   var sheet = getSheet_('AttendanceLog');
   var values = sheet.getDataRange().getValues();
@@ -476,27 +503,33 @@ function checkMissingCheckouts_(findings) {
   var year = now.getFullYear();
   var month = now.getMonth() + 1;
   var today = now.getDate();
+  var daysInMonth = new Date(year, month, 0).getDate();
+  var scheduledShiftsForMonth = getScheduledShiftsForMonth_(year, month);
 
   var inByKey = {};
-  var outKeys = {};
+  var outByKey = {};
   for (var i = 1; i < values.length; i++) {
     var ts = new Date(values[i][tsCol]);
     if (ts.getFullYear() !== year || ts.getMonth() + 1 !== month) continue;
     var day = ts.getDate();
-    if (day >= today) continue;
 
     var key = String(values[i][idCol]) + '|' + day;
     if (values[i][typeCol] === 'IN') {
+      if (day >= today) continue; // today's own IN is never flagged -- may still be at work
       inByKey[key] = { rowNumber: i + 1, name: values[i][nameCol] };
     } else if (values[i][typeCol] === 'OUT') {
-      outKeys[key] = true;
+      outByKey[key] = true; // collected through TODAY (not stopped at yesterday like IN) -- an overnight pairing's OUT can land today
     }
   }
 
   Object.keys(inByKey).forEach(function (key) {
-    if (outKeys[key]) return;
+    if (outByKey[key]) return;
     var info = inByKey[key];
-    var day2 = key.split('|')[1];
+    var parts = key.split('|');
+    var employeeId = parts[0];
+    var day2 = Number(parts[1]);
+    var shiftsByDay = scheduledShiftsForMonth[employeeId] || {};
+    if (overnightSpecialShiftPairSatisfies_(employeeId, shiftsByDay, {}, outByKey, day2, daysInMonth, 'OUT')) return;
     findings.push({
       sheetName: 'AttendanceLog',
       a1: sheet.getRange(info.rowNumber, typeCol + 1).getA1Notation(),
@@ -521,6 +554,10 @@ function checkMissingCheckouts_(findings) {
  * month only days before today are checked (today may not be over yet); for
  * a fully past month every day is checked; a future month is skipped
  * entirely since no days there have passed yet.
+ *
+ * An overnight Special Shift's OUT-today/IN-yesterday split is never
+ * flagged as a missing IN -- see overnightSpecialShiftPairSatisfies_
+ * (Attendance.gs).
  */
 function checkMissingAttendance_(findings, activeEmployees, year, month) {
   var now = new Date();
@@ -530,8 +567,9 @@ function checkMissingAttendance_(findings, activeEmployees, year, month) {
   var isFutureMonth = year > now.getFullYear() || (year === now.getFullYear() && month > now.getMonth() + 1);
   if (isFutureMonth) return;
 
+  var daysInMonth = new Date(year, month, 0).getDate();
   var isCurrentMonth = year === now.getFullYear() && month === now.getMonth() + 1;
-  var lastDayToCheck = isCurrentMonth ? now.getDate() - 1 : new Date(year, month, 0).getDate();
+  var lastDayToCheck = isCurrentMonth ? now.getDate() - 1 : daysInMonth;
   if (lastDayToCheck < 1) return;
 
   var sheetName = 'Schedule ' + year + '-' + (month < 10 ? '0' + month : month);
@@ -562,6 +600,12 @@ function checkMissingAttendance_(findings, activeEmployees, year, month) {
       if (!shift || FULL_DAY_OFF_SHIFTS.indexOf(shift) !== -1) continue; // "Half Day Annual/Sick Leave" stays checked -- still expected in for half the day
       if (isEventShift_(shift)) continue; // an Event day is designed to need no real punch at all -- see eventShiftOverrideTimestamp_/isEventShift_ and the same exclusion in Report.gs's own attendance totals
       if (hasInByKey[String(emp.EmployeeID) + '|' + day]) continue;
+      // Overnight Special Shift: today's "missing" IN may really be
+      // yesterday's -- see overnightSpecialShiftPairSatisfies_'s own doc
+      // comment (Attendance.gs). hasOutByKey isn't tracked by this
+      // function (it only ever cares about missing IN), so an empty map is
+      // passed -- the helper never reads it for missingSide 'IN'.
+      if (overnightSpecialShiftPairSatisfies_(emp.EmployeeID, shiftsByDay, hasInByKey, {}, day, daysInMonth, 'IN')) continue;
       findings.push({
         sheetName: sheetName,
         a1: null,

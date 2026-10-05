@@ -475,12 +475,31 @@ function refreshLiveSummarySheet_() {
  * Leave-type columns for the Summary sheet: how many days of each type an
  * employee took. Read from the Schedule sheet's shift cells, not
  * AttendanceLog -- someone on leave never taps the kiosk, so there's no log
- * row to count there, only the scheduled shift text. A "Half Day X Leave"
- * cell counts as 0.5 toward its full-day counterpart. Column order is what
- * was asked for, not alphabetical.
+ * row to count there, only the scheduled shift text. A Half Day Leave cell
+ * counts as 0.5 toward its full-day counterpart. Column order is what was
+ * asked for, not alphabetical.
+ *
+ * Keys cover both the current AM/PM-variant labels (see SHIFTS' own
+ * comment, Attendance.gs) and the legacy plain "Half Day X Leave" labels
+ * (no embedded time) that older "Schedule YYYY-MM" sheets from before
+ * 2026-10-02 may still have written in -- dropping the legacy keys would
+ * silently stop counting historical half-day leave that's already on the
+ * books. Deliberately NOT keyed by isHalfDayLeaveShift_'s prefix match --
+ * this needs to know WHICH full leave type each variant counts toward, not
+ * just "is this a Half Day cell at all".
  */
 var LEAVE_COUNT_TYPES = ['Annual Leave', 'Sick Leave', 'Paid Special Leave', 'Unpaid Leave'];
-var HALF_DAY_LEAVE_COUNTS_AS_ = { 'Half Day Annual Leave': 'Annual Leave', 'Half Day Sick Leave': 'Sick Leave', 'Half Day Unpaid Leave': 'Unpaid Leave' };
+var HALF_DAY_LEAVE_COUNTS_AS_ = {
+  'Half Day Annual Leave': 'Annual Leave', // legacy, pre-2026-10-02
+  'Half Day Annual Leave AM 8:00-12:30': 'Annual Leave',
+  'Half Day Annual Leave PM 12:30-17:00': 'Annual Leave',
+  'Half Day Sick Leave': 'Sick Leave', // legacy, pre-2026-10-02
+  'Half Day Sick Leave AM 8:00-12:30': 'Sick Leave',
+  'Half Day Sick Leave PM 12:30-17:00': 'Sick Leave',
+  'Half Day Unpaid Leave': 'Unpaid Leave', // legacy, pre-2026-10-02
+  'Half Day Unpaid Leave AM 8:00-12:30': 'Unpaid Leave',
+  'Half Day Unpaid Leave PM 12:30-17:00': 'Unpaid Leave'
+};
 
 // Employees-sheet rows that exist purely for Dashboard/Admin-screen login
 // (see requireAdmin_ in Auth.gs) and never represent a real clocking-in
@@ -1291,11 +1310,17 @@ function minutesToHHMM_(totalMinutes) {
  *     SHIFTS option's end is closer to the actual time. Added 2026-10-01 --
  *     mirrors the IN side exactly, just checking the other end of the day
  *     (leaving early instead of arriving late).
- * Leave/Holiday/Half Day Annual Leave never match anything on either side,
- * having no real time to compare. Event shifts (e.g. "Event 8:00-17:00")
- * are skipped entirely, both as a day to check and as a candidate "closer"
- * match on either side -- they're one-off/irregular by nature, not a stale
- * entry that should get flagged or "corrected" back into the normal rotation.
+ * Leave/Holiday never match anything on either side, having no real time
+ * to compare. Event shifts (e.g. "Event 8:00-17:00") are skipped entirely,
+ * both as a day to check and as a candidate "closer" match on either
+ * side -- they're one-off/irregular by nature, not a stale entry that
+ * should get flagged or "corrected" back into the normal rotation. Half
+ * Day Leave (see isHalfDayLeaveShift_) is also skipped entirely, even
+ * though its AM/PM variants DO have a real parseable time since
+ * 2026-10-02 -- unlike a genuinely stale entry, the admin always sets Half
+ * Day on a cell well AFTER the employee's own check-in already happened
+ * against whatever shift they originally picked, so the real tap time
+ * routinely "mismatches" it on purpose, not by staleness.
  *
  * Snapshot check, not live -- resets every day-cell background (then
  * re-applies the weekend tint) before highlighting, so a mismatch fixed
@@ -1303,13 +1328,15 @@ function minutesToHHMM_(totalMinutes) {
  */
 function highlightShiftMismatches_(sheet, year, month) {
   var daysInMonth = new Date(year, month, 0).getDate();
-  // Event shifts are excluded both as a scheduled value to check (see the
-  // loop below) and as a candidate "did you mean this instead" match here --
-  // a one-off event isn't part of the normal shift rotation a stale entry
-  // would actually get corrected to. Shared by both the IN and OUT checks
-  // below (every real SHIFTS entry is "H:MM-H:MM", so has both a start and
-  // an end -- no separate filter needed for the OUT side).
-  var timedShifts = SHIFTS.filter(function (s) { return getShiftStartMinutes_(s) !== null && !isEventShift_(s); });
+  // Event AND Half Day Leave shifts are excluded both as a scheduled value
+  // to check (see the loop below) and as a candidate "did you mean this
+  // instead" match here -- neither is part of the normal shift rotation a
+  // stale entry would actually get corrected to (see this function's own
+  // doc comment for why Half Day specifically needs this despite now
+  // having a real time). Shared by both the IN and OUT checks below (every
+  // real SHIFTS entry is "H:MM-H:MM", so has both a start and an end -- no
+  // separate filter needed for the OUT side).
+  var timedShifts = SHIFTS.filter(function (s) { return getShiftStartMinutes_(s) !== null && !isEventShift_(s) && !isHalfDayLeaveShift_(s); });
 
   var values = sheet.getDataRange().getValues();
   var headers = values[0];
@@ -1338,7 +1365,7 @@ function highlightShiftMismatches_(sheet, year, month) {
   // never match that day's Schedule cell -- the OUT check would just stop
   // firing for that shift, no error. Not fixed here (no overnight shift
   // exists to need it yet); if one's added, this needs the same kind of
-  // cross-midnight handling MAX_SHIFT_LOOKBACK_HOURS/findMostRecentInLog_
+  // cross-midnight handling MAX_SHIFT_LOOKBACK_HOURS/currentShiftBreakState_
   // (Attendance.gs) already went through for the live check-in path.
   var logSheet = getSheet_('AttendanceLog');
   var logValues = logSheet.getDataRange().getValues();
@@ -1399,6 +1426,7 @@ function highlightShiftMismatches_(sheet, year, month) {
       if (dayCol === -1) continue;
       var scheduledShift = String(values[r][dayCol] || '').trim();
       if (isNoLateNoOtShift_(scheduledShift)) continue; // Event or Special -- one-off/irregular by nature, not a normal recurring shift to flag as "wrong"
+      if (isHalfDayLeaveShift_(scheduledShift)) continue; // admin always sets this well after the real check-in happened -- see this function's own doc comment
       var key = employeeId + '|' + d;
       if (pickedKeys[key]) continue; // employee's own Kiosk pick -- see pickedKeys above, shared by both checks below
       var flaggedThisCell = false;
@@ -1908,10 +1936,10 @@ function handleDashboardDaily_(params) {
     }
   }
 
-  // Pair each employee's break events chronologically -- same rule as
-  // sumCompletedBreakMinutesToday_/aggregateMonthLogs_: sum every COMPLETE
-  // BREAK_START->BREAK_END pair; an unmatched trailing BREAK_START (a
-  // forgotten Back from Break, or the just-in-progress one) contributes
+  // Pair each employee's break events chronologically -- same PAIRING rule
+  // as sumCompletedBreakMinutesToday_/aggregateMonthLogs_: sum every
+  // COMPLETE BREAK_START->BREAK_END pair; an unmatched trailing BREAK_START
+  // (a forgotten Back from Break, or the just-in-progress one) contributes
   // nothing. Known accepted gap: a break that starts before dayStart or
   // ends after breakWindowEnd (crossing midnight) is invisible to THIS
   // per-day view on both the start and end day, since each day's window is
@@ -1920,6 +1948,16 @@ function handleDashboardDaily_(params) {
   // it. Not fixed here: real shifts at this org run nowhere near midnight,
   // and attributing a split pair to "today" vs "yesterday" for a single-day
   // view has no unambiguous right answer anyway.
+  //
+  // Per-pair minutes DO diverge from aggregateMonthLogs_ here, though: this
+  // feeds the Dashboard's "over the daily budget" red flag, which must
+  // agree with what the Kiosk itself told the employee (sumCompletedBreak
+  // MinutesToday_/recordBreak_, Attendance.gs) -- so this applies the same
+  // discountedBreakMinutes_ (BREAK_WALK_DISCOUNT_MINUTES) per pair.
+  // aggregateMonthLogs_'s Report-tab "Break (min)" column deliberately does
+  // NOT apply it (that column is the real, undiscounted payroll figure) --
+  // the two are allowed to disagree on purpose; see
+  // discountedBreakMinutes_'s own doc comment.
   var breakMinutesByEmployee = {};
   Object.keys(breakEventsByEmployee).forEach(function (empId) {
     var events = breakEventsByEmployee[empId];
@@ -1930,7 +1968,7 @@ function handleDashboardDaily_(params) {
       if (events[e].type === 'BREAK_START') {
         openStart = events[e].ts;
       } else if (openStart) {
-        totalMinutes += Math.round((events[e].ts.getTime() - openStart.getTime()) / 60000);
+        totalMinutes += discountedBreakMinutes_(Math.round((events[e].ts.getTime() - openStart.getTime()) / 60000));
         openStart = null;
       }
     }

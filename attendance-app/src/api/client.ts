@@ -121,14 +121,17 @@ export function kioskBreak(pin: string, type: 'BREAK_START' | 'BREAK_END', durat
 //
 // onShiftToday: NOT the same thing as onShift, and must not be used in its
 // place -- onShift is deliberately 48h-bounded (so the Break button/marker
-// stay correct across an overnight shift); onShiftToday mirrors the
-// same-day-only check the server's IN write path actually enforces
-// (isOnShiftToday_, Attendance.gs). Real incident, 2026-10-01: using
-// `onShift` to decide whether to clear a just-picked IN selection cleared
-// it even when the employee had only forgotten to tap OUT the day before --
-// which the write path itself no longer blocks -- so the shift picker
-// would silently vanish out from under someone mid-pick for a reason that
-// no longer applied. Use onShiftToday for that decision instead.
+// stay correct across an overnight shift), while onShiftToday mirrors
+// isOnShiftToday_ (Attendance.gs), a same-day-only check. Used to also
+// decide whether to clear a just-picked IN selection (a real incident,
+// 2026-10-01, happened using `onShift` for that instead -- see git history)
+// -- that use was removed 2026-10-02 along with the server-side
+// already_clocked_in guard it existed to pre-empt: re-selecting/re-tapping
+// IN now just records another row rather than getting rejected, so there's
+// nothing left to pre-emptively clear. Its one remaining job is keeping
+// KioskScreen's local day-scoped "checked in today" marker
+// (setLocalCheckedInToday/clearLocalCheckedInToday, see
+// applyServerBreakAndShiftState) accurate.
 export function kioskLookupPin(pin: string) {
   return postAction<{ name: string; shifts: string[]; onShift: boolean; onShiftToday: boolean; onBreak: boolean; breakStartedAt: string | null }>(
     'kioskLookupPin',
@@ -173,8 +176,20 @@ export function verifyKioskExitPin(pin: string) {
   return postAction<{}>('verifyKioskExitPin', { pin });
 }
 
+// onShift/onBreak/breakStartedAt: same meaning as kioskLookupPin's own
+// fields (currentShiftBreakState_, 48h-bounded, tolerant -- never a hard
+// gate), just precomputed for EVERY active employee at once
+// (bulkShiftBreakState_, Attendance.gs) instead of one at a time. Added
+// 2026-10-05 so a Kiosk that's never seen a given PIN before (a cross-
+// branch employee) still has a reasonably fresh, correct starting guess
+// for the Start Break button from this same already-every-30s-refreshed
+// call, instead of needing a live kioskLookupPin round-trip first -- see
+// employeeDirectory.ts/KioskScreen.tsx's tryLocalLookup for where this
+// gets used.
 export function kioskDirectory() {
-  return postAction<{ employees: { pin: string; name: string; shifts: string[] }[] }>('kioskDirectory', {});
+  return postAction<{
+    employees: { pin: string; name: string; shifts: string[]; onShift: boolean; onBreak: boolean; breakStartedAt: string | null }[];
+  }>('kioskDirectory', {});
 }
 
 // Device-wide daily background sync (see useScheduleSync) -- every active
