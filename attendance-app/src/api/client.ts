@@ -214,7 +214,8 @@ export function kioskSyncOffline(
   clientId: string,
   branch: string | null | undefined,
   shift: string | undefined,
-  durationMinutes?: number
+  durationMinutes?: number,
+  specialShiftSpansNextDay?: boolean
 ) {
   // remainingMinutes/totalMinutesUsedToday only ever come back set for a
   // synced BREAK_END (see recordOfflineSyncedBreak_ server-side) -- used to
@@ -228,7 +229,16 @@ export function kioskSyncOffline(
     clientId,
     branch: branch ?? undefined,
     shift,
-    durationMinutes
+    durationMinutes,
+    // Mirrors kioskCheckin's own param above -- added 2026-10-06 so a
+    // Special Shift that drops offline mid-flight (or is opened while
+    // already offline) can queue and sync like any other shift instead of
+    // silently losing its real shift string (recordOfflineSyncedAttendance_
+    // couldn't tell a Special submission apart from "no pick" without this
+    // flag, same as the live path needed it for the next-day Schedule
+    // write). See KioskScreen's queueOffline for where this gets threaded
+    // through.
+    specialShiftSpansNextDay: specialShiftSpansNextDay ? 'true' : undefined
   });
 }
 

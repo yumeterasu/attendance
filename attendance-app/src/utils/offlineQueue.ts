@@ -22,6 +22,14 @@ export type QueuedCheckin = {
   timestamp: string; // ISO -- the real moment the employee tapped, not whenever this eventually syncs
   branch: string | null; // this device's configured branch (see deviceBranch.ts) AT THE TIME OF THE TAP -- captured here, not re-read at sync time, in case the device's branch setting changes in between; meaningless for BREAK_START/BREAK_END, always null there
   shift: string | null; // the shift the employee picked (IN only -- always null for OUT/BREAK_START/BREAK_END); server ignores it for OUT and falls back to the admin-set schedule if null
+  // IN only, Special Shift only -- true when the picked Special Shift's own
+  // span crosses midnight, mirroring kioskCheckin's identically-named param.
+  // Added 2026-10-06: before this field existed, a Special Shift that ended
+  // up queued (offline from the start, or a live attempt that dropped
+  // mid-request) synced with its shift string surviving but this flag
+  // missing, so recordOfflineSyncedAttendance_ never wrote tomorrow's
+  // Schedule cell for an overnight span -- see that function's own comment.
+  specialShiftSpansNextDay?: boolean;
   breakDurationMinutes?: number; // BREAK_START only -- the employee's own pick (15/30/45/60), see handleKioskBreak_ server-side; absent for every other type
   // BREAK_END only -- this session's own locally-estimated duration, already
   // added to the on-device running total (see breakMinutesCache.ts) at
@@ -127,7 +135,8 @@ export async function enqueueCheckin(
   branch: string | null,
   shift: string | null,
   breakDurationMinutes?: number,
-  breakSessionMinutes?: number
+  breakSessionMinutes?: number,
+  specialShiftSpansNextDay?: boolean
 ): Promise<{ success: true; clientId: string } | { success: false }> {
   const entry: QueuedCheckin = {
     clientId: makeClientId(),
@@ -138,7 +147,8 @@ export async function enqueueCheckin(
     branch,
     shift,
     breakDurationMinutes,
-    breakSessionMinutes
+    breakSessionMinutes,
+    specialShiftSpansNextDay
   };
   try {
     await withQueueLock(async () => {
@@ -234,7 +244,17 @@ export async function flushQueue(): Promise<{ synced: number; remaining: number 
     }
     if (!next) break; // either truly empty, or every remaining entry's pin already failed this pass
 
-    const res = await kioskSyncOffline(next.pin, next.type, next.ot, next.timestamp, next.clientId, next.branch, next.shift ?? undefined, next.breakDurationMinutes);
+    const res = await kioskSyncOffline(
+      next.pin,
+      next.type,
+      next.ot,
+      next.timestamp,
+      next.clientId,
+      next.branch,
+      next.shift ?? undefined,
+      next.breakDurationMinutes,
+      next.specialShiftSpansNextDay
+    );
 
     try {
       await withQueueLock(async () => {

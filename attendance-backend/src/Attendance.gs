@@ -1142,7 +1142,8 @@ function handleKioskSyncOffline_(params) {
   }
 
   var result = recordOfflineSyncedAttendance_(
-    found.row.EmployeeID, params.type, timestamp, params.ot === 'true', params.clientId, params.branch, params.shift
+    found.row.EmployeeID, params.type, timestamp, params.ot === 'true', params.clientId, params.branch, params.shift,
+    params.specialShiftSpansNextDay === 'true'
   );
   if (result.error) return fail_(result.error, result.message);
   if (result.duplicate) return fail_('duplicate', 'Already recorded around this time, skipped as a duplicate');
@@ -2305,7 +2306,7 @@ function findLogEntryByClientId_(clientId) {
  * second row -- this function just returns the already-recorded result
  * instead of writing again.
  */
-function recordOfflineSyncedAttendance_(employeeId, type, timestamp, ot, clientId, punchBranch, shift) {
+function recordOfflineSyncedAttendance_(employeeId, type, timestamp, ot, clientId, punchBranch, shift, specialShiftSpansNextDay) {
   // Unconditional (unlike recordAttendance_'s conditional check against
   // log.headers -- that one's on the tight-timeout live path, this one
   // isn't) -- ClientId already needed this same unconditional call before
@@ -2360,20 +2361,34 @@ function recordOfflineSyncedAttendance_(employeeId, type, timestamp, ot, clientI
   var otMinutesForRow = '';
   var otQuartersForRow = '';
   var recordedTimestamp = timestamp; // overridden below for "Event" shifts -- see eventShiftOverrideTimestamp_
+  var writtenShift; // pickedShift or specialShift -- whatever the employee's own IN pick was, if anything (see the ShiftPicked column / Schedule-sheet write below) -- mirrors recordAttendance_'s identical variable
+  var specialShift = ''; // set below for IN, stays empty for OUT -- kept in this outer scope so the Schedule-write call after appendRow_ can still see it
 
   if (type === 'IN') {
     // Same picked-shift-wins-else-fall-back-to-schedule rule as the live
-    // path (recordAttendance_) -- see the comment there. Written back to
-    // the Schedule sheet dated by `timestamp` (the real moment the tap
-    // happened on the device, per this function's own doc comment), not
-    // whenever the sync request happens to reach the server.
-    var pickedShift = normalizeShiftChoice_(emp, shift);
-    var scheduledShift = pickedShift || getScheduledShift_(employeeId, timestamp);
-    if (scheduledShift) {
-      shiftForRow = scheduledShift;
-      recordedTimestamp = eventShiftOverrideTimestamp_(scheduledShift, timestamp, 'IN');
-      late = isLate_(scheduledShift, recordedTimestamp);
-      // The actual Schedule-sheet write (writeScheduleShiftCell_) happens
+    // path (recordAttendance_) -- see resolveSpecialOrPickedShift_'s own
+    // comment, shared by both. Written back to the Schedule sheet dated by
+    // `timestamp` (the real moment the tap happened on the device, per this
+    // function's own doc comment), not whenever the sync request happens to
+    // reach the server -- that's why `timestamp`, not "now", is passed as
+    // the reference below.
+    //
+    // Special Shift support added 2026-10-06 (real incident): before this,
+    // a Special Shift that ended up queued (offline from the start, or a
+    // live attempt that dropped mid-request -- see KioskScreen's onConfirm)
+    // synced here with its real shift string silently discarded
+    // (normalizeShiftChoice_ always rejects a Special string, by design --
+    // it's never on the employee's own shiftChoicesFor_ list), falling
+    // through to getScheduledShift_'s admin-set schedule instead and
+    // producing a wrong Late/OT.
+    var resolved = resolveSpecialOrPickedShift_(emp, employeeId, shift, timestamp);
+    specialShift = resolved.specialShift;
+    writtenShift = resolved.writtenShift;
+    if (resolved.scheduledShift) {
+      shiftForRow = resolved.scheduledShift;
+      recordedTimestamp = resolved.recordedTimestamp;
+      late = resolved.late;
+      // The actual Schedule-sheet write (writeShiftScheduleCells_) happens
       // AFTER appendRow_ below, not here -- see the comment there for why.
     }
   } else {
@@ -2419,12 +2434,14 @@ function recordOfflineSyncedAttendance_(employeeId, type, timestamp, ot, clientI
     OTQuarters: otQuartersForRow,
     PunchBranch: punchBranchForRow,
     // True only for an IN row whose Shift came from the employee's own
-    // Kiosk pick (pickedShift, set above) -- recomputeLateAndOt_ reads this
-    // to know it must never overwrite this row's Shift/Late from the
-    // Schedule sheet; it's already correct by definition, and the whole
-    // point of this feature is the Schedule sheet catches up to THIS
-    // value (see writeScheduleShiftCell_), not the other way around.
-    ShiftPicked: !!pickedShift
+    // Kiosk pick (writtenShift -- pickedShift or specialShift, set above) --
+    // recomputeLateAndOt_ reads this to know it must never overwrite this
+    // row's Shift/Late from the Schedule sheet; it's already correct by
+    // definition, and the whole point of this feature is the Schedule sheet
+    // catches up to THIS value (see writeScheduleShiftCell_), not the other
+    // way around. True for a Special submission too, same as a normal pick --
+    // mirrors recordAttendance_'s identical field.
+    ShiftPicked: !!writtenShift
   });
 
   // Deliberately AFTER the AttendanceLog append above, not before: that's
@@ -2435,18 +2452,17 @@ function recordOfflineSyncedAttendance_(employeeId, type, timestamp, ot, clientI
   // AttendanceLog row and no ShiftPicked flag to back it up, if appendRow_
   // itself then failed -- a half-committed state that's structurally
   // impossible with this ordering, since a thrown appendRow_ here means
-  // this line is simply never reached. try/catch, not a bare call -- see
-  // writeScheduleShiftCell_'s doc comment: a failure here must never be
-  // treated as the check-in having failed, since by this point it hasn't.
-  // Logger.log so a failure at least leaves SOME trace (View > Logs)
-  // instead of vanishing completely -- nothing reads this automatically,
-  // but it's the only record if an admin ever goes looking for why a
-  // Schedule cell doesn't match what was picked.
-  if (pickedShift) {
-    try { writeScheduleShiftCell_(employeeId, timestamp, pickedShift); } catch (e) {
-      Logger.log('writeScheduleShiftCell_ failed for ' + employeeId + ' on ' + timestamp + ': ' + e);
-    }
-  }
+  // this line is simply never reached. writeShiftScheduleCells_ wraps its
+  // own writes in try/catch, not a bare call -- see its doc comment: a
+  // failure there must never be treated as the check-in having failed,
+  // since by this point it hasn't. Logger.log so a failure at least leaves
+  // SOME trace (View > Logs) instead of vanishing completely -- nothing
+  // reads this automatically, but it's the only record if an admin ever
+  // goes looking for why a Schedule cell doesn't match what was picked.
+  // Dates everything off `timestamp` (the real tap time), not whenever this
+  // sync request happens to reach the server -- same reasoning as every
+  // other date use in this function.
+  writeShiftScheduleCells_(employeeId, timestamp, writtenShift, specialShift, specialShiftSpansNextDay);
 
   return {
     alreadySynced: false,
@@ -2528,6 +2544,78 @@ function recordOfflineSyncedBreak_(employeeId, type, timestamp, clientId, durati
   };
 }
 
+/**
+ * Shared IN-side shift resolution for recordAttendance_ (live) and
+ * recordOfflineSyncedAttendance_ (offline sync) -- the employee's own pick
+ * (normalizeShiftChoice_) wins when present; a well-formed ad-hoc
+ * "Special H:MM-H:MM" submission (isValidSpecialShiftSubmission_, never on
+ * the employee's own shiftChoicesFor_ list by design -- see that function's
+ * own comment) is considered next; otherwise falls back to the admin-filled
+ * monthly schedule (getScheduledShift_). Extracted 2026-10-06 after review
+ * found the two call sites had drifted into a ~25-line verbatim copy of
+ * each other (including this exact branch) -- any future tweak to this
+ * resolution (a new shift variant, a Late/OT rule change) now only needs to
+ * land in one place.
+ *
+ * `referenceTimestamp` is `now` for the live path, the queued tap's own
+ * original timestamp for the offline-sync path -- this function doesn't
+ * care which, it just uses whichever it's given for both the schedule
+ * lookup and (for a non-Special pick) the Event-shift override.
+ */
+function resolveSpecialOrPickedShift_(emp, employeeId, shift, referenceTimestamp) {
+  var pickedShift = normalizeShiftChoice_(emp, shift);
+  var specialShift = (!pickedShift && isValidSpecialShiftSubmission_(shift)) ? String(shift).trim() : '';
+  var scheduledShift = pickedShift || specialShift || getScheduledShift_(employeeId, referenceTimestamp);
+  var writtenShift = pickedShift || specialShift;
+  var recordedTimestamp = referenceTimestamp;
+  var late = '';
+  if (scheduledShift) {
+    if (specialShift) {
+      // Special Shift: keeps the REAL tap time always (unlike Event, never
+      // forced to the shift's own official start) -- Late/OT are simply
+      // never computed on top of that real time. See isSpecialShift_.
+      late = false;
+    } else {
+      recordedTimestamp = eventShiftOverrideTimestamp_(scheduledShift, referenceTimestamp, 'IN');
+      late = isLate_(scheduledShift, recordedTimestamp);
+    }
+  }
+  return { scheduledShift: scheduledShift, specialShift: specialShift, writtenShift: writtenShift, recordedTimestamp: recordedTimestamp, late: late };
+}
+
+/**
+ * Shared Schedule-sheet write for an IN whose shift the employee actually
+ * picked (writtenShift truthy) -- shared by recordAttendance_ and
+ * recordOfflineSyncedAttendance_, extracted alongside
+ * resolveSpecialOrPickedShift_ for the same reason (see its own comment).
+ * Deliberately takes the already-resolved writtenShift/specialShift rather
+ * than re-resolving anything -- callers call resolveSpecialOrPickedShift_
+ * first, append the AttendanceLog row, THEN call this. That ordering
+ * matters: the real AttendanceLog record must exist unconditionally before
+ * this best-effort side effect runs, so a thrown appendRow_ (this function
+ * never even reached) can't leave the Schedule sheet showing a picked shift
+ * with no row and no ShiftPicked flag to back it up.
+ */
+function writeShiftScheduleCells_(employeeId, timestamp, writtenShift, specialShift, specialShiftSpansNextDay) {
+  if (!writtenShift) return;
+  try { writeScheduleShiftCell_(employeeId, timestamp, writtenShift); } catch (e) {
+    Logger.log('writeScheduleShiftCell_ failed for ' + employeeId + ' on ' + timestamp + ': ' + e);
+  }
+  // Overnight Special Shift (e.g. 22:00 today -> 06:00 tomorrow): also write
+  // tomorrow's Schedule cell with the same string, so whichever day the real
+  // OUT tap (or lack of one) lands on, that day's own
+  // handleDashboardDaily_/buildMyAttendanceDays_ classification already sees
+  // "Special ..." rather than a blank cell that would otherwise read as an
+  // ordinary, un-punched workday (Absent). A separate try/catch so a failure
+  // writing one day never blocks the other.
+  if (specialShift && specialShiftSpansNextDay) {
+    var nextDay = new Date(timestamp.getFullYear(), timestamp.getMonth(), timestamp.getDate() + 1);
+    try { writeScheduleShiftCell_(employeeId, nextDay, writtenShift); } catch (e) {
+      Logger.log('writeScheduleShiftCell_ (next day) failed for ' + employeeId + ' on ' + nextDay + ': ' + e);
+    }
+  }
+}
+
 function recordAttendance_(employeeId, method, rawScanValue, type, ot, punchBranch, shift, specialShiftSpansNextDay) {
   var found = findEmployeeRow_(employeeId);
   if (!found) return fail_('not_found', 'Employee not found');
@@ -2591,33 +2679,23 @@ function recordAttendance_(employeeId, method, rawScanValue, type, ot, punchBran
   var recordedTimestamp = now; // overridden below for "Event" shifts -- see eventShiftOverrideTimestamp_
   var writtenShift; // pickedShift or specialShift -- whatever the employee's own IN pick was, if anything (see the ShiftPicked column / Schedule-sheet write below)
 
+  var specialShift = ''; // set below for IN, stays empty for OUT -- kept in this outer scope so the Schedule-write call after appendRow_ can still see it
+
   if (type === 'IN') {
     // The employee's own pick, validated against their shiftChoicesFor_,
     // wins when present; falls back to the admin-filled monthly schedule
     // otherwise -- an older app build that never sends `shift`, or one
     // that sent something invalid, behaves exactly as before this feature
-    // existed.
-    var pickedShift = normalizeShiftChoice_(emp, shift);
-    // A well-formed "Special H:MM-H:MM" submission is never on the
-    // employee's own approved list (normalizeShiftChoice_ always rejects
-    // it, by design -- see isValidSpecialShiftSubmission_), so it's only
-    // even considered once pickedShift has already come back empty.
-    var specialShift = (!pickedShift && isValidSpecialShiftSubmission_(shift)) ? String(shift).trim() : '';
-    var scheduledShift = pickedShift || specialShift || getScheduledShift_(employeeId, now);
-    writtenShift = pickedShift || specialShift;
-    if (scheduledShift) {
-      shiftForRow = scheduledShift;
-      if (specialShift) {
-        // Special Shift: keeps the REAL tap time always (unlike Event,
-        // never forced to the shift's own official start) -- Late/OT are
-        // simply never computed on top of that real time. See isSpecialShift_.
-        recordedTimestamp = now;
-        late = false;
-      } else {
-        recordedTimestamp = eventShiftOverrideTimestamp_(scheduledShift, now, 'IN');
-        late = isLate_(scheduledShift, recordedTimestamp);
-      }
-      // The actual Schedule-sheet write (writeScheduleShiftCell_) happens
+    // existed. See resolveSpecialOrPickedShift_'s own comment for the full
+    // Special-Shift resolution this now shares with recordOfflineSyncedAttendance_.
+    var resolved = resolveSpecialOrPickedShift_(emp, employeeId, shift, now);
+    specialShift = resolved.specialShift;
+    writtenShift = resolved.writtenShift;
+    if (resolved.scheduledShift) {
+      shiftForRow = resolved.scheduledShift;
+      recordedTimestamp = resolved.recordedTimestamp;
+      late = resolved.late;
+      // The actual Schedule-sheet write (writeShiftScheduleCells_) happens
       // AFTER appendRow_ below, not here -- see the comment there for why.
     }
   } else {
@@ -2677,25 +2755,10 @@ function recordAttendance_(employeeId, method, rawScanValue, type, ot, punchBran
 
   // Deliberately AFTER the AttendanceLog append above, not before -- see
   // the identical ordering (and the full reasoning) in
-  // recordOfflineSyncedAttendance_.
-  if (writtenShift) {
-    try { writeScheduleShiftCell_(employeeId, now, writtenShift); } catch (e) {
-      Logger.log('writeScheduleShiftCell_ failed for ' + employeeId + ' on ' + now + ': ' + e);
-    }
-    // Overnight Special Shift (e.g. 12:00 today -> 11:00 tomorrow): also
-    // write tomorrow's Schedule cell with the same string, so whichever day
-    // the real OUT tap (or lack of one) lands on, that day's own
-    // handleDashboardDaily_/buildMyAttendanceDays_ classification already
-    // sees "Special ..." rather than a blank cell that would otherwise read
-    // as an ordinary, un-punched workday (Absent). A separate try/catch so a
-    // failure writing one day never blocks the other.
-    if (specialShift && specialShiftSpansNextDay) {
-      var nextDay = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
-      try { writeScheduleShiftCell_(employeeId, nextDay, writtenShift); } catch (e) {
-        Logger.log('writeScheduleShiftCell_ (next day) failed for ' + employeeId + ' on ' + nextDay + ': ' + e);
-      }
-    }
-  }
+  // recordOfflineSyncedAttendance_. See writeShiftScheduleCells_'s own
+  // comment for why this is a no-op when writtenShift is empty, and for the
+  // overnight-Special-Shift next-day write.
+  writeShiftScheduleCells_(employeeId, now, writtenShift, specialShift, specialShiftSpansNextDay);
 
   return ok_({
     type: type,

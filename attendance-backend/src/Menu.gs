@@ -154,17 +154,38 @@ function menuFixLateInAsOut_() {
   var fixedCount = 0;
   var skipped = [];
 
-  // Pre-index every IN row by employee+date in one pass, instead of
-  // rescanning the whole AttendanceLog (already loaded in `values`) for
-  // each flagged entry below -- with mis-taps potentially numbering in the
-  // dozens, a fresh O(values.length) scan per entry adds up fast.
-  var inRowsByEmployeeDate = {};
+  // Reused for every flagged entry below via findStintStartInLog_
+  // (Attendance.gs) -- that's the SAME stint-aware pairing recordAttendance_/
+  // recordOfflineSyncedAttendance_/recordBackdatedAttendance_ already use
+  // (earliest IN since the most recent prior OUT, never the earliest IN of
+  // the whole day, and never a candidate at/after the reference timestamp).
+  // This function used to have its own third, independent copy of that same
+  // pairing logic with neither bound -- caught in review, 2026-10-06: it
+  // could pair against a legitimate morning IN straight through a real
+  // lunch OUT/IN (inflating duration by the whole lunch gap, the exact bug
+  // findStintStartInLog_'s own doc comment says was already caught and
+  // fixed ONCE elsewhere), and had no "must be strictly before this OUT"
+  // bound at all, so a duplicate IN that synced out of order could still
+  // get picked and produce a negative DurationMinutes.
+  //
+  // findStintStartInLog_ itself scans its ENTIRE `log.rows` (filtering by
+  // employee row-by-row, not pre-filtered) -- fine for its usual callers
+  // (one employee, one live/offline-sync request), but calling it once per
+  // FLAGGED entry against the whole `values` array, as a first version of
+  // this fix did, turned an O(rows) scan into O(flagged x rows): with
+  // AttendanceLog holding months of multi-branch history and mis-taps
+  // "potentially numbering in the dozens" (see the batching comment just
+  // below, written for the exact same concern), that regressed real work
+  // the old per-employee-date index had avoided. Pre-grouping rows by
+  // employee here, once, keeps the fix (still the one tested, shared
+  // pairing helper, not a second parallel implementation) while restoring
+  // the bound: each flagged entry's call now only scans ITS OWN employee's
+  // rows, not the whole sheet.
+  var rowsByEmployee = {};
   for (var r = 1; r < values.length; r++) {
-    if (values[r][typeCol] !== 'IN') continue;
-    var inTs = new Date(values[r][tsCol]);
-    var dateKey = String(values[r][idCol]) + '|' + inTs.getFullYear() + '-' + inTs.getMonth() + '-' + inTs.getDate();
-    if (!inRowsByEmployeeDate[dateKey]) inRowsByEmployeeDate[dateKey] = [];
-    inRowsByEmployeeDate[dateKey].push({ rowIndex: r, timestamp: inTs });
+    var empId = String(values[r][idCol]);
+    if (!rowsByEmployee[empId]) rowsByEmployee[empId] = [];
+    rowsByEmployee[empId].push(values[r]);
   }
 
   // Batch-fetch each month's Schedule sheet once instead of re-reading it
@@ -184,23 +205,22 @@ function menuFixLateInAsOut_() {
   };
 
   flagged.forEach(function (f) {
-    // Pair with that day's genuine earlier IN to compute duration -- if this
-    // mis-tap is the only IN that day, there's no real clock-in to pair with,
-    // so skip rather than guess at a duration.
-    var dateKey = f.employeeId + '|' + f.timestamp.getFullYear() + '-' + f.timestamp.getMonth() + '-' + f.timestamp.getDate();
-    var candidates = inRowsByEmployeeDate[dateKey] || [];
-    var realIn = null;
-    candidates.forEach(function (c) {
-      if (c.rowIndex === f.rowIndex) return;
-      if (!realIn || c.timestamp < realIn) realIn = c.timestamp;
-    });
+    // Pair with the IN that actually opened THIS stint (same logic the main
+    // IN/OUT recording path uses) -- if this mis-tap is the only IN that
+    // day, or every other IN that day already belongs to an earlier,
+    // already-closed stint, there's no real clock-in to pair with, so skip
+    // rather than guess at a duration. Scoped to just this employee's own
+    // rows (rowsByEmployee, built once above) -- see that comment for why,
+    // rather than handing findStintStartInLog_ the whole sheet every time.
+    var employeeLog = { headers: headers, rows: rowsByEmployee[f.employeeId] || [] };
+    var realIn = findStintStartInLog_(f.employeeId, f.timestamp, employeeLog);
 
     if (!realIn) {
       skipped.push(f.name + ' (' + Utilities.formatDate(f.timestamp, tz, 'dd/MM HH:mm') + ' -- no earlier IN that day to pair with)');
       return;
     }
 
-    var durationMinutes = Math.round((f.timestamp.getTime() - realIn.getTime()) / 60000);
+    var durationMinutes = Math.round((f.timestamp.getTime() - realIn.timestamp.getTime()) / 60000);
     var scheduledShift = scheduledShiftFor_(f.employeeId, f.timestamp);
     var otMinutesForRow = '';
     var otQuartersForRow = '';

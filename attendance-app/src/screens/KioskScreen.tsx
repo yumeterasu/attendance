@@ -14,7 +14,7 @@ import { lookupPinLocally } from '../utils/employeeDirectory';
 import { enqueueCheckin } from '../utils/offlineQueue';
 import { setLocalOnBreak, getLocalBreakStartedAt, getTrustedLocalBreakState, adoptDirectoryBreakState } from '../utils/breakState';
 import { addEstimatedOfflineBreakMinutes, setConfirmedTotalMinutesToday } from '../utils/breakMinutesCache';
-import { setLocalCheckedInToday, getLocalCheckedInToday, clearLocalCheckedInToday } from '../utils/checkinState';
+import { setLocalCheckedInToday, getLocalCheckedInRecordToday, clearLocalCheckedInToday } from '../utils/checkinState';
 import { getDeviceBranch } from '../utils/deviceBranch';
 import {
   cacheScheduleMonth,
@@ -773,8 +773,8 @@ export default function KioskScreen({ navigation }: Props) {
     // re-lookup, not just the rare cross-device race that correction exists
     // for. alreadyCheckedInToday doesn't have this problem -- tryLocalLookup
     // DOES set it, from the already-accurate, already-day-bounded
-    // getLocalCheckedInToday local marker (checkinState.ts), whose own doc
-    // comment already accepts being wrong here as "a minor annoyance, never
+    // getLocalCheckedInRecordToday local marker (checkinState.ts), whose own
+    // doc comment already accepts being wrong here as "a minor annoyance, never
     // a block" -- exactly the tolerance this decision needs. The rarer
     // cross-device case (checked in on a different tablet, this one's local
     // marker doesn't know) can still flicker once this effect's own default
@@ -809,9 +809,9 @@ export default function KioskScreen({ navigation }: Props) {
     // could fire once against a stale "not checked in yet" default and
     // never get a second chance to correct itself. Setting everything
     // together here lands it all in the same render instead.
-    const [{ trusted: hasFreshBreakRecord, onBreak: onBreakNow }, checkedInNow] = await Promise.all([
+    const [{ trusted: hasFreshBreakRecord, onBreak: onBreakNow }, { hasRecord: hasLocalCheckinRecordToday, checkedIn: checkedInNow }] = await Promise.all([
       getTrustedLocalBreakState(value),
-      getLocalCheckedInToday(value)
+      getLocalCheckedInRecordToday(value)
     ]);
     setLookupName(local.name);
     applyShiftChoices(local.shifts);
@@ -859,7 +859,21 @@ export default function KioskScreen({ navigation }: Props) {
       // best-effort convention as every other local-cache write here.
       adoptDirectoryBreakState(value, local.onBreak ? local.breakStartedAt || new Date().toISOString() : null);
     }
-    setAlreadyCheckedInToday(local.onShift || checkedInNow);
+    // Same structural fix as the break-state one above, lower stakes: a
+    // plain `local.onShift || checkedInNow` OR let a stale cross-branch
+    // directory onShift=true win even right after a genuine OUT on THIS
+    // device correctly cleared checkedInNow to false (clearLocalCheckedInToday
+    // used to delete the key instead of recording the clear -- see
+    // checkinState.ts's own comment). Only ever a VISIBILITY bug (this
+    // marker gates whether the Break button shows, never an actual action --
+    // a wrongly-shown button still gets rejected server-side with
+    // already_clocked_out), so it was lower priority than the break-state
+    // fix, but the same priority rule applies: trust this device's own
+    // record for today whenever it has one (checked in OR explicitly
+    // cleared), and fall back to the directory only when this device never
+    // heard anything about this PIN today at all (the genuine first-ever-
+    // cross-branch-lookup case).
+    setAlreadyCheckedInToday(hasLocalCheckinRecordToday ? checkedInNow : local.onShift);
     // Deliberately NOT setOnShiftToday(checkedInNow) here, unlike
     // alreadyCheckedInToday just above -- checkedInNow is THIS device's own
     // local marker, which checkinState.ts's own doc comment says can be
@@ -1026,7 +1040,8 @@ export default function KioskScreen({ navigation }: Props) {
     ot: boolean,
     branch: string | null,
     shift: string | null,
-    breakDurationMinutes?: number
+    breakDurationMinutes?: number,
+    specialShiftSpansNextDay?: boolean
   ) => {
     const name = lookupName ?? '';
     const currentPin = pin; // captured before resetCheckin below clears it -- setLocalOnBreak needs the real PIN
@@ -1043,7 +1058,7 @@ export default function KioskScreen({ navigation }: Props) {
         breakSessionMinutes = Math.max(0, Math.round((Date.now() - new Date(startedAt).getTime()) / 60000));
       }
     }
-    const result = await enqueueCheckin(pin, type, ot, branch, shift, breakDurationMinutes, breakSessionMinutes);
+    const result = await enqueueCheckin(pin, type, ot, branch, shift, breakDurationMinutes, breakSessionMinutes, specialShiftSpansNextDay);
     if (!result.success) {
       // Could not actually persist this locally (e.g. device storage full
       // or corrupted) -- must never show the "saved offline" success below
@@ -1233,31 +1248,39 @@ export default function KioskScreen({ navigation }: Props) {
     try {
       const shift = type === 'IN' ? selectedShift : null;
       const branch = await getDeviceBranch();
+      // Computed once, used at every call site below (the already-offline
+      // queueOffline, the live kioskCheckin, and the dropped-mid-request
+      // queueOffline fallback) -- type/specialShiftOpen/specialEndsNextDay
+      // are all stable for the rest of this onConfirm invocation, so
+      // recomputing this same ternary three times independently would just
+      // be three copies that could silently drift apart later.
+      const specialShiftSpansNextDay = type === 'IN' && specialShiftOpen ? specialEndsNextDay : undefined;
 
       if (!isConnected || forcedOffline) {
-        // Special Shift needs a live server round trip -- it's the one Kiosk
-        // action deliberately NOT wired into the offline queue (see
-        // openSpecialShift/specialShiftOpen), since a genuinely rare,
-        // ad-hoc action doesn't justify extending enqueueCheckin's payload
-        // shape and the sync/replay path just for this. Shown as a normal
-        // error, same as any other rejected tap, rather than silently
-        // falling through to queueOffline with a Special shift string it
-        // was never designed to carry.
-        if (type === 'IN' && specialShiftOpen) {
-          resetCheckin();
-          await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-          showFeedback({
-            kind: 'error',
-            message: 'Special Shift needs an internet connection -- try again once connected.\nกะพิเศษต้องเชื่อมต่ออินเทอร์เน็ต ลองใหม่อีกครั้งเมื่อเชื่อมต่อแล้ว'
-          });
-          return;
-        }
-        await queueOffline(type, ot, branch, shift);
+        // Special Shift used to need a live server round trip -- deliberately
+        // NOT wired into the offline queue (see openSpecialShift/
+        // specialShiftOpen), on the reasoning that a genuinely rare, ad-hoc
+        // action didn't justify extending enqueueCheckin's payload shape and
+        // the sync/replay path just for this. Real incident, 2026-10-06: that
+        // reasoning only held for THIS branch (offline from the very start,
+        // caught here) -- the OTHER fallback below (a live attempt that drops
+        // mid-request) had no equivalent guard at all, and silently queued the
+        // Special shift string anyway with no field to carry its
+        // next-day-span flag, so it synced with the string surviving but
+        // recordOfflineSyncedAttendance_ unable to recognize it as Special
+        // (never on the employee's own shiftChoicesFor_ list, by design) --
+        // Late/OT silently computed against the wrong fallback shift instead.
+        // Rather than extend that narrower guard to also cover this branch
+        // (which would just make both branches equally restrictive), the
+        // queue itself was extended instead (specialShiftSpansNextDay, see
+        // QueuedCheckin/kioskSyncOffline) so Special Shift now queues and
+        // syncs correctly from either branch, same as any other shift.
+        await queueOffline(type, ot, branch, shift, undefined, specialShiftSpansNextDay);
         return;
       }
 
       const currentPin = pin; // captured before resetCheckin below clears it -- setLocalOnBreak needs the real PIN
-      const res = await kioskCheckin(pin, type, ot, branch, shift ?? undefined, type === 'IN' && specialShiftOpen && specialEndsNextDay);
+      const res = await kioskCheckin(pin, type, ot, branch, shift ?? undefined, specialShiftSpansNextDay);
 
       if (res.success) {
         resetCheckin();
@@ -1293,8 +1316,13 @@ export default function KioskScreen({ navigation }: Props) {
         } catch {}
         showFeedback({ kind: 'success', type: res.type, name: res.name, timestamp: res.timestamp, late: res.late, ot: res.ot });
       } else if (res.error === 'timeout' || res.error === 'network_error') {
-        // Connection dropped mid-request -- queue it rather than making them retry manually.
-        await queueOffline(type, ot, branch, shift);
+        // Connection dropped mid-request -- queue it rather than making them
+        // retry manually. specialShiftSpansNextDay (computed once above)
+        // threaded through same as the already-offline branch -- this
+        // fallback is the one that actually caused the real 2026-10-06
+        // incident, since it had no Special-Shift handling at all before
+        // this fix.
+        await queueOffline(type, ot, branch, shift, undefined, specialShiftSpansNextDay);
       } else {
         resetCheckin();
         await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
