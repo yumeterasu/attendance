@@ -12,7 +12,7 @@ import { useScheduleSync } from '../hooks/useScheduleSync';
 import { useSession } from '../context/SessionContext';
 import { lookupPinLocally } from '../utils/employeeDirectory';
 import { enqueueCheckin } from '../utils/offlineQueue';
-import { setLocalOnBreak, getLocalBreakStartedAt, getTrustedLocalBreakState } from '../utils/breakState';
+import { setLocalOnBreak, getLocalBreakStartedAt, getTrustedLocalBreakState, adoptDirectoryBreakState } from '../utils/breakState';
 import { addEstimatedOfflineBreakMinutes, setConfirmedTotalMinutesToday } from '../utils/breakMinutesCache';
 import { setLocalCheckedInToday, getLocalCheckedInToday, clearLocalCheckedInToday } from '../utils/checkinState';
 import { getDeviceBranch } from '../utils/deviceBranch';
@@ -823,33 +823,41 @@ export default function KioskScreen({ navigation }: Props) {
     // this same lookup): the directory hadn't caught up yet, so its stale
     // onBreak=true got OR'd back in and Back from Break reappeared for an
     // employee who'd already genuinely ended their break. Fixed by giving
-    // this device's OWN record priority whenever it's still fresh enough to
-    // trust (getTrustedLocalBreakState -- true for a couple minutes after
-    // this device last confirmed EITHER on-break or confirmed-not, see
-    // breakState.ts's v2 comment) -- only fall back to the directory once
-    // this device's own record has gone stale (or never existed at all,
-    // the genuine first-ever-cross-branch-lookup case the 2026-10-05 fix
-    // was actually for). The time bound matters, not just "has a record at
-    // all" -- an unbounded version of this fix would just move the same
-    // staleness bug to a rarely-visited device that adopted a directory
-    // snapshot once and then never refreshed its opinion again. Still just
-    // a convenience default either way, same as before -- never a hard
-    // gate, and the background reconciliation below still runs and
-    // corrects it from the live server answer regardless.
+    // this device's OWN record priority whenever it's trusted
+    // (getTrustedLocalBreakState) -- only fall back to the directory when
+    // this device never confirmed anything about this PIN itself (the
+    // genuine first-ever-cross-branch-lookup case the 2026-10-05 fix was
+    // actually for).
+    //
+    // Same-day follow-up: trusted used to mean "confirmed within the last
+    // LOCAL_TRUST_WINDOW_MS", which let the exact same bug recur once that
+    // window elapsed while still offline (the directory, equally unable to
+    // refresh offline, was still showing the stale pre-action value) --
+    // the business requirement is that this device's own confirmed state
+    // must show the right button with or without server access, forever,
+    // not just for a couple minutes. getTrustedLocalBreakState now trusts a
+    // real local confirmation unconditionally and keeps the bounded window
+    // only for a directory-adopted guess (see breakState.ts's comments on
+    // 'confirmed' vs 'adopted') -- so hasFreshBreakRecord is true exactly
+    // when this device actually knows, not just "knew recently". Still
+    // just a convenience default either way, never a hard gate -- the
+    // background reconciliation below still runs and corrects it from the
+    // live server answer whenever one's reachable.
     const onBreakResolved = hasFreshBreakRecord ? onBreakNow : local.onBreak;
     setOnBreak(onBreakResolved);
     if (!hasFreshBreakRecord) {
-      // This device's own record is stale or never existed -- adopt the
-      // directory's answer now, so a LATER lookup on this same device
-      // (even a cross-branch one) trusts itself correctly instead of
-      // re-consulting a directory that might have gone stale by then.
-      // Derived from local.onBreak directly (not re-inferred from
+      // This device never confirmed anything about this PIN itself --
+      // adopt the directory's answer now (tagged 'adopted', not
+      // 'confirmed' -- see adoptDirectoryBreakState), so a LATER lookup on
+      // this same device (even a cross-branch one) trusts itself correctly
+      // instead of re-consulting a directory that might have gone stale by
+      // then. Derived from local.onBreak directly (not re-inferred from
       // local.breakStartedAt) with a "now" fallback for startedAt --
       // bulkShiftBreakState_ (Attendance.gs) never actually sends
       // onBreak=true with a null breakStartedAt, but this doesn't silently
       // assume that invariant holds forever either. Not awaited, same
       // best-effort convention as every other local-cache write here.
-      setLocalOnBreak(value, local.onBreak ? local.breakStartedAt || new Date().toISOString() : null);
+      adoptDirectoryBreakState(value, local.onBreak ? local.breakStartedAt || new Date().toISOString() : null);
     }
     setAlreadyCheckedInToday(local.onShift || checkedInNow);
     // Deliberately NOT setOnShiftToday(checkedInNow) here, unlike

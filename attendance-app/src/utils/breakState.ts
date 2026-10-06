@@ -33,6 +33,49 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 // had long since caught up -- just the Kahana bug again, in the opposite
 // direction. See getTrustedLocalBreakState and its caller in
 // KioskScreen.tsx's tryLocalLookup for how this gets used.
+//
+// `source` added 2026-10-06, same day, follow-up: the 2-minute window above
+// turned out to still let the ORIGINAL Kahana bug recur, just delayed --
+// a device that genuinely confirmed its own Back from Break (ground truth,
+// not a guess) would still fall back to a stale directory read once
+// LOCAL_TRUST_WINDOW_MS elapsed, and if that device stayed offline the
+// whole time (the realistic case for a bug that's about trusting the
+// network less), the directory could never have refreshed either --
+// recreating the exact wrong-button bug, just 2 minutes later instead of
+// immediately. The business requirement this device's own confirmed
+// actions must never show the wrong button, with or without server access,
+// at all, forever -- a time-bound trust window can't deliver that for data
+// that was never uncertain in the first place. So every WRITE here now
+// tags itself 'confirmed' (this device's own real action, or a
+// server-authoritative correction -- every existing call site is one of
+// these) or 'adopted' (a guess picked up from the org-wide directory when
+// this device never actually confirmed anything about this PIN itself --
+// today, only tryLocalLookup's cross-branch fallback writes this kind, via
+// adoptDirectoryBreakState). getTrustedLocalBreakState trusts 'confirmed'
+// unconditionally, no timer at all -- it's this device's own ground truth,
+// never stale by definition. 'adopted' keeps the original bounded
+// LOCAL_TRUST_WINDOW_MS treatment, since it genuinely is just a guess from
+// a periodically-refreshed cache and SHOULD defer back to a fresher
+// directory read once enough time has passed (that fallback changes
+// nothing in practice -- it just re-reads the same directory cache this
+// value came from, or a newer one).
+//
+// A record with no `source` at all (written by the v1.19.1 build this
+// patch replaces, or migrated from its v1 predecessor) is NOT treated as
+// 'confirmed' by default -- caught in review before shipping: v1.19.1's
+// own tryLocalLookup already had a cross-branch directory-adoption branch
+// that called the old undifferentiated setLocalOnBreak, so some
+// source-less records on devices in the field right now genuinely ARE
+// guesses, not ground truth. Defaulting them to 'confirmed' would trust a
+// stale guess forever -- the reverse-Kahana bug this whole file exists to
+// prevent. There's no way to tell, after the fact, which source-less
+// record is which, so getTrustedLocalBreakState treats anything that
+// isn't explicitly 'confirmed' (including 'adopted' and missing) through
+// the same bounded path -- the only downside is a pre-existing genuinely-
+// confirmed record gets the old 2-minute treatment instead of permanent
+// trust for a short transition window, which heals itself the next time
+// this device confirms any real action for that PIN (every new write from
+// setLocalOnBreak is explicitly tagged going forward).
 const KEY = 'kiosk_break_state_v2';
 // Old shape, read once for a best-effort migration (see readMap) then
 // never touched again -- not deleted, just superseded.
@@ -44,7 +87,14 @@ const LEGACY_KEY = 'kiosk_break_state_v1';
 // doesn't get trusted indefinitely once the real state has moved on.
 const LOCAL_TRUST_WINDOW_MS = 2 * 60 * 1000;
 
-type BreakRecord = { onBreak: boolean; startedAt: string | null; recordedAt: number };
+// `source` is optional for backward compat with records already written by
+// v1.19.1 (shipped hours before this field existed) -- NOT defaulted to
+// 'confirmed' when absent, since v1.19.1's own tryLocalLookup already had
+// the cross-branch directory-adoption branch, so a source-less record in
+// the field could genuinely be either kind. getTrustedLocalBreakState
+// below treats anything that isn't explicitly 'confirmed' as the bounded
+// case -- see this file's own top-of-file comment for the full reasoning.
+type BreakRecord = { onBreak: boolean; startedAt: string | null; recordedAt: number; source?: 'confirmed' | 'adopted' };
 
 async function readMap(): Promise<Record<string, BreakRecord>> {
   try {
@@ -84,7 +134,17 @@ async function readMap(): Promise<Record<string, BreakRecord>> {
       const now = Date.now();
       Object.keys(legacy).forEach((pin) => {
         const startedAt = legacy[pin];
-        if (typeof startedAt === 'string') migrated[pin] = { onBreak: true, startedAt, recordedAt: now };
+        // Left as 'adopted' (via the default parameter below), NOT
+        // 'confirmed' -- caught in review: the 2026-10-05 cross-branch
+        // Start Break fix landed a day BEFORE v2 existed, and its
+        // directory-adoption branch wrote through this same v1 shape/key,
+        // so a legacy entry here could genuinely be either a real local
+        // confirmation or an adopted directory guess -- no way to tell
+        // which after the fact. 'adopted' is the safe default (bounded
+        // LOCAL_TRUST_WINDOW_MS instead of permanent trust) for the same
+        // reason explained at this file's own top-of-file comment on
+        // `source`.
+        if (typeof startedAt === 'string') migrated[pin] = { onBreak: true, startedAt, recordedAt: now, source: 'adopted' };
       });
     }
   } catch {
@@ -106,11 +166,42 @@ async function readMap(): Promise<Record<string, BreakRecord>> {
  * this apart from a PIN this device has simply never heard anything about.
  * Best-effort; a failure here just means the offline fallback guesses "not
  * on break" for this PIN next time, same as before this existed.
+ *
+ * Every current caller is this device's own real action (an onConfirm
+ * success, online or offline-queued) or a server-authoritative correction
+ * (a live lookup's reconciled state, or an offline-queue sync
+ * rejection) -- genuine ground truth, never a guess -- so this always tags
+ * the record 'confirmed', which getTrustedLocalBreakState then trusts with
+ * no expiry. A write that's only a guess picked up from the directory, not
+ * this device's own knowledge, must go through adoptDirectoryBreakState
+ * instead, not this function.
  */
 export async function setLocalOnBreak(pin: string, startedAt: string | null): Promise<void> {
   try {
     const map = await readMap();
-    map[pin] = { onBreak: !!startedAt, startedAt, recordedAt: Date.now() };
+    map[pin] = { onBreak: !!startedAt, startedAt, recordedAt: Date.now(), source: 'confirmed' };
+    await AsyncStorage.setItem(KEY, JSON.stringify(map));
+  } catch {
+    // ignore
+  }
+}
+
+/**
+ * Same shape and parameters as setLocalOnBreak, for the one case that
+ * ISN'T this device's own knowledge: tryLocalLookup's cross-branch
+ * fallback, adopting the org-wide directory's onBreak for a PIN this
+ * device has never itself confirmed anything about. Tags the record
+ * 'adopted' so getTrustedLocalBreakState keeps the original bounded
+ * LOCAL_TRUST_WINDOW_MS treatment for it instead of trusting it forever --
+ * it's a guess from a periodically-refreshed cache, not ground truth, and
+ * should defer back to a fresher directory read once enough time has
+ * passed (seamless either way -- that just re-reads the same cache this
+ * value came from, or a newer one).
+ */
+export async function adoptDirectoryBreakState(pin: string, startedAt: string | null): Promise<void> {
+  try {
+    const map = await readMap();
+    map[pin] = { onBreak: !!startedAt, startedAt, recordedAt: Date.now(), source: 'adopted' };
     await AsyncStorage.setItem(KEY, JSON.stringify(map));
   } catch {
     // ignore
@@ -127,25 +218,49 @@ export async function getLocalBreakStartedAt(pin: string): Promise<string | null
  * Combined, single-read accessor for tryLocalLookup's hot path (every PIN
  * entry on the Kiosk) -- one AsyncStorage round trip instead of two
  * separate ones for what used to be getLocalOnBreak + a standalone
- * "has any record" check. `trusted` is true only when this device has a
- * record that's still within LOCAL_TRUST_WINDOW_MS of when it was last
- * confirmed (by a real local action OR an earlier directory adoption) --
- * see this file's own v2 comment for why that bound exists. When
- * `trusted` is false, `onBreak` is meaningless (always false) -- the
- * caller is expected to fall back to a fresher source (the directory)
- * instead of using it.
+ * "has any record" check. When `trusted` is false, `onBreak` is
+ * meaningless (always false) -- the caller is expected to fall back to a
+ * fresher source (the directory) instead of using it.
+ *
+ * 'confirmed' records (this device's own real action, or a
+ * server-authoritative correction -- see setLocalOnBreak) are trusted
+ * UNCONDITIONALLY, no matter how much time has passed or whether this
+ * device has been offline the whole time -- real incident, 2026-10-06
+ * (Kahana, follow-up): trusting even a device's own ground truth for only
+ * LOCAL_TRUST_WINDOW_MS let the original wrong-button bug recur once that
+ * window elapsed while still offline (the directory, also unable to
+ * refresh while offline, was still showing the pre-action value). Data
+ * that was never a guess in the first place has no reason to expire.
+ *
+ * 'adopted' records (a guess picked up from the org-wide directory for a
+ * PIN this device never itself confirmed -- see adoptDirectoryBreakState)
+ * keep the original bounded LOCAL_TRUST_WINDOW_MS treatment, since those
+ * genuinely are just a snapshot of a periodically-refreshed cache and
+ * should defer back to a fresher read of it once enough time has passed.
+ * A record with no `source` at all (predates this distinction -- written
+ * by v1.19.1, or migrated from v1) is deliberately treated the SAME as
+ * 'adopted', not 'confirmed' -- v1.19.1's own tryLocalLookup already had
+ * the cross-branch directory-adoption branch writing through the
+ * undifferentiated setLocalOnBreak, so a source-less record in the field
+ * could genuinely be either kind, and defaulting the ambiguous case to
+ * permanent trust would risk freezing a stale guess forever (see
+ * BreakRecord's own comment). Checked as `=== 'confirmed'`, not
+ * `!== 'adopted'`, so both 'adopted' and missing take the bounded path.
  */
 export async function getTrustedLocalBreakState(pin: string): Promise<{ trusted: boolean; onBreak: boolean }> {
   const map = await readMap();
   const record = map[pin];
   if (record) {
+    if (record.source === 'confirmed') {
+      return { trusted: true, onBreak: record.onBreak };
+    }
     // elapsed >= 0 guards against a backward device-clock adjustment (an
     // NTP resync after being offline, or a manual time change) between
     // writing and reading this record -- without it, `Date.now() -
     // recordedAt` going negative would always pass `< LOCAL_TRUST_WINDOW_MS`
     // and trust a record indefinitely, exactly the "trusts itself forever"
-    // failure mode this whole trust window exists to prevent (see this
-    // file's own v2 comment).
+    // failure mode this bound exists to prevent for a genuine guess (see
+    // this file's own v2 comment).
     const elapsed = Date.now() - record.recordedAt;
     if (elapsed >= 0 && elapsed < LOCAL_TRUST_WINDOW_MS) {
       return { trusted: true, onBreak: record.onBreak };
