@@ -1425,7 +1425,7 @@ export default function KioskScreen({ navigation }: Props) {
       setSchedulePin('');
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       setScheduleAuthPin(value);
-      setScheduleData({ name: res.name, year: res.year, month: res.month, days: res.days });
+      setScheduleData({ name: res.name, year: res.year, month: res.month, days: res.days, otUnit: res.otUnit, otMinutesTotal: res.otMinutesTotal, otQuartersTotal: res.otQuartersTotal });
       setScheduleIsStale(false);
       setScheduleStaleAt(null);
       setMode('scheduleResult');
@@ -1437,7 +1437,7 @@ export default function KioskScreen({ navigation }: Props) {
       syncScheduleHistory(value);
       // Refreshes the fallback used below the next time a live fetch fails
       // for this PIN. Fire-and-forget, same reasoning as syncScheduleHistory.
-      cacheCurrentScheduleSnapshot(value, { name: res.name, year: res.year, month: res.month, days: res.days });
+      cacheCurrentScheduleSnapshot(value, { name: res.name, year: res.year, month: res.month, days: res.days, otUnit: res.otUnit, otMinutesTotal: res.otMinutesTotal, otQuartersTotal: res.otQuartersTotal });
     } else if (res.error === 'timeout' || res.error === 'network_error') {
       // Connection dropped, or the backend was just slow/cold this moment --
       // rather than leaving the employee stuck on a bare error screen, fall
@@ -1465,7 +1465,7 @@ export default function KioskScreen({ navigation }: Props) {
         setSchedulePin('');
         await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
         setScheduleAuthPin(value);
-        setScheduleData({ name: cached.name, year: cached.year, month: cached.month, days: cached.days });
+        setScheduleData({ name: cached.name, year: cached.year, month: cached.month, days: cached.days, otUnit: cached.otUnit, otMinutesTotal: cached.otMinutesTotal, otQuartersTotal: cached.otQuartersTotal });
         setScheduleIsStale(true);
         setScheduleStaleAt(cached.fetchedAt);
         setMode('scheduleResult');
@@ -1503,7 +1503,7 @@ export default function KioskScreen({ navigation }: Props) {
     const now = new Date();
     const writes = res.months
       .filter((m) => !(m.year === now.getFullYear() && m.month === now.getMonth() + 1))
-      .map((m) => cacheScheduleMonth(pin, { name: res.name, year: m.year, month: m.month, days: m.days }));
+      .map((m) => cacheScheduleMonth(pin, { name: res.name, year: m.year, month: m.month, days: m.days, otUnit: m.otUnit, otMinutesTotal: m.otMinutesTotal, otQuartersTotal: m.otQuartersTotal }));
     await Promise.all(writes);
   };
 
@@ -1553,14 +1553,14 @@ export default function KioskScreen({ navigation }: Props) {
     setIsChangingScheduleMonth(false);
 
     if (res.success) {
-      setScheduleData({ name: res.name, year: res.year, month: res.month, days: res.days });
+      setScheduleData({ name: res.name, year: res.year, month: res.month, days: res.days, otUnit: res.otUnit, otMinutesTotal: res.otMinutesTotal, otQuartersTotal: res.otQuartersTotal });
       // Any successful live fetch here -- past month or current -- proves
       // the server is reachable right now, so whatever stale-fallback
       // banner might still be up from an earlier failed load no longer applies.
       setScheduleIsStale(false);
       setScheduleStaleAt(null);
       if (isCurrentMonth) {
-        cacheCurrentScheduleSnapshot(scheduleAuthPin, { name: res.name, year: res.year, month: res.month, days: res.days });
+        cacheCurrentScheduleSnapshot(scheduleAuthPin, { name: res.name, year: res.year, month: res.month, days: res.days, otUnit: res.otUnit, otMinutesTotal: res.otMinutesTotal, otQuartersTotal: res.otQuartersTotal });
       }
     } else {
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
@@ -1807,7 +1807,19 @@ export default function KioskScreen({ navigation }: Props) {
                             {(cell.entry.late || cell.entry.ot) && (
                               <View style={styles.calendarDotsRow}>
                                 {cell.entry.late && <View style={[styles.calendarDot, styles.calendarDotLate]} />}
-                                {cell.entry.ot && <View style={[styles.calendarDot, styles.calendarDotOt]} />}
+                                {cell.entry.ot && (
+                                  // The actual OT amount, not just a dot (added
+                                  // 2026-10-07) -- unit comes from scheduleData.otUnit
+                                  // (a per-EMPLOYEE fact, same for every day this
+                                  // month), never inferred from which of
+                                  // otMinutes/otQuarters happens to be nonzero on
+                                  // THIS day -- see ScheduleDay's own comment in
+                                  // client.ts for why that distinction matters.
+                                  <Text style={styles.calendarOtAmount}>
+                                    +{scheduleData.otUnit === 'minutes' ? cell.entry.otMinutes : cell.entry.otQuarters}
+                                    {scheduleData.otUnit === 'minutes' ? 'm' : 'q'}
+                                  </Text>
+                                )}
                               </View>
                             )}
                           </>
@@ -1828,9 +1840,24 @@ export default function KioskScreen({ navigation }: Props) {
             <Text style={styles.legendText}>Late</Text>
           </View>
           <View style={styles.legendItem}>
-            <View style={[styles.calendarDot, styles.calendarDotOt]} />
+            {/* Text sample, not a dot -- matches what a day with OT actually
+                shows now (see the cell render above), not the old plain dot. */}
+            <Text style={[styles.calendarOtAmount, styles.legendOtSample]}>+{scheduleData.otUnit === 'minutes' ? '45m' : '2q'}</Text>
             <Text style={styles.legendText}>OT</Text>
           </View>
+        </View>
+
+        {/* Month total, always labeled with the same otUnit as every day's
+            own amount above -- shown even when both totals are 0 (see
+            ScheduleDay/kioskMyAttendance's own comments in client.ts for why
+            this can't just be inferred from whichever total is nonzero). */}
+        <View style={styles.otSummaryRow}>
+          <Text style={styles.otSummaryText}>
+            Total OT this month / OT รวมเดือนนี้:{' '}
+            {scheduleData.otUnit === 'minutes'
+              ? `${scheduleData.otMinutesTotal} min`
+              : `${scheduleData.otQuartersTotal} quarter${scheduleData.otQuartersTotal === 1 ? '' : 's'}`}
+          </Text>
         </View>
 
         <Pressable
@@ -2734,8 +2761,15 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     textAlign: 'center'
   },
-  calendarWrap: { width: '100%', maxWidth: 500, maxHeight: '62%' },
-  calendarWeekRow: { flexDirection: 'row', width: '100%', maxWidth: 500 },
+  // Enlarged 2026-10-07 (500/62% -> 720/72%) to make room for each day's OT
+  // amount text alongside the existing time-in/time-out -- on the real
+  // Kiosk device (Xiaomi Redmi Pad SE 8.7, portrait 800x1340) the container's
+  // own 24px padding leaves ~752px of width, so 720 still fits with a small
+  // margin either side; the extra scroll height comes out of the same
+  // screen that already had room to spare above (title/month-nav) and below
+  // (legend/summary/Done button) this grid.
+  calendarWrap: { width: '100%', maxWidth: 720, maxHeight: '72%' },
+  calendarWeekRow: { flexDirection: 'row', width: '100%', maxWidth: 720 },
   calendarHeaderCell: {
     flex: 1,
     textAlign: 'center',
@@ -2764,15 +2798,25 @@ const styles = StyleSheet.create({
   calendarNote: { color: TEXT_MUTED, fontSize: 10, fontFamily: FONT_BODY_BOLD, marginTop: 3, textAlign: 'center', paddingHorizontal: 2 },
   calendarNoteHoliday: { color: '#B8631A' },
   calendarNoteLeave: { color: '#C0392B' },
-  calendarDotsRow: { flexDirection: 'row', gap: 4, marginTop: 3 },
+  calendarDotsRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 3 },
   calendarDot: { width: 7, height: 7, borderRadius: 3.5 },
   calendarDotLate: { backgroundColor: '#c0392b' },
-  calendarDotOt: {
-    backgroundColor: SAGE // green -- amber (BUTTER, matching the OT check-in button) read too close to Late's red at this dot's small size
-  },
+  // Replaces the old plain OT dot with the actual amount (added
+  // 2026-10-07) -- kept the same green (SAGE, previously calendarDotOt's
+  // background) so the color coding an employee already associates with OT
+  // still applies, just as text now instead of a dot. Deliberately small
+  // (9) to fit "+45m"/"+2q" inside the same cramped cell the dot used to
+  // sit in without wrapping.
+  calendarOtAmount: { color: SAGE, fontSize: 9, fontFamily: FONT_BODY_EXTRABOLD },
   calendarLegend: { flexDirection: 'row', gap: 20, marginTop: 12 },
   legendItem: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   legendText: { color: TEXT_MUTED, fontSize: 12, fontFamily: FONT_BODY_SEMIBOLD },
+  // Legend's OT sample is shown slightly larger than the real in-cell text
+  // (calendarOtAmount is 9px, tuned for the cramped cell) so it actually
+  // reads at a glance next to the legend's other label text.
+  legendOtSample: { fontSize: 13 },
+  otSummaryRow: { marginTop: 10, alignItems: 'center' },
+  otSummaryText: { color: TEXT, fontSize: 14, fontFamily: FONT_BODY_BOLD },
   doneButton: {
     marginTop: 24,
     backgroundColor: TEXT,

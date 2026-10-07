@@ -140,7 +140,20 @@ export function kioskLookupPin(pin: string) {
   );
 }
 
-export type ScheduleDay = { day: number; date: string; timeIn: string; timeOut: string; shift: string; note: string; late: boolean; ot: boolean };
+// otMinutes/otQuarters: the actual OT amount behind the `ot` boolean dot --
+// only ONE of these is ever nonzero for a given employee (Japanese gets
+// otMinutes, everyone else otQuarters -- see computeJapaneseOtMinutes_/
+// resolveThaiOt_ server-side), always 0/false together with `ot` on a day
+// that doesn't actually earn OT. Which one to SHOW still has to come from
+// the response's own `otUnit` (see kioskMyAttendance etc. below), not by
+// checking which of these two is nonzero -- a month with genuinely zero OT
+// can't be told apart that way.
+export type ScheduleDay = { day: number; date: string; timeIn: string; timeOut: string; shift: string; note: string; late: boolean; ot: boolean; otMinutes: number; otQuarters: number };
+
+// Which unit a given employee's OT is expressed in -- a per-employee fact
+// (Department), not a per-day one, so it travels alongside a month's days
+// rather than being inferred from them.
+export type OtUnit = 'minutes' | 'quarters';
 
 // year/month select which month to look back at -- omit both for the
 // current month (the default, and the only case the server's fast bounded
@@ -154,6 +167,9 @@ export function kioskMyAttendance(pin: string, year?: number, month?: number) {
     year: number;
     month: number;
     days: ScheduleDay[];
+    otUnit: OtUnit;
+    otMinutesTotal: number;
+    otQuartersTotal: number;
   }>('kioskMyAttendance', { pin, year, month }, isCurrentMonth ? SCHEDULE_TIMEOUT_MS : SCHEDULE_MONTH_NAV_TIMEOUT_MS);
 }
 
@@ -168,7 +184,7 @@ const SCHEDULE_BULK_SYNC_TIMEOUT_MS = 45000;
 export function kioskMyAttendanceBulk(pin: string) {
   return postAction<{
     name: string;
-    months: { year: number; month: number; days: ScheduleDay[] }[];
+    months: { year: number; month: number; days: ScheduleDay[]; otUnit: OtUnit; otMinutesTotal: number; otQuartersTotal: number }[];
   }>('kioskMyAttendanceBulk', { pin }, SCHEDULE_BULK_SYNC_TIMEOUT_MS);
 }
 
@@ -202,7 +218,7 @@ export function kioskScheduleSyncAll() {
   return postAction<{
     year: number;
     month: number;
-    employees: { pin: string; name: string; days: ScheduleDay[] }[];
+    employees: { pin: string; name: string; days: ScheduleDay[]; otUnit: OtUnit; otMinutesTotal: number; otQuartersTotal: number }[];
   }>('kioskScheduleSyncAll', {}, SCHEDULE_BULK_SYNC_TIMEOUT_MS);
 }
 

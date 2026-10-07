@@ -1151,12 +1151,39 @@ function handleKioskSyncOffline_(params) {
 }
 
 /**
- * Builds the { day, date, timeIn, timeOut, shift, note, late, ot } list for
- * one employee's one month, shared by handleKioskMyAttendance_ (one month),
- * handleKioskMyAttendanceBulk_ (many months in one call), and
- * handleKioskScheduleSyncAll_ (every active employee's current month, no
- * PIN). dayLogs and scheduledShiftsForMonth are already scoped to the one
- * employee (the EmployeeID-keyed lookup already done by the caller).
+ * Which unit a given employee's OT is expressed in for the Kiosk's My
+ * Schedule (minutes for Japanese, quarters for everyone else -- see
+ * computeJapaneseOtMinutes_/resolveThaiOt_). Extracted 2026-10-07 after
+ * review found this exact ternary copy-pasted into all three
+ * buildMyAttendanceDays_ callers (handleKioskMyAttendance_,
+ * handleKioskMyAttendanceBulk_, handleKioskScheduleSyncAll_) -- a future
+ * change to this mapping (a new department category, a relabeled
+ * "Japanese") now only needs to land in one place instead of three, which
+ * could otherwise silently drift and disagree between My Schedule's three
+ * different entry points.
+ */
+function otUnitForDepartment_(department) {
+  return department === 'Japanese' ? 'minutes' : 'quarters';
+}
+
+/**
+ * Builds the { day, date, timeIn, timeOut, shift, note, late, ot, otMinutes,
+ * otQuarters } list for one employee's one month, shared by
+ * handleKioskMyAttendance_ (one month), handleKioskMyAttendanceBulk_ (many
+ * months in one call), and handleKioskScheduleSyncAll_ (every active
+ * employee's current month, no PIN). dayLogs and scheduledShiftsForMonth
+ * are already scoped to the one employee (the EmployeeID-keyed lookup
+ * already done by the caller).
+ *
+ * otMinutes/otQuarters added 2026-10-07 so the Kiosk's My Schedule can show
+ * the actual OT amount per day, not just the `ot` boolean dot it used to --
+ * only ONE of the two is ever nonzero for a given employee (Japanese
+ * computes otMinutes, everyone else otQuarters -- see computeJapaneseOtMinutes_/
+ * resolveThaiOt_), so the caller decides which one to surface based on
+ * Department rather than this function picking for them. Always suppressed
+ * the exact same way `ot` itself is in each branch below -- see the
+ * real-IN branch's own comment for why that matters (a day with ot:false
+ * must never carry a nonzero amount either).
  *
  * Applies the same "fill in only the missing side" Event-day rule as
  * writeMonthlyReportData_ (Report.gs) -- kept as two independent
@@ -1209,7 +1236,14 @@ function buildMyAttendanceDays_(year, month, dayLogs, scheduledShiftsForMonth, t
         // here until an admin remembers to run "Recompute Late/OT for One
         // Month".
         late: !!entry.late && !isNoLateNoOt,
-        ot: !isNoLateNoOt && !!(entry.otMinutes || entry.otQuarters)
+        ot: !isNoLateNoOt && !!(entry.otMinutes || entry.otQuarters),
+        // Suppressed the same way as `ot` just above (isNoLateNoOt), not
+        // just copied raw -- otherwise a day showing ot:false here could
+        // still carry a nonzero otMinutes/otQuarters left over from a stale
+        // stored value, and the Kiosk's My Schedule would show an OT amount
+        // on a day it's simultaneously telling the employee has none.
+        otMinutes: isNoLateNoOt ? 0 : (entry.otMinutes || 0),
+        otQuarters: isNoLateNoOt ? 0 : (entry.otQuarters || 0)
       });
       continue;
     }
@@ -1253,7 +1287,9 @@ function buildMyAttendanceDays_(year, month, dayLogs, scheduledShiftsForMonth, t
         shift: scheduled,
         note: '',
         late: false,
-        ot: false
+        ot: false,
+        otMinutes: 0,
+        otQuarters: 0
       });
       continue;
     }
@@ -1276,7 +1312,9 @@ function buildMyAttendanceDays_(year, month, dayLogs, scheduledShiftsForMonth, t
         shift: entry.shift || scheduled || '',
         note: '',
         late: false,
-        ot: !!(entry.otMinutes || entry.otQuarters)
+        ot: !!(entry.otMinutes || entry.otQuarters),
+        otMinutes: entry.otMinutes || 0,
+        otQuarters: entry.otQuarters || 0
       });
       continue;
     }
@@ -1298,7 +1336,9 @@ function buildMyAttendanceDays_(year, month, dayLogs, scheduledShiftsForMonth, t
         shift: scheduled,
         note: scheduled,
         late: false,
-        ot: false
+        ot: false,
+        otMinutes: 0,
+        otQuarters: 0
       });
     }
   }
@@ -1334,7 +1374,25 @@ function handleKioskMyAttendance_(params) {
   var scheduledShiftsForMonth = (getScheduledShiftsForMonth_(year, month))[found.row.EmployeeID] || {};
 
   var days = buildMyAttendanceDays_(year, month, dayLogs, scheduledShiftsForMonth, tz);
-  return ok_({ name: found.row.Name, year: year, month: month, days: days });
+  // otUnit is a per-EMPLOYEE fact (Department), not derivable from the
+  // month's own totals -- a month with genuinely zero OT would otherwise
+  // leave the Kiosk unable to tell "0 minutes" from "0 quarters" apart, so
+  // this is sent even when both totals below are 0. Totals reuse
+  // sumMonthTotals_ (Report.gs) rather than re-summing `days` here, so this
+  // can never drift from what the Report/Summary sheets show for the same
+  // month.
+  var otUnit = otUnitForDepartment_(found.row.Department);
+  var daysInMonth = new Date(year, month, 0).getDate();
+  var monthTotals = sumMonthTotals_(dayLogs, scheduledShiftsForMonth, daysInMonth);
+  return ok_({
+    name: found.row.Name,
+    year: year,
+    month: month,
+    days: days,
+    otUnit: otUnit,
+    otMinutesTotal: monthTotals.otMinutesTotal,
+    otQuartersTotal: monthTotals.otQuartersTotal
+  });
 }
 
 var MY_ATTENDANCE_BULK_MONTHS = 12; // how many months back (including the current one) the app silently pre-syncs when My Schedule opens
@@ -1367,6 +1425,10 @@ function handleKioskMyAttendanceBulk_(params) {
   var now = new Date();
   var employeeId = found.row.EmployeeID;
   var logValues = getSheet_('AttendanceLog').getDataRange().getValues();
+  // Per-employee, not per-month -- see handleKioskMyAttendance_'s identical
+  // comment for why this travels alongside every month's totals instead of
+  // being inferred from them.
+  var otUnit = otUnitForDepartment_(found.row.Department);
 
   var months = [];
   for (var i = 0; i < MY_ATTENDANCE_BULK_MONTHS; i++) {
@@ -1376,7 +1438,16 @@ function handleKioskMyAttendanceBulk_(params) {
 
     var dayLogs = (aggregateMonthLogs_(logValues, year, month))[employeeId] || {};
     var scheduledShiftsForMonth = (getScheduledShiftsForMonth_(year, month))[employeeId] || {};
-    months.push({ year: year, month: month, days: buildMyAttendanceDays_(year, month, dayLogs, scheduledShiftsForMonth, tz) });
+    var daysInMonth = new Date(year, month, 0).getDate();
+    var monthTotals = sumMonthTotals_(dayLogs, scheduledShiftsForMonth, daysInMonth);
+    months.push({
+      year: year,
+      month: month,
+      days: buildMyAttendanceDays_(year, month, dayLogs, scheduledShiftsForMonth, tz),
+      otUnit: otUnit,
+      otMinutesTotal: monthTotals.otMinutesTotal,
+      otQuartersTotal: monthTotals.otQuartersTotal
+    });
   }
 
   return ok_({ name: found.row.Name, months: months });
@@ -1426,6 +1497,8 @@ function handleKioskScheduleSyncAll_(params) {
   var nameCol = headers.indexOf('Name');
   var activeCol = headers.indexOf('Active');
   var pinCol = headers.indexOf('KioskPIN');
+  var deptCol = headers.indexOf('Department');
+  var daysInMonth = new Date(year, month, 0).getDate();
 
   var seenPins = {};
   var employees = [];
@@ -1462,10 +1535,17 @@ function handleKioskScheduleSyncAll_(params) {
     try {
       var dayLogs = logsByEmployee[employeeId] || {};
       var scheduledShiftsForMonth = scheduledShiftsByEmployee[employeeId] || {};
+      // Per-employee, not derivable from this month's own totals -- see
+      // handleKioskMyAttendance_'s identical comment.
+      var otUnit = otUnitForDepartment_(row[deptCol]);
+      var monthTotals = sumMonthTotals_(dayLogs, scheduledShiftsForMonth, daysInMonth);
       employees.push({
         pin: pin,
         name: name,
-        days: buildMyAttendanceDays_(year, month, dayLogs, scheduledShiftsForMonth, tz)
+        days: buildMyAttendanceDays_(year, month, dayLogs, scheduledShiftsForMonth, tz),
+        otUnit: otUnit,
+        otMinutesTotal: monthTotals.otMinutesTotal,
+        otQuartersTotal: monthTotals.otQuartersTotal
       });
     } catch (e) {
       Logger.log('handleKioskScheduleSyncAll_: skipped ' + employeeId + ' (' + name + '): ' + e.message);
