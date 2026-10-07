@@ -1815,8 +1815,14 @@ export default function KioskScreen({ navigation }: Props) {
                                   // otMinutes/otQuarters happens to be nonzero on
                                   // THIS day -- see ScheduleDay's own comment in
                                   // client.ts for why that distinction matters.
-                                  <Text style={styles.calendarOtAmount}>
-                                    +{scheduleData.otUnit === 'minutes' ? cell.entry.otMinutes : cell.entry.otQuarters}
+                                  // numberOfLines={1}, same overflow guard
+                                  // calendarNote already uses below -- OTMaxMinutes
+                                  // (Employees sheet) has no upper-bound validation
+                                  // anywhere server-side, so an outlier value (a
+                                  // typo, or JP_OT_CAP_MINUTES raised later) must
+                                  // never wrap and distort this cell's layout.
+                                  <Text style={styles.calendarOtAmount} numberOfLines={1}>
+                                    {scheduleData.otUnit === 'minutes' ? cell.entry.otMinutes : cell.entry.otQuarters}
                                     {scheduleData.otUnit === 'minutes' ? 'm' : 'q'}
                                   </Text>
                                 )}
@@ -1840,9 +1846,15 @@ export default function KioskScreen({ navigation }: Props) {
             <Text style={styles.legendText}>Late</Text>
           </View>
           <View style={styles.legendItem}>
-            {/* Text sample, not a dot -- matches what a day with OT actually
-                shows now (see the cell render above), not the old plain dot. */}
-            <Text style={[styles.calendarOtAmount, styles.legendOtSample]}>+{scheduleData.otUnit === 'minutes' ? '45m' : '2q'}</Text>
+            {/* A plain color swatch, same as Late's -- NOT a sample number
+                (a real incident, 2026-10-07: an earlier version of this
+                showed a hardcoded "+45m"/"+2q" example here, which read as
+                if it were real data and confused the one month-total figure
+                actually on screen, e.g. "36 min" total next to a legend
+                claiming "45m"). The real amount is only ever shown on the
+                day that actually earned it (see the cell render above) and
+                in the month-total line below -- never invented here. */}
+            <View style={[styles.calendarDot, styles.calendarDotOt]} />
             <Text style={styles.legendText}>OT</Text>
           </View>
         </View>
@@ -2794,27 +2806,31 @@ const styles = StyleSheet.create({
   calendarCellHoliday: { backgroundColor: '#FFF3E0', borderColor: '#F5C88F' },
   calendarCellLeave: { backgroundColor: '#FDECEA', borderColor: '#F1B3AB' },
   calendarDayNum: { color: TEXT, fontSize: 15, fontFamily: FONT_BODY_EXTRABOLD },
-  calendarTime: { color: SCHEDULE_ACCENT_DARK, fontSize: 11, fontFamily: FONT_BODY_BOLD, marginTop: 2 },
+  // Bumped 11 -> 13, 2026-10-07 (real feedback -- too small to read
+  // comfortably on the device) -- kept in sync with calendarOtAmount's own
+  // fontSize/fontFamily below on purpose, so time and OT amount read as the
+  // same size or they still don't look equal even once both numbers match.
+  calendarTime: { color: SCHEDULE_ACCENT_DARK, fontSize: 13, fontFamily: FONT_BODY_BOLD, marginTop: 2 },
   calendarNote: { color: TEXT_MUTED, fontSize: 10, fontFamily: FONT_BODY_BOLD, marginTop: 3, textAlign: 'center', paddingHorizontal: 2 },
   calendarNoteHoliday: { color: '#B8631A' },
   calendarNoteLeave: { color: '#C0392B' },
   calendarDotsRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 3 },
   calendarDot: { width: 7, height: 7, borderRadius: 3.5 },
   calendarDotLate: { backgroundColor: '#c0392b' },
-  // Replaces the old plain OT dot with the actual amount (added
-  // 2026-10-07) -- kept the same green (SAGE, previously calendarDotOt's
-  // background) so the color coding an employee already associates with OT
-  // still applies, just as text now instead of a dot. Deliberately small
-  // (9) to fit "+45m"/"+2q" inside the same cramped cell the dot used to
-  // sit in without wrapping.
-  calendarOtAmount: { color: SAGE, fontSize: 9, fontFamily: FONT_BODY_EXTRABOLD },
+  // Legend-only now (restored 2026-10-07) -- the actual per-day OT shows
+  // the real amount as text (calendarOtAmount below), not this dot; this
+  // swatch just explains what the green TEXT means, same role Late's own
+  // dot plays, without inventing a fake sample number next to it (see the
+  // legend render's own comment for the real incident that caused).
+  calendarDotOt: { backgroundColor: SAGE },
+  // fontSize/fontFamily deliberately match calendarTime exactly (both
+  // bumped together 2026-10-07, real feedback -- was 9/EXTRABOLD here vs
+  // 11/BOLD there, too small AND visibly mismatched) so the time and the OT
+  // amount read as the same size at a glance.
+  calendarOtAmount: { color: SAGE, fontSize: 13, fontFamily: FONT_BODY_BOLD },
   calendarLegend: { flexDirection: 'row', gap: 20, marginTop: 12 },
   legendItem: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   legendText: { color: TEXT_MUTED, fontSize: 12, fontFamily: FONT_BODY_SEMIBOLD },
-  // Legend's OT sample is shown slightly larger than the real in-cell text
-  // (calendarOtAmount is 9px, tuned for the cramped cell) so it actually
-  // reads at a glance next to the legend's other label text.
-  legendOtSample: { fontSize: 13 },
   otSummaryRow: { marginTop: 10, alignItems: 'center' },
   otSummaryText: { color: TEXT, fontSize: 14, fontFamily: FONT_BODY_BOLD },
   doneButton: {
