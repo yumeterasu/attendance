@@ -148,7 +148,14 @@ export function kioskLookupPin(pin: string) {
 // the response's own `otUnit` (see kioskMyAttendance etc. below), not by
 // checking which of these two is nonzero -- a month with genuinely zero OT
 // can't be told apart that way.
-export type ScheduleDay = { day: number; date: string; timeIn: string; timeOut: string; shift: string; note: string; late: boolean; ot: boolean; otMinutes: number; otQuarters: number };
+//
+// overBreak: whether this day's REAL (undiscounted -- same figure the
+// Report tab shows, never the live Kiosk's discounted estimate) break
+// total exceeded the daily budget -- see buildMyAttendanceDays_'s own
+// comment server-side. Unlike late/ot, NOT exempted on an Event/Special
+// day -- a break is a real, independent tap regardless of what the day
+// was scheduled as.
+export type ScheduleDay = { day: number; date: string; timeIn: string; timeOut: string; shift: string; note: string; late: boolean; ot: boolean; otMinutes: number; otQuarters: number; overBreak: boolean };
 
 // Which unit a given employee's OT is expressed in -- a per-employee fact
 // (Department), not a per-day one, so it travels alongside a month's days

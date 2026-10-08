@@ -1185,6 +1185,17 @@ function otUnitForDepartment_(department) {
  * real-IN branch's own comment for why that matters (a day with ot:false
  * must never carry a nonzero amount either).
  *
+ * overBreak added 2026-10-08, same shape of feature -- whether this day's
+ * REAL (undiscounted, same figure the Report tab shows -- never the live
+ * Kiosk's discountedBreakMinutes_ estimate) break total exceeded
+ * DAILY_BREAK_BUDGET_MINUTES. Deliberately computed ONCE, outside every
+ * shift-type branch below, and NOT suppressed by isNoLateNoOt -- mirrors
+ * sumMonthTotals_'s own identical check (Report.gs), whose comment there
+ * explains why: unlike Late/OT (about official clock times, so Event/
+ * Special days are exempt), a break is a real, independent tap that
+ * happens no matter what the day was scheduled as, so an over-budget break
+ * on an Event/Special day must still show here too.
+ *
  * Applies the same "fill in only the missing side" Event-day rule as
  * writeMonthlyReportData_ (Report.gs) -- kept as two independent
  * implementations (different branch shapes: one if/else here vs. three
@@ -1202,6 +1213,11 @@ function buildMyAttendanceDays_(year, month, dayLogs, scheduledShiftsForMonth, t
     // otMinutes=0 correctly written, but this stays defensive in case of a
     // relabel-after-the-fact, same reasoning as the Event case always had.
     var isNoLateNoOt = isNoLateNoOtShift_(scheduled);
+    // See this function's own doc comment for why this is unconditional --
+    // not inside the isNoLateNoOt check, and computed before any of the
+    // shift-type branches below so every one of them (including the
+    // no-real-punch Event-day branch) can carry the same value.
+    var overBreak = !!(entry && entry.breakMinutes > DAILY_BREAK_BUDGET_MINUTES);
     // Real IN required here, not just "an entry exists" -- a stray OUT-only
     // row (no matching IN) still produces a truthy dayLogs[d] with
     // timeIn: null and shift: '' (Shift is only ever written on the IN
@@ -1243,7 +1259,8 @@ function buildMyAttendanceDays_(year, month, dayLogs, scheduledShiftsForMonth, t
         // stored value, and the Kiosk's My Schedule would show an OT amount
         // on a day it's simultaneously telling the employee has none.
         otMinutes: isNoLateNoOt ? 0 : (entry.otMinutes || 0),
-        otQuarters: isNoLateNoOt ? 0 : (entry.otQuarters || 0)
+        otQuarters: isNoLateNoOt ? 0 : (entry.otQuarters || 0),
+        overBreak: overBreak
       });
       continue;
     }
@@ -1289,7 +1306,8 @@ function buildMyAttendanceDays_(year, month, dayLogs, scheduledShiftsForMonth, t
         late: false,
         ot: false,
         otMinutes: 0,
-        otQuarters: 0
+        otQuarters: 0,
+        overBreak: overBreak
       });
       continue;
     }
@@ -1314,7 +1332,8 @@ function buildMyAttendanceDays_(year, month, dayLogs, scheduledShiftsForMonth, t
         late: false,
         ot: !!(entry.otMinutes || entry.otQuarters),
         otMinutes: entry.otMinutes || 0,
-        otQuarters: entry.otQuarters || 0
+        otQuarters: entry.otQuarters || 0,
+        overBreak: overBreak
       });
       continue;
     }
@@ -1338,7 +1357,12 @@ function buildMyAttendanceDays_(year, month, dayLogs, scheduledShiftsForMonth, t
         late: false,
         ot: false,
         otMinutes: 0,
-        otQuarters: 0
+        otQuarters: 0,
+        // overBreak is naturally always false here -- this branch is only
+        // reached when `entry` itself is falsy (see this function's own
+        // top comment on overBreak), same reuse of the one shared variable
+        // as every other branch, not a hardcoded literal.
+        overBreak: overBreak
       });
     }
   }

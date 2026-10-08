@@ -1804,9 +1804,16 @@ export default function KioskScreen({ navigation }: Props) {
                           <>
                             <Text style={styles.calendarTime}>{cell.entry.timeIn || '--:--'}</Text>
                             <Text style={styles.calendarTime}>{cell.entry.timeOut || '--:--'}</Text>
-                            {(cell.entry.late || cell.entry.ot) && (
+                            {(cell.entry.late || cell.entry.ot || cell.entry.overBreak) && (
                               <View style={styles.calendarDotsRow}>
                                 {cell.entry.late && <View style={[styles.calendarDot, styles.calendarDotLate]} />}
+                                {/* Just a flag, no amount shown (unlike OT) --
+                                    the employee asked specifically not to see
+                                    how many minutes over, only that they were
+                                    over. Real (undiscounted) breakMinutes vs
+                                    DAILY_BREAK_BUDGET_MINUTES -- see
+                                    ScheduleDay's own comment in client.ts. */}
+                                {cell.entry.overBreak && <View style={[styles.calendarDot, styles.calendarDotOverBreak]} />}
                                 {cell.entry.ot && (
                                   // The actual OT amount, not just a dot (added
                                   // 2026-10-07) -- unit comes from scheduleData.otUnit
@@ -1846,6 +1853,10 @@ export default function KioskScreen({ navigation }: Props) {
             <Text style={styles.legendText}>Late</Text>
           </View>
           <View style={styles.legendItem}>
+            <View style={[styles.calendarDot, styles.calendarDotOverBreak]} />
+            <Text style={styles.legendText}>Over Break</Text>
+          </View>
+          <View style={styles.legendItem}>
             {/* A plain color swatch, same as Late's -- NOT a sample number
                 (a real incident, 2026-10-07: an earlier version of this
                 showed a hardcoded "+45m"/"+2q" example here, which read as
@@ -1862,10 +1873,14 @@ export default function KioskScreen({ navigation }: Props) {
         {/* Month total, always labeled with the same otUnit as every day's
             own amount above -- shown even when both totals are 0 (see
             ScheduleDay/kioskMyAttendance's own comments in client.ts for why
-            this can't just be inferred from whichever total is nonzero). */}
+            this can't just be inferred from whichever total is nonzero).
+            Split into a small label + a big, prominent number (2026-10-08,
+            real feedback -- the single-line 14px version read as plain body
+            text, not a highlight) rather than just enlarging the whole
+            sentence, which would look oversized for a label this long. */}
         <View style={styles.otSummaryRow}>
-          <Text style={styles.otSummaryText}>
-            Total OT this month / OT รวมเดือนนี้:{' '}
+          <Text style={styles.otSummaryLabel}>Total OT this month / OT รวมเดือนนี้</Text>
+          <Text style={styles.otSummaryValue}>
             {scheduleData.otUnit === 'minutes'
               ? `${scheduleData.otMinutesTotal} min`
               : `${scheduleData.otQuartersTotal} quarter${scheduleData.otQuartersTotal === 1 ? '' : 's'}`}
@@ -2817,6 +2832,15 @@ const styles = StyleSheet.create({
   calendarDotsRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 3 },
   calendarDot: { width: 7, height: 7, borderRadius: 3.5 },
   calendarDotLate: { backgroundColor: '#c0392b' },
+  // Over-break flag (added 2026-10-08) -- a plain dot in BOTH the cell and
+  // the legend (unlike OT, which only shows a dot in the legend and real
+  // text in the cell) since the employee explicitly asked for just a flag
+  // here, never an amount. Reuses BUTTER (the existing amber/orange
+  // constant, already used for the OT check-in button elsewhere in this
+  // screen) rather than inventing a new color -- safe to share with that
+  // unrelated OT button since My Schedule's own OT indicator is SAGE
+  // (green) now, not amber; the two never appear side by side.
+  calendarDotOverBreak: { backgroundColor: BUTTER },
   // Legend-only now (restored 2026-10-07) -- the actual per-day OT shows
   // the real amount as text (calendarOtAmount below), not this dot; this
   // swatch just explains what the green TEXT means, same role Late's own
@@ -2832,7 +2856,14 @@ const styles = StyleSheet.create({
   legendItem: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   legendText: { color: TEXT_MUTED, fontSize: 12, fontFamily: FONT_BODY_SEMIBOLD },
   otSummaryRow: { marginTop: 10, alignItems: 'center' },
-  otSummaryText: { color: TEXT, fontSize: 14, fontFamily: FONT_BODY_BOLD },
+  // Label stays small/muted, same visual weight as legendText -- the big
+  // number below is the whole point of this callout, not the sentence.
+  otSummaryLabel: { color: TEXT_MUTED, fontSize: 12, fontFamily: FONT_BODY_SEMIBOLD },
+  // Enlarged 2026-10-08 (was one plain 14px sentence, real feedback -- it
+  // read as ordinary body text, not a highlight) -- big, bold, and in the
+  // screen's own accent color so this actually draws the eye the way a
+  // month-end OT total should.
+  otSummaryValue: { color: SCHEDULE_ACCENT_DARK, fontSize: 30, fontFamily: FONT_DISPLAY_EXTRABOLD, marginTop: 2 },
   doneButton: {
     marginTop: 24,
     backgroundColor: TEXT,
