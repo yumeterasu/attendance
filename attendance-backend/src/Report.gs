@@ -2002,7 +2002,21 @@ function handleDashboardDaily_(params) {
         // Visibility only, same as everywhere else break minutes show up --
         // real elapsed time across every COMPLETE break so far today; an
         // in-progress (not yet ended) break contributes nothing until it ends.
-        breakMinutes: breakMinutesByEmployee[emp.EmployeeID] || 0
+        breakMinutes: breakMinutesByEmployee[emp.EmployeeID] || 0,
+        // Named pickedShift, not shift -- the frontend (buildNameChip,
+        // index.html) already uses `'shift' in emp` to tell an Absent/On
+        // Leave chip (carries `shift`, never `inTime`) apart from an On
+        // Time/Late chip (carries `inTime`, never used to carry `shift`
+        // before this). Reusing the key `shift` here would silently flip
+        // that discriminator and make a checked-in employee's chip show
+        // their shift INSTEAD OF their time-in. `shift` itself is the same
+        // variable isLateNow below already uses to decide Late, so this is
+        // free -- no new read, just exposing a value already computed.
+        pickedShift: shift,
+        // null (not '') specifically means "hasn't tapped OUT yet today",
+        // same convention as outPunchBranch just above -- the frontend
+        // shows a "not yet" placeholder for null, never an empty-looking gap.
+        outTime: outRow ? Utilities.formatDate(outRow.ts, tz, 'HH:mm') : null
       };
       // isNoLateNoOtShift_(shift) overrides a stale stored Late=TRUE the same
       // way sumMonthTotals_ already does unconditionally from the CURRENT
@@ -2039,7 +2053,13 @@ function handleDashboardDaily_(params) {
         employeeId: emp.EmployeeID, name: emp.Name, department: emp.Department, branch: emp.Branch || '',
         inTime: eventStartMinutes !== null ? minutesToHHMM_(eventStartMinutes) : '',
         punchBranch: '',
-        outPunchBranch: eventOutRow ? eventOutRow.punchBranch : null
+        outPunchBranch: eventOutRow ? eventOutRow.punchBranch : null,
+        // Same pickedShift/outTime fields as the real-IN punchEntry above,
+        // for consistency -- see that block's own comment for why pickedShift
+        // (not shift) is the key name. eventOutRow already resolved above
+        // (for outPunchBranch); reused here rather than re-reading.
+        pickedShift: shift,
+        outTime: eventOutRow ? Utilities.formatDate(eventOutRow.ts, tz, 'HH:mm') : null
       });
       return;
     }

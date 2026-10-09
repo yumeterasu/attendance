@@ -920,6 +920,7 @@
       absentLabel: 'Absent',
       absentHint: 'Didn’t punch in today.',
       noShiftNote: 'No shift',
+      notYetOut: 'Not yet',
       lateLabel: 'Late',
       lateHint: 'Punched in after shift start.',
       onLeaveLabel: 'On Leave',
@@ -981,6 +982,7 @@
       absentLabel: '欠勤',
       absentHint: '本日、打刻していない。',
       noShiftNote: 'シフトなし',
+      notYetOut: '未打刻',
       lateLabel: '遅刻',
       lateHint: 'シフト開始後に打刻した。',
       onLeaveLabel: '休暇中',
@@ -1743,6 +1745,35 @@
     // which never carries a `shift` key at all.
     var note = ('shift' in emp) ? (emp.shift || t('noShiftNote')) : emp.inTime;
     var noteHtml = note ? '<span class="chip-note">' + escapeHtml(note) + '</span>' : '';
+    // Added 2026-10-09: the employee's picked shift and their OUT time, for
+    // On Time/Late chips specifically. Deliberately separate fields from
+    // emp.shift/note above, not reusing them -- emp.pickedShift (not
+    // emp.shift) is the key name handleDashboardDaily_ sends for these
+    // entries, precisely so it can never collide with the 'shift' in emp
+    // discriminator the note/noteHtml logic above depends on; reusing
+    // `shift` here would silently flip that check and make a checked-in
+    // employee's chip show their shift INSTEAD OF their time-in. `'inTime'
+    // in emp` is the correct positive check for "this is an On Time/Late
+    // chip" -- Absent/On Leave chips never carry inTime at all.
+    //
+    // Named hasInTimeField, not "isPunchEntry" -- caught in review: an
+    // Event/Special day with no real punch at all still gets a synthetic
+    // inTime (the shift's own official start -- see handleDashboardDaily_'s
+    // isNoLateNoOtShift_ branch) and is included here on purpose (that
+    // branch sends pickedShift/outTime too), so a name implying "this
+    // employee actually tapped the Kiosk" would mislead a future reader
+    // into gating something on it that should only apply to a real punch.
+    var hasInTimeField = 'inTime' in emp;
+    var shiftHtml = hasInTimeField
+      ? '<span class="chip-meta">' + escapeHtml(emp.pickedShift || t('noShiftNote')) + '</span>'
+      : '';
+    // null means "hasn't tapped OUT yet today" (see handleDashboardDaily_'s
+    // own comment on outTime) -- shown as a plain "Not yet" placeholder
+    // rather than leaving this line out entirely, so the card's layout
+    // doesn't silently shift once they do clock out.
+    var outTimeHtml = hasInTimeField
+      ? '<span class="chip-meta">' + escapeHtml(emp.outTime || t('notYetOut')) + '</span>'
+      : '';
     // On Time and Late share one set of branch boxes now (see
     // renderBranchGroupedList) -- a late arrival is told apart by this
     // small red "Late" pill instead of its own box. emp.isLate is set by
@@ -1790,7 +1821,9 @@
     chip.innerHTML =
       '<div class="chip-header"><span class="chip-name">' + escapeHtml(emp.name) + '</span>' + lateHtml + '</div>' +
       branchHtml +
+      shiftHtml +
       noteHtml +
+      outTimeHtml +
       breakHtml;
     // Set as a DOM property, not string-concatenated into the innerHTML
     // above -- escapeHtml() only escapes &/</> (safe for text content),
