@@ -503,6 +503,28 @@
   }
   #dailyContent .card + .card { margin-top: 16px; }
 
+  /* Monthly's table scrolls WITHIN this box instead of the whole page
+     growing past it (added for a sticky thead -- see thead th below).
+     Deliberately a bounded inner scroll region, not page-level
+     position:sticky: that approach (tried first, reverted after review)
+     requires .card's own overflow:hidden to become `visible` for sticky to
+     reference the viewport at all, which in turn (a) needed every opaque
+     corner .card used to clip re-done by hand, (b) collided with
+     #updateBanner (also sticky, top:0 -- whichever has lower z-index
+     visually hides behind/under the other once both are stuck at the same
+     viewport position), and (c) let the table's 10 nowrap columns spill
+     into a page-wide horizontal scrollbar on a narrow window instead of a
+     contained one -- the 720px breakpoint below already shows narrow
+     viewports are a real, supported case here, not a hypothetical. A
+     bounded overflow:auto wrapper sidesteps all three at once: thead's
+     sticky position reference becomes THIS wrapper (the nearest ancestor
+     with non-visible overflow), entirely independent of the page-level
+     banner, .card's own overflow:hidden still clips this wrapper's square
+     corners to its rounded shape exactly as it always did (nothing new to
+     round by hand), and the wrapper's own scrollbars contain horizontal
+     overflow instead of the whole page gaining one. */
+  .table-scroll { max-height: 70vh; overflow: auto; }
+
   table {
     width: 100%;
     border-collapse: collapse;
@@ -519,6 +541,19 @@
     padding: 12px 14px;
     border-bottom: 1px solid var(--border);
     white-space: nowrap;
+    /* Stays visible while scrolling through a long Monthly table (real
+       feedback -- the column headers used to scroll away, leaving the
+       numbers below unlabeled). Sticks relative to the nearest ancestor
+       with non-visible overflow -- .table-scroll (see its own comment
+       above for why that's a bounded wrapper, not the page/viewport).
+       z-index so these cells paint above tbody rows scrolling underneath,
+       not merely about #updateBanner (that banner lives outside
+       .table-scroll entirely, so the two never interact or need
+       coordinating). Only table on this page, so this rule only ever
+       affects #summaryTable. */
+    position: sticky;
+    top: 0;
+    z-index: 1;
   }
   thead th.sortable {
     cursor: pointer;
@@ -778,23 +813,25 @@
           </button>
         </div>
         <div id="emptyState" style="display:none;" data-i18n="noEmployees">No employees to show for this period.</div>
-        <table id="summaryTable" style="display:none;">
-          <thead>
-            <tr>
-              <th class="sortable" data-sort="name" data-i18n="tableEmployee">Employee</th>
-              <th class="sortable" data-sort="branch" data-i18n="tableBranch">Branch</th>
-              <th class="sortable" data-sort="department" data-i18n="tableDepartment">Department</th>
-              <th class="sortable" data-sort="daysWorked" data-i18n="tableDaysWorked">Days Worked</th>
-              <th class="sortable" data-sort="lateCount" data-i18n="tableLate">Late</th>
-              <th class="sortable" data-sort="overCount" data-i18n="tableOver">Over</th>
-              <th class="sortable" data-sort="otMinutes" data-i18n="tableOtMin">OT (min)</th>
-              <th class="sortable" data-sort="otQuarters" data-i18n="tableOtQtr">OT (qtr)</th>
-              <th class="sortable" data-sort="otPay" data-i18n="tableOtPay">OT Pay</th>
-              <th class="sortable" data-sort="leaveTotal" data-i18n="tableLeave">Leave</th>
-            </tr>
-          </thead>
-          <tbody id="summaryBody"></tbody>
-        </table>
+        <div class="table-scroll">
+          <table id="summaryTable" style="display:none;">
+            <thead>
+              <tr>
+                <th class="sortable" data-sort="name" data-i18n="tableEmployee">Employee</th>
+                <th class="sortable" data-sort="branch" data-i18n="tableBranch">Branch</th>
+                <th class="sortable" data-sort="department" data-i18n="tableDepartment">Department</th>
+                <th class="sortable" data-sort="daysWorked" data-i18n="tableDaysWorked">Days Worked</th>
+                <th class="sortable" data-sort="lateCount" data-i18n="tableLate">Late</th>
+                <th class="sortable" data-sort="overCount" data-i18n="tableOver">Over</th>
+                <th class="sortable" data-sort="otMinutes" data-i18n="tableOtMin">OT (min)</th>
+                <th class="sortable" data-sort="otQuarters" data-i18n="tableOtQtr">OT (qtr)</th>
+                <th class="sortable" data-sort="otPay" data-i18n="tableOtPay">OT Pay</th>
+                <th class="sortable" data-sort="leaveTotal" data-i18n="tableLeave">Leave</th>
+              </tr>
+            </thead>
+            <tbody id="summaryBody"></tbody>
+          </table>
+        </div>
       </div>
     </div>
 
