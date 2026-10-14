@@ -1690,12 +1690,29 @@ function handleKioskScheduleSyncAll_(params) {
  * specific rows' OT untouched) BEFORE anything lands on the sheet -- see
  * menuRecomputeLateOtOneMonth_ (Menu.gs) for the interactive version and
  * runRecomputeLateAndOt below for the auto-skip-and-log version.
+ *
+ * `protectExistingShifts` (added 2026-10-14 for the daily unattended
+ * trigger, see runRecomputeCurrentMonthAutomatic_ -- defaults falsy,
+ * existing callers unchanged): when true, an IN row whose Shift column
+ * already holds a real value is left completely untouched (not even
+ * re-derived) whenever the Schedule sheet has nothing to say about that
+ * employee/day (scheduledShift blank) -- see shiftProtectedCount below.
+ * Off by default because every EXISTING caller (the interactive menu item,
+ * the Admin one-off) is only ever run by a human who just finished setting
+ * up the month's Schedule sheet, so a blank schedule cell there reliably
+ * means "this employee genuinely has no shift that day," which Recompute
+ * is supposed to propagate. The new unattended daily trigger has no such
+ * guarantee -- it could run before anyone's touched the month's Schedule
+ * sheet at all, and a blank cell then means "not filled in yet," not "no
+ * shift" -- silently blanking real, already-recorded Shift/Late data in
+ * that case was a real gap caught in review (OT already had this kind of
+ * protection via otRegressions; Shift/Late never did).
  */
-function previewRecomputeLateAndOt_(year, month, startDay, endDay) {
+function previewRecomputeLateAndOt_(year, month, startDay, endDay, protectExistingShifts) {
   var sheet = getSheet_('AttendanceLog');
   var lastRow = sheet.getLastRow();
   var lastCol = sheet.getLastColumn();
-  if (lastRow < 2) return { empty: true, inRowsUpdated: 0, outRowsUpdated: 0, otRegressions: [] };
+  if (lastRow < 2) return { empty: true, inRowsUpdated: 0, outRowsUpdated: 0, otRegressions: [], shiftProtectedCount: 0 };
 
   var headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
   var tsCol = headers.indexOf('Timestamp');
@@ -1725,7 +1742,7 @@ function previewRecomputeLateAndOt_(year, month, startDay, endDay) {
       maxRow = r + 2;
     }
   }
-  if (minRow === -1) return { empty: true, inRowsUpdated: 0, outRowsUpdated: 0, otRegressions: [] }; // nothing recorded for this month at all
+  if (minRow === -1) return { empty: true, inRowsUpdated: 0, outRowsUpdated: 0, otRegressions: [], shiftProtectedCount: 0 }; // nothing recorded for this month at all
 
   // Now read full width, but only the row range that could possibly matter
   // -- everything from here down is IDENTICAL logic to before, just working
@@ -1773,6 +1790,9 @@ function previewRecomputeLateAndOt_(year, month, startDay, endDay) {
   // here, acted on by the caller, never silently written. See this
   // function's own doc comment.
   var otRegressions = [];
+  // Only incremented when protectExistingShifts is true -- see this
+  // function's own doc comment on that parameter.
+  var shiftProtectedCount = 0;
 
   for (var i = 0; i < sliceValues.length; i++) {
     var ts = new Date(sliceValues[i][tsCol]);
@@ -1819,7 +1839,26 @@ function previewRecomputeLateAndOt_(year, month, startDay, endDay) {
     // corrected this" from "sync-back silently failed" would need its own
     // tracking column, and the failure this depends on is already logged
     // (Logger.log) and rare enough that a full redesign isn't justified yet.
-    if (shiftPickedCol !== -1 && isTrue_(sliceValues[i][shiftPickedCol]) && !scheduledShift) {
+    var isShiftPickedProtected = shiftPickedCol !== -1 && isTrue_(sliceValues[i][shiftPickedCol]) && !scheduledShift;
+    // General protection (see protectExistingShifts' own doc comment above),
+    // separate from isShiftPickedProtected's own specific reasoning just
+    // above (which applies unconditionally, not gated on the parameter) --
+    // this covers any OTHER row that already holds a real Shift value,
+    // e.g. an admin-backdated entry, or a legacy row from before the
+    // ShiftPicked column existed. Both share the same "leave this row
+    // completely untouched" handling below, just for different reasons.
+    // Deliberately `!isShiftPickedProtected &&` -- a Kiosk-picked shift row
+    // almost always ALSO has a non-blank shiftCol (that's what ShiftPicked
+    // means), so without this exclusion shiftProtectedCount would double-
+    // count the normal, everyday, totally-expected case of "schedule just
+    // hasn't caught up with this employee's pick yet" (which happens for
+    // most rows early in a month) as if it were the rare case this count
+    // exists to flag -- making the admin email fire constantly on routine
+    // activity instead of the genuinely unusual rows (admin-backdated,
+    // legacy) it's meant to surface.
+    var isGeneralProtected = !isShiftPickedProtected && protectExistingShifts && !scheduledShift && sliceValues[i][shiftCol];
+    if (isShiftPickedProtected || isGeneralProtected) {
+      if (isGeneralProtected) shiftProtectedCount++;
       if (isEarliestSoFar) {
         earliestInTsByKey[key] = ts.getTime();
         shiftByEmployeeDay[key] = sliceValues[i][shiftCol];
@@ -1936,7 +1975,8 @@ function previewRecomputeLateAndOt_(year, month, startDay, endDay) {
     cols: { shiftCol: shiftCol, lateCol: lateCol, otCol: otCol, otMinCol: otMinCol, otQCol: otQCol },
     inRowsUpdated: inRowsUpdated,
     outRowsUpdated: outRowsUpdated,
-    otRegressions: otRegressions
+    otRegressions: otRegressions,
+    shiftProtectedCount: shiftProtectedCount
   };
 }
 
@@ -2060,12 +2100,21 @@ function runRecomputeLateAndOt() {
     Logger.log('Open the "Schedule YYYY-MM" tab you want to recompute first, then run this again. Active tab was: ' + activeSheet.getName());
     return;
   }
+  recomputeLateAndOtForMonth_(Number(match[1]), Number(match[2]), activeSheet.getName());
+}
 
-  var year = Number(match[1]);
-  var month = Number(match[2]);
+/**
+ * Shared engine behind runRecomputeLateAndOt (above -- editor, active-tab-
+ * driven) and runRecomputeCurrentMonthAutomatic_ (below -- daily trigger,
+ * today's month) -- one implementation of the auto-skip-OT-regression
+ * preview/commit/log sequence so it can't drift between the two entry
+ * points the way near-identical copies have before in this codebase.
+ * `protectExistingShifts` is passed straight through to
+ * previewRecomputeLateAndOt_ -- see that parameter's own doc comment.
+ */
+function recomputeLateAndOtForMonth_(year, month, sheetNameForLog, protectExistingShifts) {
   var daysInMonth = new Date(year, month, 0).getDate();
-
-  var preview = previewRecomputeLateAndOt_(year, month, 1, daysInMonth);
+  var preview = previewRecomputeLateAndOt_(year, month, 1, daysInMonth, protectExistingShifts);
   if (preview.otRegressions.length > 0) {
     preview.otRegressions.forEach(function (reg) {
       var oldAmount = reg.department === 'Japanese' ? reg.originalOtMinutes + ' min' : reg.originalOtQuarters + ' quarter(s)';
@@ -2079,11 +2128,135 @@ function runRecomputeLateAndOt() {
     });
   }
   commitRecomputeResult_(preview);
+  // Every OTHER real recompute entry point (menuRecomputeLateOtOneMonth_ in
+  // Menu.gs, recomputeLateAndOtEveryMonthOnce_ in Admin.gs) refreshes the
+  // live Report/Summary tabs right after committing -- added here too (a
+  // pre-existing gap in the plain editor-run runRecomputeLateAndOt, now
+  // fixed for free since it shares this engine) so the Dashboard/Report
+  // tab don't keep showing stale Late/OT after an unattended recompute
+  // nobody manually triggered a refresh for. Both no-op safely if their
+  // respective sheet doesn't exist or has no dropdowns set yet. Wrapped --
+  // the sheet write above already landed either way, and a refresh failure
+  // (e.g. the Report dropdown left on "All", re-reading a full year) must
+  // never swallow the regression summary the caller is about to log/email;
+  // losing the Report tab's freshness for one run is far less costly than
+  // losing the only notification of a skipped OT regression.
+  try {
+    refreshLiveReportSheet_();
+    refreshLiveSummarySheet_();
+  } catch (e) {
+    Logger.log('Could not refresh the live Report/Summary tabs after recompute: ' + e);
+  }
   Logger.log(
-    'Recomputed ' + activeSheet.getName() + ': updated ' + preview.inRowsUpdated + ' IN row(s) (Shift/Late) and ' +
+    'Recomputed ' + sheetNameForLog + ': updated ' + preview.inRowsUpdated + ' IN row(s) (Shift/Late) and ' +
     preview.outRowsUpdated + ' OUT row(s) (OT -- Japanese: minutes, Thai/other: quarters, only where OT was already TRUE). ' +
-    preview.otRegressions.length + ' row(s) skipped to avoid losing existing OT -- see above.'
+    preview.otRegressions.length + ' row(s) skipped to avoid losing existing OT -- see above.' +
+    (preview.shiftProtectedCount > 0 ? ' ' + preview.shiftProtectedCount + ' row(s) left untouched (Schedule sheet has no shift for that day yet -- see protectExistingShifts).' : '')
   );
+  return preview;
+}
+
+/**
+ * Runs unattended every day around 11:00 (script timezone) via a time-based
+ * trigger -- see setupDailyRecomputeCurrentMonthTrigger below. Always
+ * targets the CURRENT calendar month (today's date), never whichever sheet
+ * tab happens to be active -- unlike runRecomputeLateAndOt, which is meant
+ * for a human at the editor and reads the active tab's own name, a trigger
+ * has no "active tab" a person actually chose; getActiveSheet() in a
+ * trigger context would just return whatever tab was last clicked by
+ * whoever last had the Sheet open, which has nothing to do with "today".
+ * Same auto-skip-OT-regression safety as the interactive version -- see
+ * recomputeLateAndOtForMonth_'s own doc comment. Unlike the interactive
+ * version, a skip here also gets emailed (reusing HEALTH_CHECK_EMAIL from
+ * HealthCheck.gs, same recipient/purpose) -- runRecomputeLateAndOt's own
+ * Logger.log-only skip is fine because a human just clicked Run and can
+ * check View > Logs immediately, but a skip from this unattended daily
+ * trigger would otherwise repeat silently in the Executions log forever
+ * with nobody watching, defeating the whole point of the auto-skip safety
+ * net (it exists so a human reviews and decides, not so the issue just
+ * gets ignored indefinitely). Covers BOTH otRegressions (OT about to be
+ * lost) and shiftProtectedCount (Shift/Late left untouched because the
+ * Schedule sheet has nothing for that day) in one combined email, since
+ * both represent the same underlying "this needs a human to look" signal.
+ *
+ * Passes protectExistingShifts=true to recomputeLateAndOtForMonth_ (unlike
+ * runRecomputeLateAndOt, which leaves it off) -- see
+ * previewRecomputeLateAndOt_'s own doc comment on that parameter for the
+ * full reasoning: an admin running the interactive menu item always
+ * implicitly runs it AFTER "Create/Update Schedule Sheet" for that month,
+ * an ordering this unattended trigger has no way to guarantee. With the
+ * flag on, getScheduledShiftsForMonth_ returning {} (Schedule sheet
+ * missing entirely) or a day's cell simply not filled in yet both resolve
+ * the same safe way -- any row that already holds a real Shift value is
+ * left alone rather than blanked, and shiftProtectedCount reflects it, so
+ * there's no separate "does the sheet exist" check needed here at all.
+ */
+function runRecomputeCurrentMonthAutomatic_() {
+  var now = new Date();
+  var year = now.getFullYear();
+  var month = now.getMonth() + 1;
+  // Same 'Schedule ' + year + '-' + zero-padded-month construction every
+  // other sheet-name call site in this file already uses (e.g.
+  // getScheduledShiftsForMonth_ just above) -- not Utilities.formatDate,
+  // to stay byte-for-byte consistent with the rest of the codebase rather
+  // than a second, independently-implemented way to produce the same string.
+  var sheetName = 'Schedule ' + year + '-' + (month < 10 ? '0' + month : String(month));
+  var preview = recomputeLateAndOtForMonth_(year, month, sheetName, true);
+  if (preview.otRegressions.length === 0 && preview.shiftProtectedCount === 0) return;
+
+  var sections = [];
+  if (preview.otRegressions.length > 0) {
+    var otLines = preview.otRegressions.map(function (reg, i) {
+      var oldAmount = reg.department === 'Japanese' ? reg.originalOtMinutes + ' min' : reg.originalOtQuarters + ' quarter(s)';
+      return (i + 1) + '. ' + reg.name + ', day ' + reg.day + ' -- had ' + oldAmount + ' OT recorded, new schedule computes 0.';
+    });
+    sections.push(
+      preview.otRegressions.length + ' OT regression(s) -- left untouched (OT was NOT cleared):\n' + otLines.join('\n')
+    );
+  }
+  if (preview.shiftProtectedCount > 0) {
+    // NOT the routine "schedule hasn't caught up with this employee's own
+    // Kiosk pick yet" case -- isGeneralProtected (previewRecomputeLateAndOt_)
+    // deliberately excludes that one (isShiftPickedProtected covers it,
+    // silently, every single day, by design). Reaching shiftProtectedCount
+    // at all means an admin-backdated or legacy row's Shift wasn't written
+    // through the normal Kiosk pick, which genuinely does warrant a look --
+    // worded accordingly, not as a routine/dismissable count.
+    sections.push(
+      preview.shiftProtectedCount + ' row(s) already had a Shift recorded (not from an employee\'s own Kiosk pick -- likely an admin-backdated or older entry) but the Schedule sheet (' + sheetName +
+      ') has no shift for that day -- left untouched rather than blanked. Fill in that day on the Schedule sheet, or check whether the row\'s Shift value is correct as-is.'
+    );
+  }
+  var subject = 'Attendance: auto-recompute for ' + sheetName + ' needs a look';
+  var body =
+    sections.join('\n\n') +
+    (preview.otRegressions.length > 0
+      ? '\n\nOpen the sheet and run Attendance Admin > Recompute Late/OT for One Month for ' + sheetName + ' if you want to force the OT regression(s) above through after reviewing them.'
+      : '');
+  MailApp.sendEmail(HEALTH_CHECK_EMAIL, subject, body);
+}
+
+/**
+ * One-off: installs a daily trigger that recomputes Late/OT for the CURRENT
+ * month automatically every day around 11:00 (same engine as "Recompute
+ * Late/OT for One Month" in the Sheets menu, auto-skip version -- see
+ * runRecomputeCurrentMonthAutomatic_ above). Safe to run more than once --
+ * clears any existing trigger for the same function first. Run once from
+ * the editor: select setupDailyRecomputeCurrentMonthTrigger in the toolbar
+ * dropdown, click Run. Same pattern as setupDailyDeactivationTrigger
+ * (Admin.gs) and setupMonthlyBackupTrigger (Backup.gs) -- atHour(11) means
+ * "sometime in the 11:00 hour," not an exact minute, same as those.
+ */
+function setupDailyRecomputeCurrentMonthTrigger() {
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === 'runRecomputeCurrentMonthAutomatic_') ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger('runRecomputeCurrentMonthAutomatic_')
+    .timeBased()
+    .everyDays(1)
+    .atHour(11)
+    .create();
+  Logger.log('Daily recompute trigger created -- runs every day around 11:00, recomputing Late/OT for the current calendar month.');
 }
 
 /**
