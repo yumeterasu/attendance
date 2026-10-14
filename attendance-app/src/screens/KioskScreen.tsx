@@ -35,6 +35,7 @@ const PIN_LENGTH = 4;
 const FEEDBACK_DURATION_MS = 4000; // was 2500 -- too short to read (e.g. break minutes remaining) before it auto-dismissed
 const ERROR_FLASH_DURATION_MS = 1200;
 const CONFIRM_TIMEOUT_MS = 20000; // auto-cancel back to the PIN screen if nobody confirms -- shared kiosk, don't leave someone else's name up
+const SCHEDULE_IDLE_TIMEOUT_MS = 45000; // auto-return to IN/OUT from the Schedule screens if nobody touches the screen -- longer than CONFIRM_TIMEOUT_MS above since reading a whole month's calendar legitimately takes longer than confirming a single IN/OUT tap
 const AUTO_IN_START_HOUR = 5; // morning arrival window -- pre-select IN from this hour...
 const AUTO_IN_END_HOUR = 9; // ...up to (not including) this hour
 
@@ -585,6 +586,18 @@ export default function KioskScreen({ navigation }: Props) {
     setForcedOffline(false);
   };
 
+  // Shared by the Cancel button (scheduleEntry), the Done button
+  // (scheduleResult), and the idle timeout below -- a single superset reset
+  // so all three paths leave the Schedule screens in the same clean state,
+  // same reasoning as resetCheckin above.
+  const resetSchedule = () => {
+    setMode('checkin');
+    setSchedulePin('');
+    setScheduleError(false);
+    setScheduleIssue(null);
+    setScheduleData(null);
+  };
+
   // Shared by both lookup paths (local-cache and live) below, so the
   // "empty list -> DEFAULT_SHIFT_CHOICES" fallback rule only lives in one
   // place.
@@ -738,6 +751,29 @@ export default function KioskScreen({ navigation }: Props) {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lookupName]);
+
+  // Same shared-kiosk reasoning as the idle timer above, but for the
+  // Schedule screens (scheduleEntry/scheduleResult) -- previously these had
+  // no timeout at all, so someone who opened their calendar and walked away
+  // left it on screen indefinitely. onTouchStart/onTouchMove on those two
+  // screens' own containers (see the mode === 'scheduleEntry'/'scheduleResult'
+  // renders below) call this on every touch; it's a no-op whenever mode is
+  // anything else, so it's safe to keep around even while this screen is
+  // mounted but not currently showing Schedule.
+  const scheduleIdleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const resetScheduleIdleTimer = () => {
+    if (scheduleIdleTimerRef.current) clearTimeout(scheduleIdleTimerRef.current);
+    if (mode === 'scheduleEntry' || mode === 'scheduleResult') {
+      scheduleIdleTimerRef.current = setTimeout(resetSchedule, SCHEDULE_IDLE_TIMEOUT_MS);
+    }
+  };
+  useEffect(() => {
+    resetScheduleIdleTimer();
+    return () => {
+      if (scheduleIdleTimerRef.current) clearTimeout(scheduleIdleTimerRef.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode]);
 
   // Pre-select IN during the morning arrival window and OUT once it's late
   // enough that nobody is realistically checking IN -- still fully
@@ -1659,6 +1695,8 @@ export default function KioskScreen({ navigation }: Props) {
         end={GRADIENT_END}
         locations={GRADIENT_LOCATIONS}
         style={styles.container}
+        onTouchStart={resetScheduleIdleTimer}
+        onTouchMove={resetScheduleIdleTimer}
       >
         <Text style={[styles.title, styles.titleDark]}>
           Enter Your Code to View Schedule{'\n'}
@@ -1688,14 +1726,7 @@ export default function KioskScreen({ navigation }: Props) {
             </Pressable>
           </View>
         )}
-        <Pressable
-          style={[styles.cornerButton, styles.cornerButtonSchedule]}
-          onPress={() => {
-            setMode('checkin');
-            setSchedulePin('');
-            setScheduleIssue(null);
-          }}
-        >
+        <Pressable style={[styles.cornerButton, styles.cornerButtonSchedule]} onPress={resetSchedule}>
           <Text style={styles.cornerButtonTextSchedule}>Cancel / ยกเลิก</Text>
         </Pressable>
       </LinearGradient>
@@ -1712,6 +1743,8 @@ export default function KioskScreen({ navigation }: Props) {
         end={GRADIENT_END}
         locations={GRADIENT_LOCATIONS}
         style={styles.container}
+        onTouchStart={resetScheduleIdleTimer}
+        onTouchMove={resetScheduleIdleTimer}
       >
         <Text style={[styles.title, styles.titleDark]}>{scheduleData.name}</Text>
         <View style={styles.monthNavRow}>
@@ -1765,7 +1798,20 @@ export default function KioskScreen({ navigation }: Props) {
             <Text key={i} style={styles.calendarHeaderCell}>{h}</Text>
           ))}
         </View>
-        <ScrollView style={styles.calendarWrap} contentContainerStyle={{ paddingBottom: 12 }}>
+        <ScrollView
+          style={styles.calendarWrap}
+          contentContainerStyle={{ paddingBottom: 12 }}
+          // Same reasoning as the WheelColumn FlatList's own onScrollBeginDrag/
+          // onScroll above: a scrollable's own touch/pan handling isn't
+          // guaranteed to bubble a touch up to the outer LinearGradient's
+          // onTouchStart/onTouchMove, so someone scrolling through a long
+          // month here for the whole SCHEDULE_IDLE_TIMEOUT_MS window must
+          // still keep resetting the idle timer directly, not just on the
+          // initial touch-down.
+          onScrollBeginDrag={resetScheduleIdleTimer}
+          onScroll={resetScheduleIdleTimer}
+          scrollEventThrottle={32}
+        >
           {weeks.map((week, wi) => (
             <View key={wi} style={styles.calendarWeekRow}>
               {week.map((cell, ci) => {
@@ -1889,10 +1935,7 @@ export default function KioskScreen({ navigation }: Props) {
 
         <Pressable
           style={styles.doneButton}
-          onPress={() => {
-            setMode('checkin');
-            setScheduleData(null);
-          }}
+          onPress={resetSchedule}
         >
           <Text style={styles.buttonText}>Done / เสร็จสิ้น</Text>
         </Pressable>
