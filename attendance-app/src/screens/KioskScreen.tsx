@@ -35,7 +35,7 @@ const PIN_LENGTH = 4;
 const FEEDBACK_DURATION_MS = 4000; // was 2500 -- too short to read (e.g. break minutes remaining) before it auto-dismissed
 const ERROR_FLASH_DURATION_MS = 1200;
 const CONFIRM_TIMEOUT_MS = 20000; // auto-cancel back to the PIN screen if nobody confirms -- shared kiosk, don't leave someone else's name up
-const SCHEDULE_IDLE_TIMEOUT_MS = 45000; // auto-return to IN/OUT from the Schedule screens if nobody touches the screen -- longer than CONFIRM_TIMEOUT_MS above since reading a whole month's calendar legitimately takes longer than confirming a single IN/OUT tap
+const SCHEDULE_IDLE_TIMEOUT_MS = 30000; // auto-return to IN/OUT from the Schedule screens if nobody touches the screen -- longer than CONFIRM_TIMEOUT_MS above since reading a whole month's calendar legitimately takes longer than confirming a single IN/OUT tap
 const AUTO_IN_START_HOUR = 5; // morning arrival window -- pre-select IN from this hour...
 const AUTO_IN_END_HOUR = 9; // ...up to (not including) this hour
 
