@@ -1065,13 +1065,15 @@ function recordBreak_(employeeId, type, durationMinutes) {
     // actual usage ever exceeds the budget, "60 - remainingMinutes" would
     // silently lie about the true total. The app uses this total (already
     // net of BREAK_WALK_DISCOUNT_MINUTES, not the raw elapsed figure -- see
-    // discountedBreakMinutes_) as the authoritative baseline to correct its
-    // own offline running estimate against once a sync actually succeeds
-    // (see breakMinutesCache.ts) -- that on-device estimate doesn't know
-    // about the discount yet (no APK change made alongside this), so it
-    // runs slightly stricter than reality while offline; this sync-time
-    // correction is what fixes it back up, same self-healing pattern every
-    // other offline estimate in this app already uses.
+    // discountedBreakMinutes_) both as the authoritative baseline to correct
+    // its own offline running estimate against once a sync actually
+    // succeeds (see breakMinutesCache.ts), and (2026-10-14) to compute how
+    // many minutes OVER budget the employee is, since this unclamped total
+    // is the only place that figure can come from -- remainingMinutes alone
+    // can't distinguish "exactly at budget" from "over budget" once both
+    // clamp to 0. The app's own offline estimate mirrors
+    // BREAK_WALK_DISCOUNT_MINUTES client-side too (KioskScreen.tsx), so it
+    // agrees with this total even before a sync confirms it.
     remainingMinutes = Math.max(0, DAILY_BREAK_BUDGET_MINUTES - totalMinutesUsedToday);
   }
 

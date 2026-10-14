@@ -71,11 +71,43 @@ function nowRoundedToStep_(): number {
   return Math.floor(raw / SPECIAL_SHIFT_STEP_MINUTES) * SPECIAL_SHIFT_STEP_MINUTES;
 }
 
-// Mirrors the backend's DAILY_BREAK_BUDGET_MINUTES (Attendance.gs) -- used
-// ONLY to compute the offline ESTIMATE of remaining break minutes (see
-// breakMinutesCache.ts); the online path always uses the server's own
-// authoritative remainingMinutes instead, never this constant.
+// Mirrors the backend's DAILY_BREAK_BUDGET_MINUTES (Attendance.gs). The
+// online path still always uses the server's own authoritative
+// remainingMinutes for "minutes left" (never this constant) -- but DOES use
+// this constant for "minutes OVER" (see minutesOverBudget_ below), since the
+// server only ever sends the clamped remainingMinutes plus the raw,
+// unclamped totalMinutesUsedToday, not an already-computed "over" figure of
+// its own; subtracting the two client-side here is the one place this
+// constant crosses into the online path.
 const DAILY_BREAK_BUDGET_MINUTES = 60;
+
+// Mirrors the backend's BREAK_WALK_DISCOUNT_MINUTES/discountedBreakMinutes_
+// (Attendance.gs) -- applied client-side to breakSessionMinutes (see
+// queueOffline's BREAK_END branch below) before it's added to
+// breakMinutesCache, so the offline ESTIMATE agrees with what the server
+// will eventually confirm. Real bug this closes (2026-10-14, caught adding
+// the "Over by X min" notification): without this, a round that's actually
+// within budget once discounted (e.g. 64 raw minutes -> 60 after the 4-
+// minute discount) could show a false "Over by 4 min" alarm offline, when
+// the sync-confirmed total would say exactly 0 over. Applied once per
+// completed round, exactly mirroring discountedBreakMinutes_'s own "per
+// completed round" scope server-side -- never to an in-progress round, and
+// never to the online path (the server's own remainingMinutes/
+// totalMinutesUsedToday are already net of this).
+const BREAK_WALK_DISCOUNT_MINUTES = 4;
+
+// Shared by both the online (onConfirm, from res.totalMinutesUsedToday) and
+// offline (queueOffline, from addEstimatedOfflineBreakMinutes's returned
+// total) BREAK_END paths -- one function so "what counts as over budget,
+// and by how much" can never drift between the two the way discounted
+// minutes drifting between near-identical copies has already happened
+// elsewhere in this codebase (see discountedBreakMinutes_'s own doc comment
+// in Attendance.gs). Returns undefined (not 0) when not over, matching the
+// Feedback type's own "absent means not applicable" convention for
+// overMinutes/estimatedOverMinutes.
+function minutesOverBudget_(totalUsedMinutes: number): number | undefined {
+  return totalUsedMinutes > DAILY_BREAK_BUDGET_MINUTES ? totalUsedMinutes - DAILY_BREAK_BUDGET_MINUTES : undefined;
+}
 
 // The two busiest windows -- most of the workforce clocks in/out within a
 // couple minutes of each other, so during these, skip the network round-trip
@@ -144,8 +176,19 @@ type Feedback =
       // remainingMinutes: server-confirmed (online success only).
       // estimatedRemainingMinutes: on-device best-effort guess, offline only
       // -- always rendered with an "estimate" marker, never both set at once.
+      // Both are clamped at 0 (see Attendance.gs's own comment on why --
+      // "60 - remainingMinutes" would silently lie about true usage once
+      // over budget), so overMinutes/estimatedOverMinutes carry the same
+      // pairing (confirmed vs estimate) for "how far past 0" specifically --
+      // without these, a break taken exactly up to budget and one taken
+      // well past it both show the same "0 min left", with no way to tell
+      // them apart. Only ever positive when set (a non-exceeded break just
+      // doesn't set this field at all, same convention as every other
+      // optional Feedback field here).
       remainingMinutes?: number;
       estimatedRemainingMinutes?: number;
+      overMinutes?: number;
+      estimatedOverMinutes?: number;
       queued?: boolean;
     }
   | { kind: 'error'; message: string };
@@ -1146,7 +1189,14 @@ export default function KioskScreen({ navigation }: Props) {
     if (type === 'BREAK_END') {
       const startedAt = await getLocalBreakStartedAt(currentPin);
       if (startedAt) {
-        breakSessionMinutes = Math.max(0, Math.round((Date.now() - new Date(startedAt).getTime()) / 60000));
+        const rawMinutes = Math.round((Date.now() - new Date(startedAt).getTime()) / 60000);
+        // BREAK_WALK_DISCOUNT_MINUTES applied here, once, before this value
+        // flows anywhere else (enqueueCheckin's stored entry, the undo-on-
+        // rejection path in offlineQueue.ts, and addEstimatedOfflineBreakMinutes
+        // below) -- discounting once at the source keeps all three
+        // automatically consistent with each other, same reasoning
+        // discountedBreakMinutes_ documents server-side.
+        breakSessionMinutes = Math.max(0, rawMinutes - BREAK_WALK_DISCOUNT_MINUTES);
       }
     }
     const result = await enqueueCheckin(pin, type, ot, branch, shift, breakDurationMinutes, breakSessionMinutes, specialShiftSpansNextDay);
@@ -1202,13 +1252,15 @@ export default function KioskScreen({ navigation }: Props) {
       // nothing. addEstimatedOfflineBreakMinutes returns the new running
       // total directly, so no second AsyncStorage read is needed here.
       let estimatedRemainingMinutes: number | undefined;
+      let estimatedOverMinutes: number | undefined;
       if (breakSessionMinutes != null) {
         const totalUsed = await addEstimatedOfflineBreakMinutes(currentPin, breakSessionMinutes);
         estimatedRemainingMinutes = Math.max(0, DAILY_BREAK_BUDGET_MINUTES - totalUsed);
+        estimatedOverMinutes = minutesOverBudget_(totalUsed);
       }
       playBreakEndSound();
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      showFeedback({ kind: 'break', type, name, timestamp: nowIso, estimatedRemainingMinutes, queued: true });
+      showFeedback({ kind: 'break', type, name, timestamp: nowIso, estimatedRemainingMinutes, estimatedOverMinutes, queued: true });
       return;
     }
     if (type === 'OUT') {
@@ -1282,7 +1334,19 @@ export default function KioskScreen({ navigation }: Props) {
           try {
             await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
           } catch {}
-          showFeedback({ kind: 'break', type: res.type, name: res.name, timestamp: res.timestamp, durationMinutes: res.durationMinutes, remainingMinutes: res.remainingMinutes });
+          showFeedback({
+            kind: 'break',
+            type: res.type,
+            name: res.name,
+            timestamp: res.timestamp,
+            durationMinutes: res.durationMinutes,
+            remainingMinutes: res.remainingMinutes,
+            // res.totalMinutesUsedToday is the unclamped total (see
+            // client.ts's own comment) -- only set when it actually exceeds
+            // the budget, same "absent means not applicable" convention as
+            // every other optional Feedback field.
+            overMinutes: res.totalMinutesUsedToday != null ? minutesOverBudget_(res.totalMinutesUsedToday) : undefined
+          });
         } else if (res.error === 'timeout' || res.error === 'network_error') {
           await queueOffline(breakType, false, null, null, breakDuration);
         } else {
@@ -2103,6 +2167,21 @@ export default function KioskScreen({ navigation }: Props) {
               <Text style={styles.feedbackBigLabel}>BREAK TIME LEFT TODAY (ESTIMATE) / โดยประมาณ</Text>
               <Text style={styles.feedbackBigValue}>~{feedback.estimatedRemainingMinutes} min / นาที</Text>
             </>
+          )}
+          {/* "0 min left" above is already correct whether the break landed
+              exactly on budget or past it (remainingMinutes/
+              estimatedRemainingMinutes are both clamped at 0, see
+              Attendance.gs's own comment on why) -- this line adds the
+              "how far past" detail that clamping alone can't show, real
+              feedback (2026-10-14): without it, an exact-budget break and a
+              well-over one looked identical. */}
+          {feedback.type === 'BREAK_END' && feedback.overMinutes != null && (
+            <Text style={styles.feedbackOverBreak}>Over by {feedback.overMinutes} min / เกินมา {feedback.overMinutes} นาที</Text>
+          )}
+          {feedback.type === 'BREAK_END' && feedback.overMinutes == null && feedback.estimatedOverMinutes != null && (
+            <Text style={styles.feedbackOverBreak}>
+              ~Over by {feedback.estimatedOverMinutes} min (estimate) / เกินมาประมาณ {feedback.estimatedOverMinutes} นาที
+            </Text>
           )}
           {feedback.queued && <Text style={styles.feedbackLate}>Saved offline — will sync automatically{'\n'}บันทึกออฟไลน์ไว้แล้ว จะซิงค์อัตโนมัติ</Text>}
         </View>
@@ -2933,6 +3012,23 @@ const styles = StyleSheet.create({
     color: '#fff',
     backgroundColor: 'rgba(0,0,0,0.25)',
     fontSize: 12,
+    fontFamily: FONT_DISPLAY_BOLD,
+    marginTop: 6,
+    paddingVertical: 4,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    textAlign: 'center'
+  },
+  // Same pill shape as feedbackLate, BUTTER background instead -- reuses
+  // the same amber/orange already established for "over break" everywhere
+  // else in this screen (My Schedule's calendarDotOverBreak/legend dot),
+  // so this reads as the same signal, not a new color vocabulary. Not red/
+  // error-colored on purpose -- going over isn't a failed action, just
+  // something worth flagging.
+  feedbackOverBreak: {
+    color: '#fff',
+    backgroundColor: BUTTER,
+    fontSize: 13,
     fontFamily: FONT_DISPLAY_BOLD,
     marginTop: 6,
     paddingVertical: 4,
