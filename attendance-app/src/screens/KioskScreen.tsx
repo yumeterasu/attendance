@@ -534,6 +534,29 @@ export default function KioskScreen({ navigation }: Props) {
   // same-tick double-invocation gap that state alone can't.
   const isVerifyingExitRef = useRef(false);
 
+  // Same reasoning as exitRequestIdRef above, for submitSchedulePin: bumped
+  // by resetSchedule (Cancel/Done/the Schedule idle timeout below) so a
+  // fetch that was already in flight when the employee left the Schedule
+  // screen can tell its own result is stale and skip reopening
+  // scheduleResult or overwriting scheduleData out from under whatever's on
+  // screen now (e.g. the next employee's own PIN entry).
+  //
+  // A SEPARATE counter from scheduleMonthNavRequestIdRef below on purpose,
+  // even though both exist for the same reason and both get bumped by
+  // resetSchedule -- submitSchedulePin and goToScheduleMonth each own a
+  // disjoint set of flags to clear on staleness (isLoadingSchedule here,
+  // isChangingScheduleMonthRef/isChangingScheduleMonth there), and the
+  // "skip clearing, whichever call IS still current owns it" logic in each
+  // function only holds if "current" is judged against that function's OWN
+  // calls (plus resetSchedule) -- sharing one counter between both meant
+  // the Refresh button and the Prev/Next buttons (both reachable at once on
+  // scheduleResult) could invalidate EACH OTHER's requestId, and the
+  // invalidated side would then skip clearing flags that only ITS function
+  // ever sets, leaving them stuck true for the rest of the viewing session
+  // (a real bug caught in review -- do not re-merge these back into one ref).
+  const scheduleRequestIdRef = useRef(0);
+  const scheduleMonthNavRequestIdRef = useRef(0);
+
   const [schedulePin, setSchedulePin] = useState('');
   const [scheduleError, setScheduleError] = useState(false);
   const [isLoadingSchedule, setIsLoadingSchedule] = useState(false);
@@ -591,11 +614,33 @@ export default function KioskScreen({ navigation }: Props) {
   // so all three paths leave the Schedule screens in the same clean state,
   // same reasoning as resetCheckin above.
   const resetSchedule = () => {
+    // Invalidate any submitSchedulePin/goToScheduleMonth fetch still in
+    // flight -- see scheduleRequestIdRef/scheduleMonthNavRequestIdRef above.
+    scheduleRequestIdRef.current++;
+    scheduleMonthNavRequestIdRef.current++;
+    // Also free up goToScheduleMonth's own re-entrancy guard right away --
+    // left stuck true otherwise if this fires (e.g. the idle timeout) while
+    // a month-nav fetch is still in flight, which would silently no-op the
+    // NEXT employee's own Prev/Next taps on a fresh schedule view until the
+    // abandoned fetch eventually resolves on its own.
+    isChangingScheduleMonthRef.current = false;
+    setIsChangingScheduleMonth(false);
+    // Same reasoning, for submitSchedulePin's own guard -- an abandoned PIN
+    // lookup left this stuck true would lock the NEXT employee's keypad
+    // (onScheduleKeyPress/the Keypad's disabled prop both gate on it) until
+    // that abandoned fetch happened to resolve on its own.
+    setIsLoadingSchedule(false);
     setMode('checkin');
     setSchedulePin('');
     setScheduleError(false);
     setScheduleIssue(null);
     setScheduleData(null);
+    // Pre-existing gap, closed here since this is now the one shared reset
+    // path: neither the old Cancel/Done handlers nor submitSchedulePin ever
+    // cleared this, so a failed goToScheduleMonth's error banner for one
+    // employee could still be showing by the time the NEXT employee's
+    // schedule loads on this same shared kiosk.
+    setScheduleMonthNavError(null);
   };
 
   // Shared by both lookup paths (local-cache and live) below, so the
@@ -1452,18 +1497,36 @@ export default function KioskScreen({ navigation }: Props) {
       return;
     }
 
+    // Captured synchronously before the network await below -- same
+    // staleness-guard pattern as submitExitPin's own exitRequestIdRef.
+    const requestId = ++scheduleRequestIdRef.current;
     setScheduleIssue(null);
     setIsLoadingSchedule(true);
     const res = await kioskMyAttendance(value);
+    // Checked BEFORE clearing isLoadingSchedule (not after) -- same
+    // reasoning as goToScheduleMonth's own ordering fix for
+    // isChangingScheduleMonthRef: a newer submitSchedulePin call could have
+    // started and set isLoadingSchedule true for ITSELF during this fetch's
+    // await (resetSchedule already clears it synchronously the moment a
+    // reset happens, so a stale call skipping this is never left stuck true).
+    if (scheduleRequestIdRef.current !== requestId) return;
     setIsLoadingSchedule(false);
 
     if (res.success) {
       setSchedulePin('');
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      if (scheduleRequestIdRef.current !== requestId) return; // re-check -- resetSchedule could have fired during the Haptics await just above
       setScheduleAuthPin(value);
       setScheduleData({ name: res.name, year: res.year, month: res.month, days: res.days, otUnit: res.otUnit, otMinutesTotal: res.otMinutesTotal, otQuartersTotal: res.otQuartersTotal });
       setScheduleIsStale(false);
       setScheduleStaleAt(null);
+      // A fresh live fetch landing here (first entry, or the stale banner's
+      // own Refresh) proves the server is reachable now, so any leftover
+      // "No connection, try again" banner from an earlier failed Prev/Next
+      // tap (goToScheduleMonth's own scheduleMonthNavError) no longer
+      // applies -- same reasoning goToScheduleMonth already applies to
+      // scheduleIsStale on its own successful fetches.
+      setScheduleMonthNavError(null);
       setMode('scheduleResult');
       // Fire-and-forget: pulls up to a year of history in the background so
       // paging Prev/Next lands on an instant local cache hit for most
@@ -1481,6 +1544,7 @@ export default function KioskScreen({ navigation }: Props) {
       // successfully for this PIN (if any), clearly labeled as possibly
       // outdated (see the stale banner in scheduleResult).
       const cached = await getCurrentScheduleSnapshot(value);
+      if (scheduleRequestIdRef.current !== requestId) return; // superseded by resetSchedule while this cache read was in flight
       // Only usable if it's still describing the actual current month --
       // otherwise (e.g. the device was offline across a month rollover) it
       // would display last month's calendar mislabeled as just "possibly
@@ -1500,6 +1564,7 @@ export default function KioskScreen({ navigation }: Props) {
       if (cached && cachedIsCurrentMonth) {
         setSchedulePin('');
         await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+        if (scheduleRequestIdRef.current !== requestId) return; // re-check -- resetSchedule could have fired during the Haptics await just above
         setScheduleAuthPin(value);
         setScheduleData({ name: cached.name, year: cached.year, month: cached.month, days: cached.days, otUnit: cached.otUnit, otMinutesTotal: cached.otMinutesTotal, otQuartersTotal: cached.otQuartersTotal });
         setScheduleIsStale(true);
@@ -1512,10 +1577,12 @@ export default function KioskScreen({ navigation }: Props) {
       // cache write above never landed) -- offer a retry instead of just
       // flashing an error, same as before this fallback existed.
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      if (scheduleRequestIdRef.current !== requestId) return;
       setScheduleIssue(res.message);
     } else {
       setSchedulePin('');
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      if (scheduleRequestIdRef.current !== requestId) return;
       setScheduleError(true);
       setTimeout(() => setScheduleError(false), ERROR_FLASH_DURATION_MS);
     }
@@ -1555,6 +1622,13 @@ export default function KioskScreen({ navigation }: Props) {
     // missing the cache and firing duplicate live requests for the same month.
     isChangingScheduleMonthRef.current = true;
     setScheduleMonthNavError(null);
+    // Same staleness-guard pattern as submitSchedulePin's own use of its own
+    // scheduleRequestIdRef (a SEPARATE counter -- see scheduleMonthNavRequestIdRef's
+    // own comment above for why) -- a resetSchedule (Cancel/Done/the
+    // Schedule idle timeout) firing while this month-nav fetch is still in
+    // flight must not let its result land on screen after the employee has
+    // already left scheduleResult.
+    const requestId = ++scheduleMonthNavRequestIdRef.current;
 
     // The current month changes all day (people are still clocking in/out),
     // so it's never served from cache -- only a genuinely past month, which
@@ -1563,6 +1637,22 @@ export default function KioskScreen({ navigation }: Props) {
     const isCurrentMonth = year === now.getFullYear() && month === now.getMonth() + 1;
     if (!isCurrentMonth) {
       const cached = await getCachedScheduleMonth(scheduleAuthPin, year, month);
+      // Staleness here means resetSchedule (or a newer goToScheduleMonth
+      // call, which bumps this same ref) already ran and is the one
+      // responsible for isChangingScheduleMonthRef/isChangingScheduleMonth
+      // now -- this abandoned call must leave both alone rather than
+      // clearing them itself, or it could clobber a genuinely-in-flight
+      // NEWER request's own guard (e.g. employee B's) if that newer call
+      // happens to have started in the meantime.
+      if (scheduleMonthNavRequestIdRef.current !== requestId) return;
+      // A cache miss/mismatch below falls through to the live fetch further
+      // down, which still needs this ref held true the whole time --
+      // otherwise a second tap landing in this exact window (cache read
+      // resolved, live fetch not yet started) would pass the
+      // top-of-function re-entrancy guard and fire a duplicate concurrent
+      // request for the same month, precisely what this ref exists to
+      // prevent (see the comment where it's set above). Only the matching
+      // cache-hit branch just below actually clears it.
       // A KioskPIN can end up reassigned to a different employee over time;
       // the name on the cached entry is compared against the name already
       // showing on screen (itself always from a fresh, never-cached fetch)
@@ -1580,11 +1670,19 @@ export default function KioskScreen({ navigation }: Props) {
     if (!isConnected) {
       isChangingScheduleMonthRef.current = false;
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      if (scheduleMonthNavRequestIdRef.current !== requestId) return;
       setScheduleMonthNavError('No connection. Check your internet and try again.');
       return;
     }
     setIsChangingScheduleMonth(true);
     const res = await kioskMyAttendance(scheduleAuthPin, year, month);
+    // Checked BEFORE clearing the ref/state below (not after, unlike the
+    // original unconditional clear this replaced) -- a newer goToScheduleMonth
+    // call could have started and set isChangingScheduleMonthRef true for
+    // ITSELF during this fetch's await, and this now-stale call resolving
+    // late must not clear that out from under it. Whichever call IS still
+    // current owns clearing these.
+    if (scheduleMonthNavRequestIdRef.current !== requestId) return;
     isChangingScheduleMonthRef.current = false;
     setIsChangingScheduleMonth(false);
 
@@ -1600,6 +1698,7 @@ export default function KioskScreen({ navigation }: Props) {
       }
     } else {
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      if (scheduleMonthNavRequestIdRef.current !== requestId) return;
       setScheduleMonthNavError(res.message);
     }
   };
