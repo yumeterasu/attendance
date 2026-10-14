@@ -13,7 +13,7 @@ import { useSession } from '../context/SessionContext';
 import { lookupPinLocally } from '../utils/employeeDirectory';
 import { enqueueCheckin } from '../utils/offlineQueue';
 import { setLocalOnBreak, getLocalBreakStartedAt, getTrustedLocalBreakState, adoptDirectoryBreakState } from '../utils/breakState';
-import { addEstimatedOfflineBreakMinutes, setConfirmedTotalMinutesToday } from '../utils/breakMinutesCache';
+import { addEstimatedOfflineBreakMinutes, setConfirmedTotalMinutesToday, seedFromDirectoryIfUnknown } from '../utils/breakMinutesCache';
 import { setLocalCheckedInToday, getLocalCheckedInRecordToday, clearLocalCheckedInToday } from '../utils/checkinState';
 import { getDeviceBranch } from '../utils/deviceBranch';
 import {
@@ -939,6 +939,16 @@ export default function KioskScreen({ navigation }: Props) {
       // assume that invariant holds forever either. Not awaited, same
       // best-effort convention as every other local-cache write here.
       adoptDirectoryBreakState(value, local.onBreak ? local.breakStartedAt || new Date().toISOString() : null);
+    }
+    // Seeds this device's own breakMinutesCache from the directory's
+    // cross-branch total, but only if this device has no knowledge of its
+    // own for this PIN today yet -- see seedFromDirectoryIfUnknown's own
+    // comment. `null` means an old-shaped cached directory entry that
+    // predates this field (see employeeDirectory.ts), not a genuine zero --
+    // must not seed from that. Not awaited, same best-effort convention as
+    // every other local-cache write here.
+    if (local.totalMinutesUsedToday != null) {
+      seedFromDirectoryIfUnknown(value, local.totalMinutesUsedToday);
     }
     // Same structural fix as the break-state one above, lower stakes: a
     // plain `local.onShift || checkedInNow` OR let a stale cross-branch

@@ -866,31 +866,76 @@ function startOfDay_(date) {
  * staff size, a single day's combined event count is nowhere near 1000.
  */
 function sumCompletedBreakMinutesToday_(employeeId, sinceTs, now, log) {
+  // Single source of truth is bulkCompletedBreakMinutesToday_ -- this is a
+  // thin wrapper over the 1-employee case, same reasoning/pattern as
+  // currentShiftBreakState_'s own relationship to bulkShiftBreakState_
+  // above (never two independent pairing implementations that could drift
+  // apart from each other).
+  return bulkCompletedBreakMinutesToday_([employeeId], sinceTs, now, log)[String(employeeId)];
+}
+
+/**
+ * Same answer as sumCompletedBreakMinutesToday_, for every one of
+ * `employeeIds` at once, in ONE pass over `log.rows` instead of one O(rows)
+ * scan per employee -- added for handleKioskDirectory_, which needs this
+ * for the whole active roster on every ~30s refresh (calling
+ * sumCompletedBreakMinutesToday_ in a loop there would be
+ * O(rows * employees), the same reasoning bulkShiftBreakState_ was added
+ * for above). Returns { [employeeId]: totalMinutes }.
+ *
+ * Real gap this exists to close (2026-10-14): breakMinutesCache.ts on the
+ * Kiosk app keeps its offline-estimate running total PER DEVICE (never
+ * synced across tablets), so an employee who already used break minutes at
+ * one branch, then takes a break at a DIFFERENT branch's tablet while THAT
+ * device has no connection, saw an estimate that ignored the first
+ * branch's usage entirely -- started counting from 0 instead of picking up
+ * where the first branch left off. Sending this total through the
+ * directory (which every Kiosk already refreshes every ~30s regardless of
+ * branch, same mechanism as onShift/onBreak/breakStartedAt just above)
+ * gives any device a recent cross-branch baseline to seed its own local
+ * estimate from the moment it looks that PIN up, instead of a bare 0.
+ */
+function bulkCompletedBreakMinutesToday_(employeeIds, sinceTs, now, log) {
   var idCol = log.headers.indexOf('EmployeeID');
   var tsCol = log.headers.indexOf('Timestamp');
   var typeCol = log.headers.indexOf('Type');
 
-  var events = [];
+  var idSet = {};
+  employeeIds.forEach(function (id) { idSet[String(id)] = true; });
+
+  // One pass, bucketing each employee's own BREAK_START/BREAK_END events
+  // within (sinceTs, now] -- same batching shape as bulkShiftBreakState_'s
+  // own passes above.
+  var eventsByEmployee = {};
   for (var i = 0; i < log.rows.length; i++) {
-    if (String(log.rows[i][idCol]) !== String(employeeId)) continue;
+    var empId = String(log.rows[i][idCol]);
+    if (!idSet[empId]) continue;
+    var rowType = log.rows[i][typeCol];
+    if (rowType !== 'BREAK_START' && rowType !== 'BREAK_END') continue;
     var ts = new Date(log.rows[i][tsCol]);
     if (ts.getTime() <= sinceTs.getTime() || ts.getTime() > now.getTime()) continue;
-    var rowType = log.rows[i][typeCol];
-    if (rowType === 'BREAK_START' || rowType === 'BREAK_END') events.push({ ts: ts, type: rowType });
+    if (!eventsByEmployee[empId]) eventsByEmployee[empId] = [];
+    eventsByEmployee[empId].push({ ts: ts, type: rowType });
   }
-  events.sort(function (a, b) { return a.ts.getTime() - b.ts.getTime(); });
 
-  var totalMinutes = 0;
-  var openStart = null;
-  for (var j = 0; j < events.length; j++) {
-    if (events[j].type === 'BREAK_START') {
-      openStart = events[j].ts;
-    } else if (openStart) {
-      totalMinutes += discountedBreakMinutes_(Math.round((events[j].ts.getTime() - openStart.getTime()) / 60000));
-      openStart = null;
+  var result = {};
+  employeeIds.forEach(function (id) {
+    var key = String(id);
+    var events = eventsByEmployee[key] || [];
+    events.sort(function (a, b) { return a.ts.getTime() - b.ts.getTime(); });
+    var totalMinutes = 0;
+    var openStart = null;
+    for (var j = 0; j < events.length; j++) {
+      if (events[j].type === 'BREAK_START') {
+        openStart = events[j].ts;
+      } else if (openStart) {
+        totalMinutes += discountedBreakMinutes_(Math.round((events[j].ts.getTime() - openStart.getTime()) / 60000));
+        openStart = null;
+      }
     }
-  }
-  return totalMinutes;
+    result[key] = totalMinutes;
+  });
+  return result;
 }
 
 /**
@@ -1069,11 +1114,13 @@ function recordBreak_(employeeId, type, durationMinutes) {
  *
  * Also carries each employee's onShift/onBreak/breakStartedAt (see
  * bulkShiftBreakState_, added 2026-10-05 for the cross-branch Start Break
- * delay -- its own doc comment has the full incident) -- computed for
- * EVERYONE in one bounded-log pass here, piggybacking on this same
- * already-every-30s-refreshed call rather than a separate endpoint/poll, so
- * there's no new request volume added, just a bit more per-call work and a
- * slightly bigger response.
+ * delay -- its own doc comment has the full incident) and
+ * totalMinutesUsedToday (see bulkCompletedBreakMinutesToday_, added
+ * 2026-10-14 for the cross-branch break-minutes estimate gap) -- all
+ * computed for EVERYONE in the same two bounded-log passes here,
+ * piggybacking on this same already-every-30s-refreshed call rather than a
+ * separate endpoint/poll, so there's no new request volume added, just a
+ * bit more per-call work and a slightly bigger response.
  */
 function handleKioskDirectory_(params) {
   if (!checkApiKey_(params.apiKey)) return fail_('unauthorized', 'Invalid API key');
@@ -1081,11 +1128,12 @@ function handleKioskDirectory_(params) {
   var activeEmployees = getAllEmployees_().filter(function (emp) { return isTrue_(emp.Active) && emp.KioskPIN; });
   var now = new Date();
   var log = getRecentAttendanceLog_();
-  var statusByEmployeeId = bulkShiftBreakState_(
-    activeEmployees.map(function (emp) { return emp.EmployeeID; }),
-    now,
-    log
-  );
+  var employeeIds = activeEmployees.map(function (emp) { return emp.EmployeeID; });
+  var statusByEmployeeId = bulkShiftBreakState_(employeeIds, now, log);
+  // startOfDay_(now), not todayIn -- same DAILY_BREAK_BUDGET_MINUTES-is-a-
+  // whole-calendar-day reasoning sumCompletedBreakMinutesToday_'s own doc
+  // comment explains (an employee can clock OUT and back IN the same day).
+  var completedBreakMinutesByEmployeeId = bulkCompletedBreakMinutesToday_(employeeIds, startOfDay_(now), now, log);
 
   var employees = activeEmployees.map(function (emp) {
     var status = statusByEmployeeId[String(emp.EmployeeID)];
@@ -1095,7 +1143,13 @@ function handleKioskDirectory_(params) {
       shifts: shiftChoicesFor_(emp),
       onShift: status.onShift,
       onBreak: status.onBreak,
-      breakStartedAt: status.breakStartedAt
+      breakStartedAt: status.breakStartedAt,
+      // Deliberately excludes any CURRENTLY OPEN break round's own elapsed-
+      // so-far minutes -- same scope as sumCompletedBreakMinutesToday_
+      // always had (only complete pairs), matching what the app's own
+      // breakMinutesCache.ts needs: a baseline to add a NEW round's own
+      // minutes on top of, not a live-ticking number.
+      totalMinutesUsedToday: completedBreakMinutesByEmployeeId[String(emp.EmployeeID)]
     };
   });
 

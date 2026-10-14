@@ -32,6 +32,28 @@ async function writeMap(map: Record<string, Entry>): Promise<void> {
   }
 }
 
+// Every export below does read-modify-write on the SAME whole-map
+// AsyncStorage entry (not one key per PIN), so two calls left to interleave
+// freely (e.g. a BREAK_END sync's setConfirmedTotalMinutesToday racing a
+// concurrent lookup's seedFromDirectoryIfUnknown -- added 2026-10-14, and
+// now firing on every single PIN lookup, not just a break action, which
+// made this pre-existing race meaningfully easier to hit) could lose
+// whichever write's readMap() happened to run first, even for two
+// DIFFERENT PINs. This tiny queue chains every call through the same
+// promise, so each one's whole read-modify-write cycle fully finishes
+// before the next one's read ever starts -- cheap (this file's write
+// volume is trivial) and simpler than per-PIN locking for what's still a
+// single-device, mostly-sequential kiosk flow.
+let queue: Promise<unknown> = Promise.resolve();
+function serialized<T>(fn: () => Promise<T>): Promise<T> {
+  const result = queue.then(fn, fn);
+  queue = result.then(
+    () => undefined,
+    () => undefined
+  );
+  return result;
+}
+
 /**
  * Adds `minutes` on top of today's current estimate (resetting first if the
  * cached entry is stale) -- called when an offline Back from Break is
@@ -46,13 +68,15 @@ async function writeMap(map: Record<string, Entry>): Promise<void> {
  * immediately (see queueOffline) don't have to do a second read.
  */
 export async function addEstimatedOfflineBreakMinutes(pin: string, minutes: number): Promise<number> {
-  const map = await readMap();
-  const today = todayKey();
-  const prior = map[pin] && map[pin].date === today ? map[pin].totalMinutes : 0;
-  const total = Math.max(0, prior + minutes);
-  map[pin] = { date: today, totalMinutes: total };
-  await writeMap(map);
-  return total;
+  return serialized(async () => {
+    const map = await readMap();
+    const today = todayKey();
+    const prior = map[pin] && map[pin].date === today ? map[pin].totalMinutes : 0;
+    const total = Math.max(0, prior + minutes);
+    map[pin] = { date: today, totalMinutes: total };
+    await writeMap(map);
+    return total;
+  });
 }
 
 /**
@@ -62,7 +86,43 @@ export async function addEstimatedOfflineBreakMinutes(pin: string, minutes: numb
  * known, instead of drifting further with every subsequent offline break.
  */
 export async function setConfirmedTotalMinutesToday(pin: string, totalMinutes: number): Promise<void> {
-  const map = await readMap();
-  map[pin] = { date: todayKey(), totalMinutes };
-  await writeMap(map);
+  return serialized(async () => {
+    const map = await readMap();
+    map[pin] = { date: todayKey(), totalMinutes };
+    await writeMap(map);
+  });
+}
+
+/**
+ * Seeds today's estimate from the directory's own totalMinutesUsedToday
+ * (see Attendance.gs's bulkCompletedBreakMinutesToday_/
+ * handleKioskDirectory_, and employeeDirectory.ts's own comment) -- but
+ * ONLY when this device has no entry of its own for this PIN today at all.
+ * Real gap this closes: this cache is per-device storage, never synced
+ * across tablets, so a device an employee has never broken on TODAY starts
+ * from 0 regardless of how much they already used at a DIFFERENT branch --
+ * an offline Back from Break there would then show close to the full
+ * budget remaining, understating real usage. The directory (refreshed
+ * ~30s while online) gives any device a recent cross-branch baseline
+ * instead of a bare 0.
+ *
+ * Deliberately conservative: if this device already has ANY entry for this
+ * PIN today (its own confirmed total, or its own earlier offline
+ * estimate), that is left completely untouched -- this device's own
+ * knowledge of what actually happened ON it is never overwritten by a
+ * periodic, possibly-stale directory snapshot. This does not fully close
+ * the gap (a THIRD round, cross-branch again, after this device's own
+ * now-stale local entry, still won't pick up the directory's newer figure
+ * until this device's own entry rolls over to a new day) -- an accepted,
+ * smaller remaining edge case, same spirit as this file's other documented
+ * limitations.
+ */
+export async function seedFromDirectoryIfUnknown(pin: string, directoryTotalMinutes: number): Promise<void> {
+  return serialized(async () => {
+    const map = await readMap();
+    const today = todayKey();
+    if (map[pin] && map[pin].date === today) return; // this device already knows something about today -- never overwritten
+    map[pin] = { date: today, totalMinutes: Math.max(0, directoryTotalMinutes) };
+    await writeMap(map);
+  });
 }

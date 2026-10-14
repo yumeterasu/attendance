@@ -209,9 +209,26 @@ export function verifyKioskExitPin(pin: string) {
 // call, instead of needing a live kioskLookupPin round-trip first -- see
 // employeeDirectory.ts/KioskScreen.tsx's tryLocalLookup for where this
 // gets used.
+//
+// totalMinutesUsedToday: today's COMPLETED break minutes only (excludes
+// any currently-open round -- same scope as Attendance.gs's own
+// sumCompletedBreakMinutesToday_/bulkCompletedBreakMinutesToday_, added
+// 2026-10-14 for the cross-branch break-minutes estimate gap: this device's
+// own breakMinutesCache.ts is per-device storage, never synced across
+// tablets, so a device that's never seen this PIN break TODAY has no idea
+// how much they already used at a different branch -- this field seeds
+// that baseline instead of starting from a bare 0.
 export function kioskDirectory() {
   return postAction<{
-    employees: { pin: string; name: string; shifts: string[]; onShift: boolean; onBreak: boolean; breakStartedAt: string | null }[];
+    employees: {
+      pin: string;
+      name: string;
+      shifts: string[];
+      onShift: boolean;
+      onBreak: boolean;
+      breakStartedAt: string | null;
+      totalMinutesUsedToday: number;
+    }[];
   }>('kioskDirectory', {});
 }
 
