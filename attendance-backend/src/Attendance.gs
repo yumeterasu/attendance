@@ -1002,23 +1002,27 @@ function handleKioskBreak_(params) {
  * accidental double-tap this guard exists to catch either way, and the
  * rejection is a soft "please wait a moment" retry, not data loss.
  *
- * `options.ignoreTypes`: treat lastLog as if it doesn't exist when its Type
- * is in this list -- used by the IN/OUT callers so a Break row (a
- * completely different action) can never block a genuine IN/OUT tap just by
- * having happened moments earlier; the IN-vs-OUT/OUT-vs-IN blocking those
- * callers already did before Break existed is otherwise unchanged.
- *
  * `options.sameTypeOnly` + `options.type`: only match when lastLog.Type
- * equals `type` -- used by the Break callers so a BREAK_END right after its
- * own BREAK_START (or vice versa) is never rejected as "duplicate"; that's
- * a deliberate state transition (often someone correcting a mis-tap), not
- * an accidental double-tap. Genuine state conflicts (e.g. starting a break
- * while already on one) are caught separately by currentShiftBreakState_'s
- * own already_on_break/not_on_break checks.
+ * equals `type` -- used by EVERY caller now (recordBreak_/
+ * recordOfflineSyncedBreak_ always did; recordAttendance_/
+ * recordOfflineSyncedAttendance_ switched to it 2026-10-15) so a state
+ * transition to a DIFFERENT action right after the previous one -- a
+ * BREAK_END right after its own BREAK_START, or an IN correcting a just-
+ * mis-tapped OUT -- is never rejected as "duplicate" just for happening
+ * close together; that's a deliberate correction, not an accidental
+ * double-tap. Only two consecutive taps of the exact SAME type count as a
+ * duplicate. Real incident this fixed for IN/OUT (previously used a since-
+ * removed `ignoreTypes` option that excluded Break rows specifically but
+ * still wrongly compared against any OTHER IN/OUT type): a mis-tapped OUT
+ * immediately corrected with a real IN got silently rejected, the
+ * employee's device then had the wrong local state, and the Break they
+ * tapped right after failed too -- neither row ever reached AttendanceLog.
+ * Genuine state conflicts (e.g. starting a break while already on one) are
+ * caught separately by currentShiftBreakState_'s own already_on_break/
+ * not_on_break checks, not by this guard.
  */
 function isWithinDuplicateGuard_(lastLog, referenceTime, options) {
   if (!lastLog || !lastLog.Timestamp) return false;
-  if (options.ignoreTypes && options.ignoreTypes.indexOf(lastLog.Type) !== -1) return false;
   if (options.sameTypeOnly && lastLog.Type !== options.type) return false;
   var delta = Math.abs(referenceTime.getTime() - new Date(lastLog.Timestamp).getTime());
   return delta < DUPLICATE_GUARD_MS;
@@ -2691,11 +2695,16 @@ function recordOfflineSyncedAttendance_(employeeId, type, timestamp, ot, clientI
   // mode shows no instant Late/OT confirmation -- both land as real rows
   // once synced. Compared against the queued tap's own timestamp, not
   // "now" (which is meaningless here, sync can happen minutes later).
-  // ignoreTypes: a Break row must never block a genuine IN/OUT tap just by
-  // having happened moments earlier -- see isWithinDuplicateGuard_.
+  // sameTypeOnly (not ignoreTypes) -- same fix/reasoning as recordAttendance_'s
+  // own identical guard (see its comment) -- ignoreTypes only excluded Break
+  // from blocking a genuine IN/OUT tap, but still wrongly compared against
+  // any OTHER IN/OUT type too, rejecting a real correction (e.g. a mis-
+  // tapped OUT immediately followed by the real IN) as a false duplicate.
+  // Matches recordOfflineSyncedBreak_'s own already-correct guard (line
+  // ~2868) -- only a genuine same-type double-tap should ever be a duplicate.
   var log = getRecentAttendanceLog_();
   var lastLog = findLastLogForEmployee_(employeeId, log);
-  if (isWithinDuplicateGuard_(lastLog, timestamp, { ignoreTypes: ['BREAK_START', 'BREAK_END'] })) {
+  if (isWithinDuplicateGuard_(lastLog, timestamp, { sameTypeOnly: true, type: type })) {
     return { duplicate: true, name: emp.Name };
   }
 
@@ -3001,9 +3010,21 @@ function recordAttendance_(employeeId, method, rawScanValue, type, ot, punchBran
   var lastLog = findLastLogForEmployee_(employeeId, log);
   var now = new Date();
 
-  // ignoreTypes: a Break row must never block a genuine IN/OUT tap just by
-  // having happened moments earlier -- see isWithinDuplicateGuard_.
-  if (isWithinDuplicateGuard_(lastLog, now, { ignoreTypes: ['BREAK_START', 'BREAK_END'] })) {
+  // sameTypeOnly (not ignoreTypes) -- real incident, 2026-10-15: ignoreTypes
+  // only excluded a Break row from blocking a genuine IN/OUT tap, but still
+  // compared against ANY other IN/OUT row regardless of type, so a mis-
+  // tapped OUT immediately corrected with a real IN (a completely different
+  // action, seconds apart) was wrongly rejected as "duplicate" -- the
+  // employee's correction never reached the server, their local device
+  // state was then wrong (thought they were clocked in), and the Break tap
+  // they made right after failed too (not_clocked_in/already_clocked_out),
+  // so NEITHER row ever showed up in AttendanceLog with no clear trace of
+  // why. sameTypeOnly matches recordBreak_'s own already-correct guard
+  // (line ~1045) -- only a genuine same-type double-tap (IN after IN, OUT
+  // after OUT) should ever be treated as a duplicate; two different actions
+  // close together are a correction, not a double-tap, and must never be
+  // blocked by this guard.
+  if (isWithinDuplicateGuard_(lastLog, now, { sameTypeOnly: true, type: type })) {
     return fail_('duplicate', 'Already recorded, please wait a moment before scanning again');
   }
 
