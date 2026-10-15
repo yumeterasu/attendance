@@ -2260,6 +2260,29 @@ function setupDailyRecomputeCurrentMonthTrigger() {
 }
 
 /**
+ * One-off: removes the daily runRecomputeCurrentMonthAutomatic_ trigger, if
+ * one exists -- same pattern as removeDailyHealthCheckTrigger (HealthCheck.gs).
+ * Safe to run more than once -- does nothing if there's no trigger left to
+ * remove. Run once from the editor: select
+ * removeDailyRecomputeCurrentMonthTrigger in the toolbar dropdown, click
+ * Run. The underlying functions (runRecomputeCurrentMonthAutomatic_,
+ * recomputeLateAndOtForMonth_, protectExistingShifts) are left in place,
+ * same as HealthCheck.gs's own precedent -- they just never run again
+ * unattended once this trigger is gone; "Recompute Late/OT for One Month"
+ * in the Sheets menu is completely unaffected either way.
+ */
+function removeDailyRecomputeCurrentMonthTrigger() {
+  var removed = 0;
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === 'runRecomputeCurrentMonthAutomatic_') {
+      ScriptApp.deleteTrigger(t);
+      removed++;
+    }
+  });
+  Logger.log(removed > 0 ? 'Daily auto-recompute trigger removed.' : 'No daily auto-recompute trigger was installed.');
+}
+
+/**
  * Confirms the Kiosk Exit PIN before letting the shared tablet back to the
  * Admin screen -- otherwise anyone tapping Exit on the kiosk lands straight
  * in admin tools. If no exit PIN has been set yet (KIOSK_EXIT_PIN script
