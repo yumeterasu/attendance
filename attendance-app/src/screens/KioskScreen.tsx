@@ -13,7 +13,7 @@ import { useSession } from '../context/SessionContext';
 import { lookupPinLocally } from '../utils/employeeDirectory';
 import { enqueueCheckin } from '../utils/offlineQueue';
 import { setLocalOnBreak, getLocalBreakStartedAt, getTrustedLocalBreakState, adoptDirectoryBreakState } from '../utils/breakState';
-import { addEstimatedOfflineBreakMinutes, setConfirmedTotalMinutesToday, seedFromDirectoryIfUnknown } from '../utils/breakMinutesCache';
+import { addEstimatedOfflineBreakMinutes, setConfirmedTotalMinutesToday, seedFromDirectoryIfUnknown, getTodayTotalMinutes } from '../utils/breakMinutesCache';
 import { setLocalCheckedInToday, getLocalCheckedInRecordToday, clearLocalCheckedInToday } from '../utils/checkinState';
 import { getDeviceBranch } from '../utils/deviceBranch';
 import {
@@ -72,29 +72,31 @@ function nowRoundedToStep_(): number {
 }
 
 // Mirrors the backend's DAILY_BREAK_BUDGET_MINUTES (Attendance.gs). The
-// online path still always uses the server's own authoritative
-// remainingMinutes for "minutes left" (never this constant) -- but DOES use
-// this constant for "minutes OVER" (see minutesOverBudget_ below), since the
-// server only ever sends the clamped remainingMinutes plus the raw,
-// unclamped totalMinutesUsedToday, not an already-computed "over" figure of
-// its own; subtracting the two client-side here is the one place this
-// constant crosses into the online path.
+// feedback card's own "minutes left" after confirming a Back from Break
+// still always uses the server's own authoritative remainingMinutes
+// directly (never this constant, for THAT one figure) -- but this constant
+// IS used client-side for "minutes OVER" (see minutesOverBudget_ below) and,
+// since 2026-10-16, for the persistent "break left today" status shown
+// right after any lookup (applyBreakMinutesDisplay) -- both derived from
+// the raw, unclamped totalMinutesUsedToday the server sends (online) or
+// breakMinutesCache's own running total (offline), since neither of those
+// is pre-clamped the way remainingMinutes is.
 const DAILY_BREAK_BUDGET_MINUTES = 60;
 
 // Mirrors the backend's BREAK_WALK_DISCOUNT_MINUTES/discountedBreakMinutes_
-// (Attendance.gs) -- applied client-side to breakSessionMinutes (see
-// queueOffline's BREAK_END branch below) before it's added to
+// (Attendance.gs, lowered from 4 to 3 on 2026-10-16 -- keep both in sync if
+// this ever changes again) -- applied client-side to breakSessionMinutes
+// (see queueOffline's BREAK_END branch below) before it's added to
 // breakMinutesCache, so the offline ESTIMATE agrees with what the server
 // will eventually confirm. Real bug this closes (2026-10-14, caught adding
 // the "Over by X min" notification): without this, a round that's actually
-// within budget once discounted (e.g. 64 raw minutes -> 60 after the 4-
-// minute discount) could show a false "Over by 4 min" alarm offline, when
-// the sync-confirmed total would say exactly 0 over. Applied once per
-// completed round, exactly mirroring discountedBreakMinutes_'s own "per
-// completed round" scope server-side -- never to an in-progress round, and
-// never to the online path (the server's own remainingMinutes/
+// within budget once discounted could show a false "Over by X min" alarm
+// offline, when the sync-confirmed total would say exactly 0 over. Applied
+// once per completed round, exactly mirroring discountedBreakMinutes_'s own
+// "per completed round" scope server-side -- never to an in-progress round,
+// and never to the online path (the server's own remainingMinutes/
 // totalMinutesUsedToday are already net of this).
-const BREAK_WALK_DISCOUNT_MINUTES = 4;
+const BREAK_WALK_DISCOUNT_MINUTES = 3;
 
 // Shared by both the online (onConfirm, from res.totalMinutesUsedToday) and
 // offline (queueOffline, from addEstimatedOfflineBreakMinutes's returned
@@ -506,6 +508,21 @@ export default function KioskScreen({ navigation }: Props) {
   // has already moved on (re-entered the same PIN, or a different one) and
   // overwrite state a newer lookup already set more recently.
   const lookupGenerationRef = useRef(0);
+  // Which PIN's data is currently safe to SHOW on screen -- set the moment
+  // a lookup's name actually lands (tryLocalLookup, lookupPin's live
+  // branch), cleared by resetCheckin. Deliberately separate from
+  // lookupGenerationRef above: that one exists to dedupe/supersede LIVE
+  // lookupPin calls against each other and gates the ENTIRE background
+  // reconciliation callback, including the per-PIN AsyncStorage self-heal
+  // writes (setLocalOnBreak/setLocalCheckedInToday) that are safe and
+  // meant to run regardless of what's currently on screen -- a real
+  // regression caught in review: gating resetCheckin on that same ref
+  // meant a quick Confirm right after a local-hit lookup could suppress
+  // its own background correction's self-heal entirely, including for the
+  // SAME employee, not just a superseded one. This ref instead gates ONLY
+  // applyServerBreakAndShiftState's UI state setters (see its own
+  // comment), leaving the persistence writes unconditional.
+  const displayedPinRef = useRef<string | null>(null);
   const [selection, setSelection] = useState<Selection | null>(null);
   // Whether this PIN is currently on break right now -- drives the Break
   // button's label (Start Break vs Back from Break). Comes from the live
@@ -533,6 +550,21 @@ export default function KioskScreen({ navigation }: Props) {
   // IN today, while someone genuinely still on shift (checked in today,
   // not yet out) never sees a second IN to mis-tap in the first place.
   const [onShiftToday, setOnShiftToday] = useState(false);
+  // Shown right under "Hi, {name}" on every successful lookup, not just
+  // after confirming a break action -- real feedback, 2026-10-16: a
+  // persistent "break time left today" status someone can see just by
+  // looking themselves up, not only in the transient feedback card that
+  // used to be the only place this number ever appeared. null means "not
+  // resolved yet" (nothing shown); breakMinutesOver is null/0 when not
+  // over budget (undefined from minutesOverBudget_ normalized to null, same
+  // "absent means not applicable" convention as the Feedback type's own
+  // overMinutes/estimatedOverMinutes). breakMinutesIsEstimate mirrors the
+  // feedback card's own online/offline distinction -- true whenever this
+  // came from tryLocalLookup's on-device cache rather than a live
+  // kioskLookupPin response.
+  const [breakMinutesRemaining, setBreakMinutesRemaining] = useState<number | null>(null);
+  const [breakMinutesOver, setBreakMinutesOver] = useState<number | null>(null);
+  const [breakMinutesIsEstimate, setBreakMinutesIsEstimate] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   // Mirrors isProcessing but read/written synchronously -- same reasoning as
   // isChangingScheduleMonthRef below: state doesn't land until the next
@@ -637,6 +669,12 @@ export default function KioskScreen({ navigation }: Props) {
   };
 
   const resetCheckin = () => {
+    // Cleared here (not just overwritten by a later lookup) -- see
+    // displayedPinRef's own comment: this is what stops a background
+    // live-correction tied to this now-cleared screen from painting its
+    // onBreak/onShiftToday/break-minutes data onto whatever's on screen by
+    // the time it resolves (a later employee's lookup, or nothing at all).
+    displayedPinRef.current = null;
     setPin('');
     setLookupName(null);
     setShiftChoices([]);
@@ -648,6 +686,9 @@ export default function KioskScreen({ navigation }: Props) {
     setOnBreak(false);
     setAlreadyCheckedInToday(false);
     setOnShiftToday(false);
+    setBreakMinutesRemaining(null);
+    setBreakMinutesOver(null);
+    setBreakMinutesIsEstimate(false);
     setLookupIssue(null);
     setForcedOffline(false);
   };
@@ -723,19 +764,66 @@ export default function KioskScreen({ navigation }: Props) {
   // (pre-highlighting OUT, say, for someone the server would actually still
   // let clock IN). The IN button itself is never hidden/blocked by this
   // either way -- see the typeRow render below.
+  // Shared by both places "break time left today" gets derived from a raw
+  // totalUsedMinutes figure (applyServerBreakAndShiftState's online path,
+  // tryLocalLookup's offline/local-hit path below) -- one implementation so
+  // the remaining/over math can't drift between the two the way an
+  // identical class of duplication already has elsewhere in this file (see
+  // minutesOverBudget_'s own comment).
+  const applyBreakMinutesDisplay = (totalUsedMinutes: number, isEstimate: boolean) => {
+    setBreakMinutesRemaining(Math.max(0, DAILY_BREAK_BUDGET_MINUTES - totalUsedMinutes));
+    setBreakMinutesOver(minutesOverBudget_(totalUsedMinutes) ?? null);
+    setBreakMinutesIsEstimate(isEstimate);
+  };
+
+  // totalMinutesUsedToday (added 2026-10-16): optional only because it's
+  // threaded through from kioskLookupPin's response, which could in
+  // principle be missing it on a stale cached client build mid-rollout --
+  // every real call site today always has it. Deliberately does NOT also
+  // call setConfirmedTotalMinutesToday here (unlike a real BREAK_END
+  // success) -- real gap caught in review: a plain lookup's totalMinutesUsedToday
+  // is computed purely from AttendanceLog, so if an earlier break round is
+  // still sitting unflushed in this device's own offline queue, the live
+  // server figure can be LOWER (stale) than what this device already knows
+  // from its own not-yet-synced estimate -- writing it back as "confirmed"
+  // here could overwrite a more-accurate local estimate with a less-accurate
+  // one and mislabel it as authoritative. Only the dedicated BREAK_END
+  // success paths (onConfirm, offlineQueue.ts's flushQueue) call
+  // setConfirmedTotalMinutesToday, since THEIR totalMinutesUsedToday is
+  // known to be the exact moment that specific round was accounted for.
+  // Known accepted limitation, not fixed here: the exact same staleness can
+  // briefly affect what's actually DISPLAYED too (not just the cache) --
+  // this value is still shown as confirmed/non-estimate even in that
+  // narrow window. Not guarded against (would need checking this device's
+  // offline queue for a still-unsynced entry for this PIN, cross-module
+  // complexity for a window that's normally seconds wide at most and
+  // self-corrects on the very next successful sync or lookup).
   const applyServerBreakAndShiftState = (
     pin: string,
     onBreak: boolean,
     breakStartedAt: string | null,
     onShift: boolean,
-    onShiftToday: boolean
+    onShiftToday: boolean,
+    totalMinutesUsedToday?: number
   ) => {
-    setOnBreak(onBreak);
+    // Persistence always runs, regardless of what's currently on screen --
+    // these are per-PIN on-device markers (checkinState.ts/breakState.ts),
+    // not screen state, and a stale/superseded correction for this PIN is
+    // still correct data to self-heal that PIN's own local record with
+    // (see displayedPinRef's own comment for the incident this matters for).
     setLocalOnBreak(pin, onBreak ? breakStartedAt : null);
-    setAlreadyCheckedInToday(onShift);
-    setOnShiftToday(onShiftToday);
     if (onShiftToday) setLocalCheckedInToday(pin);
     else clearLocalCheckedInToday(pin);
+    // UI state, by contrast, must only apply while this PIN is still the
+    // one actually on screen -- a background correction resolving after
+    // the employee has already moved on (Confirmed, Cancelled, idle
+    // timeout, or looked up someone else) must never paint onto whatever's
+    // showing now.
+    if (pin !== displayedPinRef.current) return;
+    setOnBreak(onBreak);
+    setAlreadyCheckedInToday(onShift);
+    setOnShiftToday(onShiftToday);
+    if (totalMinutesUsedToday != null) applyBreakMinutesDisplay(totalMinutesUsedToday, false);
   };
 
   // Opens the Special Shift panel with sensible defaults -- start "now"
@@ -938,6 +1026,7 @@ export default function KioskScreen({ navigation }: Props) {
       getLocalCheckedInRecordToday(value)
     ]);
     setLookupName(local.name);
+    displayedPinRef.current = value; // see its own comment -- marks this PIN as the one a later background correction is allowed to paint UI state for
     applyShiftChoices(local.shifts);
     // Real incident, 2026-10-06 (Kahana): a plain `local.onBreak ||
     // onBreakNow` OR -- added 2026-10-05 for the cross-branch Start Break
@@ -983,16 +1072,6 @@ export default function KioskScreen({ navigation }: Props) {
       // best-effort convention as every other local-cache write here.
       adoptDirectoryBreakState(value, local.onBreak ? local.breakStartedAt || new Date().toISOString() : null);
     }
-    // Seeds this device's own breakMinutesCache from the directory's
-    // cross-branch total, but only if this device has no knowledge of its
-    // own for this PIN today yet -- see seedFromDirectoryIfUnknown's own
-    // comment. `null` means an old-shaped cached directory entry that
-    // predates this field (see employeeDirectory.ts), not a genuine zero --
-    // must not seed from that. Not awaited, same best-effort convention as
-    // every other local-cache write here.
-    if (local.totalMinutesUsedToday != null) {
-      seedFromDirectoryIfUnknown(value, local.totalMinutesUsedToday);
-    }
     // Same structural fix as the break-state one above, lower stakes: a
     // plain `local.onShift || checkedInNow` OR let a stale cross-branch
     // directory onShift=true win even right after a genuine OUT on THIS
@@ -1023,6 +1102,38 @@ export default function KioskScreen({ navigation }: Props) {
     // false here and the background reconciliation (see lookupPin's
     // local-hit branch below) sets it correctly from the live server answer
     // within moments whenever one's reachable.
+
+    // Break-minutes display intentionally comes LAST, after every
+    // synchronous-batch state setter above -- real regression caught in
+    // review: this used to sit in the middle of that batch (between
+    // onBreak and alreadyCheckedInToday), and its own awaits
+    // (seedFromDirectoryIfUnknown, getTodayTotalMinutes) reintroduced the
+    // exact "stale default, never corrected" race this function's own
+    // opening comment says was already fixed by setting everything
+    // together in one render -- alreadyCheckedInToday/onShiftToday landing
+    // a tick late fed a stale default into the auto-select-IN effect
+    // (keyed on [lookupName, onBreak], not alreadyCheckedInToday, so it
+    // never got a second chance to correct itself), risking a real
+    // duplicate IN row once accepted (the already_clocked_in server guard
+    // that used to catch this was removed 2026-10-02). Moving this block
+    // after that batch is complete fixes it -- a break-minutes figure
+    // landing one render late is cosmetic, unlike onBreak/alreadyCheckedInToday.
+    if (local.totalMinutesUsedToday != null) {
+      // AWAITED (unlike this file's other best-effort local-cache writes)
+      // specifically so the getTodayTotalMinutes read just below is
+      // guaranteed to see whatever this seed call just wrote, not a stale
+      // pre-seed value from a race between the two.
+      await seedFromDirectoryIfUnknown(value, local.totalMinutesUsedToday);
+    }
+    const localTotalMinutesToday = await getTodayTotalMinutes(value);
+    // Guarded the same way applyServerBreakAndShiftState's own UI setters
+    // are -- these two awaits widen the window for a Cancel/idle-timeout to
+    // land first (resetCheckin clears displayedPinRef), and without this
+    // check that stale resolution would otherwise paint a just-cancelled
+    // session's break-minutes figures back onto a screen that's already
+    // moved on (masked today only by breakStatusRow's own lookupName!==null
+    // render guard, not actually prevented).
+    if (value === displayedPinRef.current) applyBreakMinutesDisplay(localTotalMinutesToday, true);
     return true;
   };
 
@@ -1110,7 +1221,7 @@ export default function KioskScreen({ navigation }: Props) {
                 // another row rather than being rejected, so there's nothing
                 // left to clear it for; see client.ts's own comment on
                 // onShiftToday for the full history.
-                applyServerBreakAndShiftState(value, res.onBreak, res.breakStartedAt, res.onShift, res.onShiftToday);
+                applyServerBreakAndShiftState(value, res.onBreak, res.breakStartedAt, res.onShift, res.onShiftToday, res.totalMinutesUsedToday);
               }
             })
             .catch(() => {});
@@ -1124,6 +1235,7 @@ export default function KioskScreen({ navigation }: Props) {
 
       if (res.success) {
         setLookupName(res.name);
+        displayedPinRef.current = value; // see its own comment
         applyShiftChoices(res.shifts);
         // Server-authoritative now (res.onShift/onBreak/breakStartedAt --
         // see client.ts/handleKioskLookupPin_), not the on-device markers
@@ -1133,7 +1245,7 @@ export default function KioskScreen({ navigation }: Props) {
         // silently never reached the server (see queueOffline's BREAK_END
         // branch); onShift: checked in on a DIFFERENT tablet, whose local
         // marker this device's own storage never knew about.
-        applyServerBreakAndShiftState(value, res.onBreak, res.breakStartedAt, res.onShift, res.onShiftToday);
+        applyServerBreakAndShiftState(value, res.onBreak, res.breakStartedAt, res.onShift, res.onShiftToday, res.totalMinutesUsedToday);
       } else if (res.error === 'timeout' || res.error === 'network_error') {
         // Connection dropped mid-request -- try the local copy again in case
         // the directory refreshed in the meantime (see useOfflineSync).
@@ -2288,6 +2400,31 @@ export default function KioskScreen({ navigation }: Props) {
             <Text style={styles.thaiSmall}>{onBreak ? 'กดยืนยันเพื่อกลับมาทำงาน' : 'เลือก IN หรือ OUT แล้วกดยืนยัน'}</Text>
           </Text>
 
+          {/* Shown on every successful lookup (not gated on onShift/onBreak --
+              a not-yet-checked-in employee seeing "60 min left" is still
+              correct, just not very interesting yet), real feedback
+              2026-10-16: previously this number only ever appeared in the
+              transient feedback card after confirming a break action, so
+              there was no way to just check your remaining budget without
+              committing to a Start Break/Back from Break tap first. */}
+          {breakMinutesRemaining != null && (
+            <View style={styles.breakStatusRow}>
+              <Text style={styles.breakStatusText}>
+                Break left today / เวลาพักที่เหลือวันนี้:{' '}
+                <Text style={styles.breakStatusValue}>
+                  {breakMinutesIsEstimate ? '~' : ''}
+                  {breakMinutesRemaining} min
+                </Text>
+                {breakMinutesIsEstimate && <Text style={styles.breakStatusEstimateTag}> (estimate)</Text>}
+              </Text>
+              {breakMinutesOver != null && (
+                <Text style={styles.breakStatusOver}>
+                  {breakMinutesIsEstimate ? '~' : ''}Over by {breakMinutesOver} min / เกินมา {breakMinutesOver} นาที
+                </Text>
+              )}
+            </View>
+          )}
+
           {/* Hidden entirely while on break -- IN is impossible (already
               clocked in), and OUT/OUT OT, though technically valid (a
               clock-out always ends any in-progress break server-side), read
@@ -2673,6 +2810,11 @@ const styles = StyleSheet.create({
   titleDark: { color: TEXT },
   titleDanger: { color: '#3A1210' },
   subtitleDark: { color: TEXT_MUTED, fontSize: 16.5, fontFamily: FONT_BODY_MEDIUM, marginBottom: 8, textAlign: 'center' },
+  breakStatusRow: { alignItems: 'center', marginBottom: 10 },
+  breakStatusText: { fontSize: 14.5, fontFamily: FONT_BODY_MEDIUM, color: TEXT_MUTED, textAlign: 'center' },
+  breakStatusValue: { fontFamily: FONT_DISPLAY_BOLD, color: SAGE },
+  breakStatusEstimateTag: { fontFamily: FONT_BODY_MEDIUM, color: TEXT_MUTED },
+  breakStatusOver: { fontSize: 13.5, fontFamily: FONT_DISPLAY_BOLD, color: BUTTER, textAlign: 'center', marginTop: 2 },
   monthNavRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 18, marginBottom: 4 },
   monthNavButton: { padding: 8, borderRadius: 999 },
   monthNavButtonDisabled: { opacity: 0.3 },

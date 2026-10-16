@@ -126,3 +126,24 @@ export async function seedFromDirectoryIfUnknown(pin: string, directoryTotalMinu
     await writeMap(map);
   });
 }
+
+/**
+ * Read-only: today's current estimate for this PIN, or 0 if this device has
+ * no entry for today (never broken here yet, and seedFromDirectoryIfUnknown
+ * hasn't been called for it either). Added 2026-10-16 for KioskScreen's
+ * post-lookup "break time left today" display (tryLocalLookup) -- callers
+ * should call seedFromDirectoryIfUnknown first and await it, so this read
+ * reflects the best locally-available knowledge (this device's own
+ * confirmed/estimated total if it has one, otherwise the directory's
+ * cross-branch figure just seeded). Routed through the same `serialized`
+ * queue as every write here, not a bare AsyncStorage.getItem, so a read
+ * immediately following an awaited write (the seed call above) can never
+ * observe a stale value from a write still in flight.
+ */
+export async function getTodayTotalMinutes(pin: string): Promise<number> {
+  return serialized(async () => {
+    const map = await readMap();
+    const today = todayKey();
+    return map[pin] && map[pin].date === today ? map[pin].totalMinutes : 0;
+  });
+}

@@ -545,7 +545,16 @@ function handleKioskLookupPin_(params) {
     // accurate (see client.ts's own comment on kioskLookupPin).
     onShiftToday: isOnShiftToday_(found.row.EmployeeID, now, log),
     onBreak: breakState.onBreak,
-    breakStartedAt: breakState.onBreak && breakState.lastBreakTs ? breakState.lastBreakTs.toISOString() : null
+    breakStartedAt: breakState.onBreak && breakState.lastBreakTs ? breakState.lastBreakTs.toISOString() : null,
+    // Added 2026-10-16 so the Kiosk can show "break time left today" the
+    // moment someone looks themselves up, not just after confirming a
+    // Start Break/Back from Break tap -- same figure, same scope (COMPLETED
+    // rounds only, excludes whatever round might be open right now) as
+    // kioskBreak's own totalMinutesUsedToday and kioskDirectory's per-
+    // employee field, computed by the same sumCompletedBreakMinutesToday_
+    // so all three can never disagree. Reuses `log`/`now` already fetched
+    // above -- no extra Sheets read on this latency-sensitive path.
+    totalMinutesUsedToday: sumCompletedBreakMinutesToday_(found.row.EmployeeID, startOfDay_(now), now, log)
   });
 }
 
@@ -805,12 +814,15 @@ var DAILY_BREAK_BUDGET_MINUTES = 60;
 // Break/Back from Break, which eats into their actual rest -- this many
 // minutes are discounted off EVERY complete break round (one BREAK_START ->
 // BREAK_END pair) before it counts against DAILY_BREAK_BUDGET_MINUTES, as a
-// deliberate policy decision (2026-10-05) to not penalize that walking time.
-// See discountedBreakMinutes_ for where this is actually applied -- NEVER
-// in aggregateMonthLogs_/aggregateYearSummary_ (Report.gs)'s "Break (min)"
-// column, which stays the true, undiscounted elapsed time on purpose (a
-// real payroll/audit figure, not a budget-consumption one).
-var BREAK_WALK_DISCOUNT_MINUTES = 4;
+// deliberate policy decision (2026-10-05, lowered from 4 to 3 on 2026-10-16)
+// to not penalize that walking time. See discountedBreakMinutes_ for where
+// this is actually applied -- NEVER in aggregateMonthLogs_/
+// aggregateYearSummary_ (Report.gs)'s "Break (min)" column, which stays the
+// true, undiscounted elapsed time on purpose (a real payroll/audit figure,
+// not a budget-consumption one). Mirrored client-side (KioskScreen.tsx's
+// own BREAK_WALK_DISCOUNT_MINUTES) -- keep both in sync if this ever changes
+// again.
+var BREAK_WALK_DISCOUNT_MINUTES = 3;
 
 /**
  * Applies BREAK_WALK_DISCOUNT_MINUTES to one completed break round's real

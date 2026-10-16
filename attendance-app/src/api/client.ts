@@ -132,12 +132,29 @@ export function kioskBreak(pin: string, type: 'BREAK_START' | 'BREAK_END', durat
 // KioskScreen's local day-scoped "checked in today" marker
 // (setLocalCheckedInToday/clearLocalCheckedInToday, see
 // applyServerBreakAndShiftState) accurate.
+//
+// totalMinutesUsedToday: added 2026-10-16 so the Kiosk can show "break time
+// left today" the moment someone looks themselves up, not just after
+// confirming a break action -- same meaning/scope as kioskBreak's own field
+// of the same name (COMPLETED break rounds only, unclamped against
+// DAILY_BREAK_BUDGET_MINUTES; excludes whatever round might be open right
+// now), computed server-side by the same sumCompletedBreakMinutesToday_.
 export function kioskLookupPin(pin: string) {
-  return postAction<{ name: string; shifts: string[]; onShift: boolean; onShiftToday: boolean; onBreak: boolean; breakStartedAt: string | null }>(
-    'kioskLookupPin',
-    { pin },
-    KIOSK_TIMEOUT_MS
-  );
+  return postAction<{
+    name: string;
+    shifts: string[];
+    onShift: boolean;
+    onShiftToday: boolean;
+    onBreak: boolean;
+    breakStartedAt: string | null;
+    // Optional, not required -- the three components deploy independently
+    // (see CLAUDE.md), so a freshly-released APK can briefly talk to a
+    // backend that hasn't been redeployed with this field yet. Every real
+    // caller already checks `!= null` before using it (KioskScreen.tsx's
+    // applyServerBreakAndShiftState), so this is purely about the type
+    // honestly describing what can actually arrive at runtime.
+    totalMinutesUsedToday?: number;
+  }>('kioskLookupPin', { pin }, KIOSK_TIMEOUT_MS);
 }
 
 // otMinutes/otQuarters: the actual OT amount behind the `ot` boolean dot --
