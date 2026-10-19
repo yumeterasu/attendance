@@ -18,7 +18,17 @@ var DUPLICATE_GUARD_MS = 60 * 1000; // reject re-scans within 60s of the last lo
 // -earned ลาเช้า OT the moment Recompute ran (no end time to compute OT
 // against) -- see isHalfDayLeaveShift_ and previewRecomputeLateAndOt_'s own
 // comments for the rest of this fix.
-var SHIFTS = ['7:00-16:00', '7:30-16:30', '8:00-17:00', '8:30-17:30', '7:00-17:00', '7:00-17:30', '8:00-18:00', '8:00-18:30', 'Event 8:00-17:00', 'Annual Leave', 'Sick Leave', 'Unpaid Leave', 'Paid Special Leave', 'Half Day Annual Leave AM 8:00-12:30', 'Half Day Annual Leave PM 12:30-17:00', 'Half Day Sick Leave AM 8:00-12:30', 'Half Day Sick Leave PM 12:30-17:00', 'Half Day Unpaid Leave AM 8:00-12:30', 'Half Day Unpaid Leave PM 12:30-17:00', 'Holiday'];
+// 'Special 8:30-17:30': an admin-picked, FIXED version of the "Special"
+// shift concept (see isSpecialShift_, isNoLateNoOtShift_) -- same "no Late,
+// no OT" treatment as the Kiosk's own free-typed "Special H:MM-H:MM" one-off
+// shift, deliberately reusing that exact mechanism (isSpecialShift_ matches
+// any string starting with the word "Special", not a maintained list) so
+// this needed zero changes to Late/OT computation anywhere -- Japanese OT
+// (otEligibleForDay_), Thai OT (resolveThaiOt_), and every later
+// recompute/Report/Dashboard/PDF read all already gate on the same check.
+// Unlike 'Event 8:00-17:00' (right before it below), the real tap time is
+// still what's recorded -- only Late/OT math is skipped on top of it.
+var SHIFTS = ['7:00-16:00', '7:30-16:30', '8:00-17:00', '8:30-17:30', '7:00-17:00', '7:00-17:30', '8:00-18:00', '8:00-18:30', 'Event 8:00-17:00', 'Special 8:30-17:30', 'Annual Leave', 'Sick Leave', 'Unpaid Leave', 'Paid Special Leave', 'Half Day Annual Leave AM 8:00-12:30', 'Half Day Annual Leave PM 12:30-17:00', 'Half Day Sick Leave AM 8:00-12:30', 'Half Day Sick Leave PM 12:30-17:00', 'Half Day Unpaid Leave AM 8:00-12:30', 'Half Day Unpaid Leave PM 12:30-17:00', 'Holiday'];
 // Shift values that mean "nobody's expected in at all that day" -- as
 // opposed to a blank cell (not scheduled yet) or a Half Day Leave entry
 // (still expected in for half the day -- see isHalfDayLeaveShift_). Used
@@ -255,6 +265,24 @@ function isValidSpecialShiftSubmission_(raw) {
  */
 function isNoLateNoOtShift_(scheduledShift) {
   return isEventShift_(scheduledShift) || isSpecialShift_(scheduledShift);
+}
+
+/**
+ * isLate_, with the "Event/Special is never Late" rule folded in and a
+ * blank scheduledShift short-circuited to false. Pulled out into its own
+ * function (2026-10-19) after the exact same
+ * `isNoLateNoOtShift_(x) ? false : isLate_(x, t)` ternary was found
+ * independently duplicated at three call sites (previewRecomputeLateAndOt_,
+ * resolveSpecialOrPickedShift_, recordBackdatedAttendance_) -- the same
+ * copy-pasted-formula drift risk this codebase has already been burned by
+ * once before (see otEligibleForDay_/resolveThaiOt_'s own history of being
+ * extracted for this exact reason). Kept in one place so a future change to
+ * "who's exempt from Late" only needs to land once, not be found and
+ * re-applied at every call site again.
+ */
+function lateForScheduledShift_(scheduledShift, timestamp) {
+  if (!scheduledShift) return false;
+  return isNoLateNoOtShift_(scheduledShift) ? false : isLate_(scheduledShift, timestamp);
 }
 
 /**
@@ -1889,7 +1917,7 @@ function previewRecomputeLateAndOt_(year, month, startDay, endDay, protectExisti
     // whatever the Schedule sheet currently says -- without this, running
     // Recompute on a Special day would wrongly flag Late the moment the
     // real tap deviates from the picked start by more than a minute.
-    var late = isNoLateNoOtShift_(scheduledShift) ? false : (scheduledShift ? isLate_(scheduledShift, ts) : false);
+    var late = lateForScheduledShift_(scheduledShift, ts);
 
     sliceValues[i][shiftCol] = scheduledShift;
     sliceValues[i][lateCol] = late;
@@ -2593,7 +2621,13 @@ function recordBackdatedAttendance_(employeeId, type, timestamp, ot, precomputed
     if (scheduledShift) {
       shiftForRow = scheduledShift;
       recordedTimestamp = eventShiftOverrideTimestamp_(scheduledShift, timestamp, 'IN');
-      late = isLate_(scheduledShift, recordedTimestamp);
+      // lateForScheduledShift_ (not a raw isLate_ call) -- this backdated/
+      // bulk-entry path has no live "shift" param concept to special-case
+      // the way the Kiosk path used to, so a day scheduled "Special ..."
+      // (e.g. the admin's "Special 8:30-17:30" dropdown pick) used to get a
+      // real isLate_() check here, the same bug resolveSpecialOrPickedShift_
+      // used to have -- see lateForScheduledShift_'s own doc comment.
+      late = lateForScheduledShift_(scheduledShift, recordedTimestamp);
     }
   } else {
     var matchingIn = findStintStartInForDate_(employeeId, timestamp);
@@ -2947,15 +2981,22 @@ function resolveSpecialOrPickedShift_(emp, employeeId, shift, referenceTimestamp
   var recordedTimestamp = referenceTimestamp;
   var late = '';
   if (scheduledShift) {
-    if (specialShift) {
-      // Special Shift: keeps the REAL tap time always (unlike Event, never
-      // forced to the shift's own official start) -- Late/OT are simply
-      // never computed on top of that real time. See isSpecialShift_.
-      late = false;
-    } else {
-      recordedTimestamp = eventShiftOverrideTimestamp_(scheduledShift, referenceTimestamp, 'IN');
-      late = isLate_(scheduledShift, recordedTimestamp);
-    }
+    recordedTimestamp = eventShiftOverrideTimestamp_(scheduledShift, referenceTimestamp, 'IN');
+    // lateForScheduledShift_ (not a raw isLate_ call) -- keys off the
+    // RESOLVED scheduledShift text, not just the local `specialShift` (only
+    // ever truthy for a shift typed fresh into THIS request). A day
+    // pre-scheduled as "Special ..." via the Schedule sheet (an admin's
+    // fixed dropdown pick, e.g. "Special 8:30-17:30", or an employee's own
+    // earlier free-typed pick now sitting in the sheet) falls back to
+    // getScheduledShift_() above with an empty local specialShift, and used
+    // to incorrectly fall through to a real isLate_() check here -- Special's
+    // whole point is never computing Late against the real tap time, no
+    // matter which of those two ways the shift text reached this function.
+    // eventShiftOverrideTimestamp_ above is already a no-op for Special (it
+    // only forces the timestamp for Event), so this doesn't change what's
+    // recorded, only whether it's compared against the shift's start time
+    // for Late. See lateForScheduledShift_'s own doc comment.
+    late = lateForScheduledShift_(scheduledShift, recordedTimestamp);
   }
   return { scheduledShift: scheduledShift, specialShift: specialShift, writtenShift: writtenShift, recordedTimestamp: recordedTimestamp, late: late };
 }
