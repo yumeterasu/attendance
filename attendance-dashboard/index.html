@@ -156,7 +156,16 @@
   #logoutBtn:hover { background: #F4F7FD; }
 
   main {
-    max-width: 1100px;
+    /* Widened from 1100px when the Allowance column (Special Allowance
+       feature) pushed the Monthly table to 11 columns -- at 1100px the
+       table outgrew `main` and spilled into the page-wide horizontal
+       scroll described below (#monthlyView .card's comment), which read
+       as the table being cut off on a normal desktop window instead of
+       using the screen it had. 1600px comfortably fits every Monthly
+       column without scrolling on a typical desktop viewport while still
+       leaving the narrower views (login, Daily stat tiles) centered with
+       reasonable margins, since those use their own tighter max-widths. */
+    max-width: 1600px;
     margin: 0 auto;
     padding: 40px 24px 80px;
   }
