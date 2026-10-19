@@ -621,10 +621,6 @@
   .pill.late { background: var(--danger-bg); color: var(--danger-text); }
   .pill.otpay { background: var(--success-bg); color: var(--success-text); }
   .pill.zero { color: var(--text-muted); font-weight: 500; background: none; padding: 0; }
-  /* [title] only -- renderRows() only sets the hover tooltip when there's
-     an actual itemized breakdown to show, so a flat ฿0.00 (no entries this
-     period) gets no "help" cursor implying there's something to hover. */
-  .allowance-pill[title] { cursor: help; }
 
   .leave-badges {
     display: flex;
