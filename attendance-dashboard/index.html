@@ -357,10 +357,10 @@
     box-shadow: 0 1px 2px rgba(20,20,20,0.06);
   }
 
-  /* Daily opens by default (see showDashboard()) -- hide Monthly until its
-     tab is clicked, matching what the JS sets on boot, so there's no flash
-     of the wrong view while the page is still parsing. */
-  #monthlyView { display: none; }
+  /* Daily opens by default (see showDashboard()) -- hide Monthly/Calendar
+     until their tab is clicked, matching what the JS sets on boot, so
+     there's no flash of the wrong view while the page is still parsing. */
+  #monthlyView, #calendarView { display: none; }
 
   .controls .field input[type="date"] {
     cursor: pointer;
@@ -637,6 +637,64 @@
     font-variant-numeric: tabular-nums;
   }
 
+  /* OT / Special calendar table -- deliberately its own layout, not a
+     reuse of #summaryTable's page-wide-sticky-header approach (see that
+     table's own thead th comment): up to 31 narrow day columns needs a
+     CONTAINED horizontal scroll with the employee name pinned on the left
+     as the scroll anchor, which is a different shape of problem than
+     #summaryTable's few-wide-columns table. #calendarTableWrap (a .card)
+     supplies the scroll container; overflow-x:auto there is what makes
+     position:sticky on the first column work (no ancestor between it and
+     the viewport needs overflow:visible for a LEFT-sticky column the way
+     a TOP-sticky one does).  */
+  #calendarTable {
+    width: auto;
+    border-collapse: collapse;
+    font-size: 12px;
+  }
+  #calendarTable th, #calendarTable td {
+    padding: 8px 6px;
+    border-bottom: 1px solid var(--border);
+    text-align: center;
+    white-space: nowrap;
+  }
+  #calendarTable thead th {
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--text-muted);
+    background: #F4F7FD;
+    border-bottom: 1px solid var(--border);
+  }
+  /* First column (employee name) pinned left in both header and body, so
+     it's still readable after scrolling through a month's worth of day
+     columns -- its own opaque background (not inherited) is what keeps
+     scrolled-under cells from showing through it. */
+  #calendarTable th:first-child, #calendarTable td:first-child {
+    position: sticky;
+    left: 0;
+    text-align: left;
+    font-weight: 700;
+    background: var(--card);
+    z-index: 1;
+  }
+  #calendarTable thead th:first-child { background: #F4F7FD; z-index: 2; }
+  #calendarTable tbody tr:hover td:first-child { background: #FAFBFF; }
+  #calendarTable tbody tr:hover { background: #FAFBFF; }
+  #calendarTable tbody tr:last-child td { border-bottom: none; }
+  /* Sat/Sun day columns tinted, same idea as applyWeekendColors_ on the
+     Schedule sheet server-side -- makes the weekly rhythm readable at a
+     glance across up to 31 columns. */
+  #calendarTable th.weekend, #calendarTable td.weekend { background: #FAFAFC; }
+  .cal-pill {
+    display: inline-block;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 2px 6px;
+    border-radius: 999px;
+  }
+  .cal-pill.ot { background: var(--success-bg); color: var(--success-text); }
+  .cal-pill.sp { background: var(--warn-bg); color: var(--warn-text); }
+
   #emptyState, #loadingState, #errorState {
     text-align: center;
     padding: 60px 20px;
@@ -783,6 +841,7 @@
       <div class="view-tabs">
         <button type="button" class="view-tab" id="viewTabMonthly" data-i18n="tabMonthly">Monthly</button>
         <button type="button" class="view-tab active" id="viewTabDaily" data-i18n="tabDaily">Daily</button>
+        <button type="button" class="view-tab" id="viewTabCalendar" data-i18n="tabCalendar">OT / Special</button>
       </div>
 
       <div class="field" id="yearField" style="display:none;">
@@ -811,12 +870,23 @@
         <label for="dailyDateInput" data-i18n="dateLabel">Date</label>
         <input type="date" id="dailyDateInput" />
       </div>
+      <div class="field" id="deptFilterField" style="display:none;">
+        <label for="deptFilterSelect" data-i18n="deptFilterLabel">Department</label>
+        <select id="deptFilterSelect">
+          <option value="All" data-i18n="deptFilterAll">All</option>
+          <option value="Japanese" data-i18n="deptFilterJapanese">Japanese</option>
+          <option value="Thai" data-i18n="deptFilterThai">Thai</option>
+        </select>
+      </div>
 
       <button class="refresh-btn" id="refreshBtn" type="button" data-i18n-title="reloadTitle" title="Reload from Google Sheet" style="display:none;">
         <span id="refreshIcon">↻</span> <span data-i18n="refresh">Refresh</span>
       </button>
       <button class="refresh-btn" id="dailyRefreshBtn" type="button" data-i18n-title="reloadTitle" title="Reload from Google Sheet">
         <span id="dailyRefreshIcon">↻</span> <span data-i18n="refresh">Refresh</span>
+      </button>
+      <button class="refresh-btn" id="calendarRefreshBtn" type="button" data-i18n-title="reloadTitle" title="Reload from Google Sheet" style="display:none;">
+        <span id="calendarRefreshIcon">↻</span> <span data-i18n="refresh">Refresh</span>
       </button>
 
       <div class="spacer"></div>
@@ -851,6 +921,30 @@
             </tr>
           </thead>
           <tbody id="summaryBody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="calendarView">
+      <div class="stale-banner" id="calendarStaleBanner"></div>
+      <div id="calendarLoadingState" style="text-align:center;padding:60px 20px;color:var(--text-muted);font-size:14px;" data-i18n="loading">Loading…</div>
+      <div id="calendarErrorState" style="text-align:center;padding:60px 20px;color:var(--danger-text);font-size:14px;display:none;">
+        <p id="calendarErrorMessage"></p>
+        <button type="button" id="calendarErrorRetryBtn" class="refresh-btn">
+          <span id="calendarErrorRetryIcon">↻</span> <span data-i18n="refresh">Refresh</span>
+        </button>
+      </div>
+      <!-- month="All" isn't supported server-side for this tab (see
+           handleDashboardCalendar_'s own doc comment, Report.gs) -- a
+           fiscal year's worth of day columns would be unreadable, so this
+           shows in place of the table instead of firing that request at
+           all. -->
+      <div id="calendarAllMonthsNotice" style="text-align:center;padding:60px 20px;color:var(--text-muted);font-size:14px;display:none;" data-i18n="calendarAllMonthsNotice">Pick a specific month — this view doesn't support "All (fiscal year)".</div>
+      <div id="calendarEmptyState" style="text-align:center;padding:60px 20px;color:var(--text-muted);font-size:14px;display:none;" data-i18n="noEmployees">No employees to show for this period.</div>
+      <div class="card" id="calendarTableWrap" style="display:none;overflow-x:auto;">
+        <table id="calendarTable">
+          <thead><tr id="calendarHeaderRow"></tr></thead>
+          <tbody id="calendarBody"></tbody>
         </table>
       </div>
     </div>
@@ -953,6 +1047,12 @@
       errTimeout: 'The server is taking too long to respond. Please try again in a moment.',
       tabMonthly: 'Monthly',
       tabDaily: 'Daily',
+      tabCalendar: 'OT / Special',
+      deptFilterLabel: 'Department',
+      deptFilterAll: 'All',
+      deptFilterJapanese: 'Japanese',
+      deptFilterThai: 'Thai',
+      calendarAllMonthsNotice: 'Pick a specific month — this view doesn\'t support "All (fiscal year)".',
       yearLabel: 'Year',
       monthLabel: 'Month',
       monthAll: 'All (fiscal year)',
@@ -1016,6 +1116,12 @@
       errTimeout: 'サーバーの応答に時間がかかっています。少し待ってからもう一度お試しください。',
       tabMonthly: '月次',
       tabDaily: '日次',
+      tabCalendar: 'OT・特別出勤',
+      deptFilterLabel: '部署',
+      deptFilterAll: 'すべて',
+      deptFilterJapanese: '日本人',
+      deptFilterThai: 'タイ人',
+      calendarAllMonthsNotice: '特定の月を選択してください —「全期間(会計年度)」はこの画面では表示できません。',
       yearLabel: '年',
       monthLabel: '月',
       monthAll: '全期間(会計年度)',
@@ -1157,7 +1263,17 @@
     if (dailyErrorStateEl.style.display === 'block' && dailyErrorInfo) {
       document.getElementById('dailyErrorMessage').textContent = resolveErrorText(dailyErrorInfo);
     }
-    ['monthlyStaleBanner', 'dailyStaleBanner'].forEach(function (elId) {
+    // Calendar table header's "Employee" cell and the Department filter's
+    // option labels are generated/applied dynamically (renderCalendarTable,
+    // applyStaticI18n respectively) -- only the table itself needs a manual
+    // re-render here, and only when it's actually the thing on screen (same
+    // guard as the Department filter's own change handler).
+    if (document.getElementById('calendarTableWrap').style.display !== 'none') renderCalendarTable(lastCalendarEmployees);
+    var calendarErrorStateEl = document.getElementById('calendarErrorState');
+    if (calendarErrorStateEl.style.display === 'block' && calendarErrorInfo) {
+      document.getElementById('calendarErrorMessage').textContent = resolveErrorText(calendarErrorInfo);
+    }
+    ['monthlyStaleBanner', 'dailyStaleBanner', 'calendarStaleBanner'].forEach(function (elId) {
       var el = document.getElementById(elId);
       if (el.style.display === 'flex' && el.dataset.cachedAt) {
         renderStaleBannerContent(el, Number(el.dataset.cachedAt));
@@ -1761,24 +1877,65 @@
     });
   }
 
-  yearSelect.addEventListener('change', function () { updateFiscalHint(); loadSummary(); });
-  monthSelect.addEventListener('change', function () { updateFiscalHint(); loadSummary(); });
+  // Year/Month are shared with the Calendar tab (toolbarCalendarEls above)
+  // -- route the reload to whichever tab is actually on screen instead of
+  // always refetching Monthly's data while Calendar is the visible one.
+  //
+  // Also invalidates BOTH tabs' lazy-load flags (monthlyLoadedOnce /
+  // calendarLoadedOnce), not just refetches whichever is active right now:
+  // without this, changing Year/Month while on Calendar leaves Monthly's
+  // monthlyLoadedOnce still true from an earlier visit, so clicking back to
+  // Monthly later skips its own lazy-load fetch (setDashboardView only
+  // fetches on a tab's FIRST visit) and keeps showing the OLD Year/Month's
+  // table under the new, now-mismatched Year/Month labels -- same bug
+  // symmetrically the other way round. Re-setting the active tab's own flag
+  // back to true right after is what keeps this a single fetch, not an
+  // infinite loop -- only the tab NOT currently visible is left "not
+  // loaded" to force its own fresh fetch whenever it's next opened.
+  function reloadSharedPeriod() {
+    updateFiscalHint();
+    monthlyLoadedOnce = false;
+    calendarLoadedOnce = false;
+    if (currentDashboardView === 'calendar') {
+      calendarLoadedOnce = true;
+      loadCalendar();
+    } else if (currentDashboardView === 'monthly') {
+      monthlyLoadedOnce = true;
+      loadSummary();
+    }
+  }
+  yearSelect.addEventListener('change', reloadSharedPeriod);
+  monthSelect.addEventListener('change', reloadSharedPeriod);
   document.getElementById('refreshBtn').addEventListener('click', loadSummary);
   document.getElementById('errorRetryBtn').addEventListener('click', loadSummary);
 
-  // ---------- Dashboard: Monthly / Daily view switch ----------
+  // ---------- Dashboard: Monthly / Daily / Calendar view switch ----------
 
   var viewTabMonthly = document.getElementById('viewTabMonthly');
   var viewTabDaily = document.getElementById('viewTabDaily');
+  var viewTabCalendar = document.getElementById('viewTabCalendar');
   var monthlyView = document.getElementById('monthlyView');
   var dailyView = document.getElementById('dailyView');
+  var calendarView = document.getElementById('calendarView');
   var dailyLoadedOnce = false;
   var monthlyLoadedOnce = false;
+  var calendarLoadedOnce = false;
+  // Read by the Year/Month change handlers below (and by loadCalendar's own
+  // "All" guard indirectly via this) to decide which view's load function a
+  // shared Year/Month field change should re-trigger -- Year/Month are now
+  // shared between Monthly and Calendar (see toolbarCalendarEls below), so
+  // a plain "always call loadSummary()" on change would silently refetch
+  // the WRONG tab's data while Calendar is the one on screen.
+  var currentDashboardView = 'daily';
 
-  // The Year/Month fields, the Date field, both Refresh buttons, and both
-  // hint lines all share one toolbar row now (merged with the view-tabs so
-  // switching views doesn't cost a whole extra row of vertical space) --
-  // only the pair matching the active view is shown at a time.
+  // The Year/Month fields, the Date field, the Department filter, all three
+  // Refresh buttons, and the fiscal hint all share one toolbar row (merged
+  // with the view-tabs so switching views doesn't cost a whole extra row of
+  // vertical space) -- only the set matching the active view is shown at a
+  // time. Year/Month are deliberately listed in BOTH toolbarMonthlyEls and
+  // toolbarCalendarEls (Calendar reuses the same two fields rather than
+  // getting its own copies) -- ALL_TOOLBAR_ELS below dedupes before
+  // iterating so a shared element isn't toggled twice.
   var toolbarMonthlyEls = [
     document.getElementById('yearField'),
     document.getElementById('monthField'),
@@ -1789,29 +1946,203 @@
     document.getElementById('dateField'),
     document.getElementById('dailyRefreshBtn')
   ];
+  var toolbarCalendarEls = [
+    document.getElementById('yearField'),
+    document.getElementById('monthField'),
+    document.getElementById('deptFilterField'),
+    document.getElementById('calendarRefreshBtn')
+  ];
+  var ALL_TOOLBAR_ELS = toolbarMonthlyEls.concat(toolbarDailyEls, toolbarCalendarEls)
+    .filter(function (el, i, arr) { return arr.indexOf(el) === i; });
+
+  var DASHBOARD_VIEWS = {
+    monthly: { tab: viewTabMonthly, container: monthlyView, toolbarEls: toolbarMonthlyEls },
+    daily: { tab: viewTabDaily, container: dailyView, toolbarEls: toolbarDailyEls },
+    calendar: { tab: viewTabCalendar, container: calendarView, toolbarEls: toolbarCalendarEls }
+  };
 
   function setDashboardView(view) {
-    var isMonthly = view === 'monthly';
-    viewTabMonthly.classList.toggle('active', isMonthly);
-    viewTabDaily.classList.toggle('active', !isMonthly);
-    monthlyView.style.display = isMonthly ? 'block' : 'none';
-    dailyView.style.display = isMonthly ? 'none' : 'block';
-    toolbarMonthlyEls.forEach(function (el) { el.style.display = isMonthly ? '' : 'none'; });
-    toolbarDailyEls.forEach(function (el) { el.style.display = isMonthly ? 'none' : ''; });
-    // Lazy-load either side: Daily is what opens by default, so Monthly's
-    // data isn't fetched until someone actually clicks that tab, and vice
-    // versa -- a session that only ever looks at one view never pays for
-    // the other's request.
-    if (isMonthly && !monthlyLoadedOnce) {
+    currentDashboardView = view;
+    Object.keys(DASHBOARD_VIEWS).forEach(function (key) {
+      var isActive = key === view;
+      DASHBOARD_VIEWS[key].tab.classList.toggle('active', isActive);
+      DASHBOARD_VIEWS[key].container.style.display = isActive ? 'block' : 'none';
+    });
+    var activeEls = DASHBOARD_VIEWS[view].toolbarEls;
+    ALL_TOOLBAR_ELS.forEach(function (el) { el.style.display = activeEls.indexOf(el) !== -1 ? '' : 'none'; });
+    // Lazy-load whichever tab this is: Daily is what opens by default, so
+    // the other two tabs' data isn't fetched until someone actually clicks
+    // them -- a session that only ever looks at one view never pays for
+    // the other two's requests.
+    if (view === 'monthly' && !monthlyLoadedOnce) {
       monthlyLoadedOnce = true;
       loadSummary();
-    } else if (!isMonthly && !dailyLoadedOnce) {
+    } else if (view === 'daily' && !dailyLoadedOnce) {
       dailyLoadedOnce = true;
       loadDaily();
+    } else if (view === 'calendar' && !calendarLoadedOnce) {
+      calendarLoadedOnce = true;
+      loadCalendar();
     }
   }
   viewTabMonthly.addEventListener('click', function () { setDashboardView('monthly'); });
   viewTabDaily.addEventListener('click', function () { setDashboardView('daily'); });
+  viewTabCalendar.addEventListener('click', function () { setDashboardView('calendar'); });
+
+  // ---------- Dashboard: OT / Special calendar view ----------
+  //
+  // One column per day of the selected month, one row per employee --
+  // mirrors buildScheduleSheet_'s "day 1..N" layout convention server-side
+  // (Report.gs), just rendered as an HTML table instead of a spreadsheet
+  // grid. 'OT' = real OT that day, 'SP' = an Event or Special scheduled
+  // shift that day (see getDashboardCalendarData_'s own doc comment,
+  // Report.gs, for exactly how each cell is derived). The Department
+  // filter (All/Japanese/Thai) is purely a client-side re-render over the
+  // already-fetched employees for the current month -- same "no refetch on
+  // a view-only change" approach #summaryTable's own sorting already uses
+  // -- so switching it is instant and never re-hits the backend.
+
+  function calendarCacheKey(year, month) { return 'calendar_' + year + '_' + month; }
+
+  var deptFilterSelect = document.getElementById('deptFilterSelect');
+
+  function setCalendarRefreshing(isRefreshing) {
+    // See setRefreshing() above -- same reasoning for #calendarErrorRetryBtn.
+    [document.getElementById('calendarRefreshBtn'), document.getElementById('calendarErrorRetryBtn')].forEach(function (btn) {
+      btn.disabled = isRefreshing;
+      btn.classList.toggle('spinning', isRefreshing);
+    });
+  }
+
+  // True for a Saturday/Sunday day-of-month in the given year/month -- used
+  // to tint those columns, same idea as applyWeekendColors_ on the Schedule
+  // sheet server-side (Report.gs), computed client-side since the backend
+  // payload has no reason to carry day-of-week itself.
+  function isCalendarWeekendDay(year, month, day) {
+    var dow = new Date(year, month - 1, day).getDay();
+    return dow === 0 || dow === 6;
+  }
+
+  var lastCalendarEmployees = [];
+  // The month this data actually belongs to -- read by renderCalendarTable
+  // when it's called from the Department filter's change handler or a
+  // language switch, neither of which has a fresh API response of its own
+  // to pull year/month/daysInMonth from.
+  var lastCalendarYear = null;
+  var lastCalendarMonth = null;
+  var lastCalendarDaysInMonth = 0;
+
+  function renderCalendarTable(employees) {
+    var deptValue = deptFilterSelect.value;
+    var filtered = deptValue === 'All' ? employees : employees.filter(function (emp) { return emp.department === deptValue; });
+
+    var headerHtml = '<th>' + escapeHtml(t('tableEmployee')) + '</th>';
+    for (var day = 1; day <= lastCalendarDaysInMonth; day++) {
+      var headWeekend = isCalendarWeekendDay(lastCalendarYear, lastCalendarMonth, day) ? ' class="weekend"' : '';
+      headerHtml += '<th' + headWeekend + '>' + day + '</th>';
+    }
+    document.getElementById('calendarHeaderRow').innerHTML = headerHtml;
+
+    var body = document.getElementById('calendarBody');
+    body.innerHTML = '';
+    filtered.forEach(function (emp) {
+      var rowHtml = '<td>' + escapeHtml(emp.name) + '</td>';
+      for (var d = 1; d <= lastCalendarDaysInMonth; d++) {
+        var cellWeekend = isCalendarWeekendDay(lastCalendarYear, lastCalendarMonth, d) ? ' weekend' : '';
+        var mark = emp.days && emp.days[d];
+        var markHtml = mark === 'OT' ? '<span class="cal-pill ot">OT</span>'
+          : (mark === 'SP' ? '<span class="cal-pill sp">SP</span>' : '');
+        rowHtml += '<td class="' + cellWeekend.trim() + '">' + markHtml + '</td>';
+      }
+      var tr = document.createElement('tr');
+      tr.innerHTML = rowHtml;
+      body.appendChild(tr);
+    });
+
+    // Empty here covers BOTH "the server returned nobody for this month"
+    // and "the Department filter excluded everyone" -- same message either
+    // way reads correctly for both, no need to tell them apart.
+    document.getElementById('calendarEmptyState').style.display = filtered.length === 0 ? 'block' : 'none';
+    document.getElementById('calendarTableWrap').style.display = filtered.length === 0 ? 'none' : 'block';
+  }
+
+  function renderCalendarResult(data) {
+    lastCalendarEmployees = data.employees;
+    lastCalendarYear = data.year;
+    lastCalendarMonth = data.month;
+    lastCalendarDaysInMonth = data.daysInMonth;
+    renderCalendarTable(lastCalendarEmployees);
+  }
+
+  var calendarRequestSeq = 0;
+  var calendarErrorInfo = null;
+
+  function loadCalendar() {
+    var session = loadSession();
+    if (!session) return;
+
+    document.getElementById('calendarAllMonthsNotice').style.display = 'none';
+    document.getElementById('calendarEmptyState').style.display = 'none';
+    document.getElementById('calendarErrorState').style.display = 'none';
+    document.getElementById('calendarTableWrap').style.display = 'none';
+    hideStaleBanner('calendarStaleBanner');
+
+    // Same guard handleDashboardCalendar_ enforces server-side (Report.gs)
+    // -- short-circuited here too so picking "All" while on this tab shows
+    // the explanatory notice instantly instead of a round trip that would
+    // just come back as a bad_request.
+    if (monthSelect.value === 'All') {
+      document.getElementById('calendarLoadingState').style.display = 'none';
+      document.getElementById('calendarAllMonthsNotice').style.display = 'block';
+      return;
+    }
+
+    var cacheKey = calendarCacheKey(yearSelect.value, monthSelect.value);
+    var mySeq = ++calendarRequestSeq;
+
+    setCalendarRefreshing(true);
+    document.getElementById('calendarLoadingState').style.display = 'block';
+
+    apiGet('dashboardCalendar', {
+      viewerPassword: session.viewerPassword,
+      year: yearSelect.value,
+      month: monthSelect.value
+    }).then(function (result) {
+      if (result.success) saveLocalCacheIfNewest(cacheKey, result, mySeq);
+      if (mySeq !== calendarRequestSeq) return; // a newer request has already rendered its own result
+
+      setCalendarRefreshing(false);
+      document.getElementById('calendarLoadingState').style.display = 'none';
+
+      if (!result.success) {
+        if (result.error === 'session_expired' || result.error === 'forbidden') {
+          clearSession();
+          location.reload();
+          return;
+        }
+        if (result.error === 'network_error' && tryStaleCacheFallback(cacheKey, 'calendarStaleBanner', renderCalendarResult)) return;
+        calendarErrorInfo = errorInfoFrom(result, 'errGeneric');
+        document.getElementById('calendarErrorMessage').textContent = resolveErrorText(calendarErrorInfo);
+        document.getElementById('calendarErrorState').style.display = 'block';
+        return;
+      }
+      calendarErrorInfo = null;
+      renderCalendarResult(result);
+    });
+  }
+
+  // Pure client-side re-render, no refetch -- only meaningful once a table
+  // is already on screen (guards against popping the table up underneath
+  // an error/empty/all-months state that's currently showing instead).
+  deptFilterSelect.addEventListener('change', function () {
+    if (document.getElementById('calendarTableWrap').style.display !== 'none') renderCalendarTable(lastCalendarEmployees);
+  });
+
+  document.getElementById('calendarStaleBanner').addEventListener('click', function (e) {
+    if (e.target.closest('.stale-retry-btn')) loadCalendar();
+  });
+  document.getElementById('calendarRefreshBtn').addEventListener('click', loadCalendar);
+  document.getElementById('calendarErrorRetryBtn').addEventListener('click', loadCalendar);
 
   // ---------- Dashboard: Daily view ----------
 

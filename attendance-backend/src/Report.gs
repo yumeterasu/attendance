@@ -1959,6 +1959,115 @@ function handleDashboardSummary_(params) {
 }
 
 /**
+ * Backs the Web Dashboard's "OT / Special" calendar tab -- one column per
+ * day of the month, one row per employee, each cell either 'OT' (real OT
+ * that day), 'SP' (an Event or Special day), or absent (ordinary day, no
+ * flag). Every piece of this already exists for other views -- this
+ * function just re-derives the SAME per-day classification
+ * sumMonthTotals_ (above) already applies when summing a month's OT total,
+ * instead of summing it into one number: walks every day 1..daysInMonth
+ * and keeps the per-day verdict instead of accumulating it away.
+ *
+ * Employee filter and sort order deliberately match
+ * getDashboardSummaryData_'s monthly path exactly (same "Active, or has
+ * real data this month" rule via isDashboardExcludedEmployee_, same
+ * reportSortGroup_ branch/department ordering) -- so this tab's roster
+ * reads consistently with Monthly's, not a second independently-drifting
+ * definition of "who shows up in this report."
+ *
+ * `days` is sparse (only days with an 'OT' or 'SP' verdict are present at
+ * all) rather than a dense day->'' map -- same lean-payload convention
+ * specialAllowanceDetail already uses -- an ordinary un-flagged day is the
+ * overwhelming majority of cells in any real month, so this keeps the
+ * response small without the client needing to do anything but treat a
+ * missing key as blank.
+ */
+function getDashboardCalendarData_(year, month) {
+  var allEmployees = getAllEmployees_();
+  var dayLogsByEmployee = getMonthLogsByEmployee_(year, month);
+  var scheduledShiftsForMonth = getScheduledShiftsForMonth_(year, month);
+  var daysInMonth = new Date(year, month, 0).getDate();
+
+  // Same roster as getDashboardSummaryData_'s monthly path (Report.gs
+  // above), term for term -- a deactivated employee who should still show
+  // up on the Monthly tab (any real totals this month, OR a one-off
+  // Special Allowance entry with no AttendanceLog activity at all) must
+  // still show up here too, or this tab's roster would silently disagree
+  // with Monthly's for the exact same month. sumMonthTotals_ itself is not
+  // otherwise needed here (OT/SP verdicts are derived per day below, not
+  // from its summed totals) -- it's only computed for this presence check.
+  var allowancesByEmployee = getAllowancesForMonth_(year, month);
+  var employees = allEmployees.filter(function (emp) {
+    var dayLogs = dayLogsByEmployee[emp.EmployeeID] || {};
+    var totals = sumMonthTotals_(dayLogs, scheduledShiftsForMonth[emp.EmployeeID], daysInMonth);
+    var hasTotals = totals.daysWorked || totals.lateCount || totals.overCount || totals.otMinutesTotal || totals.otQuartersTotal;
+    var hasAllowance = emp.EmployeeID in allowancesByEmployee;
+    return (isTrue_(emp.Active) || hasTotals || hasAllowance) && !isDashboardExcludedEmployee_(emp);
+  });
+  employees = employees.slice().sort(function (a, b) {
+    var groupA = reportSortGroup_(a, dayLogsByEmployee[a.EmployeeID]);
+    var groupB = reportSortGroup_(b, dayLogsByEmployee[b.EmployeeID]);
+    if (groupA !== groupB) return groupA - groupB;
+    return String(a.EmployeeID).localeCompare(String(b.EmployeeID));
+  });
+
+  var calendarRows = employees.map(function (emp) {
+    var dayLogs = dayLogsByEmployee[emp.EmployeeID] || {};
+    var shiftsForEmployee = scheduledShiftsForMonth[emp.EmployeeID] || {};
+    var days = {};
+    for (var day = 1; day <= daysInMonth; day++) {
+      var scheduledShift = shiftsForEmployee[day] || '';
+      // isNoLateNoOtShift_ checked FIRST, same priority sumMonthTotals_
+      // itself gives it -- an Event/Special day never shows 'OT' even if a
+      // stale otMinutes/otQuarters value happens to sit on that day's log
+      // entry (e.g. from before a retroactive shift-type correction), same
+      // "the shift type always wins" rule every other OT view in this
+      // codebase already follows.
+      if (isNoLateNoOtShift_(scheduledShift)) {
+        days[day] = 'SP';
+      } else {
+        var entry = dayLogs[day];
+        if (entry && (entry.otMinutes > 0 || entry.otQuarters > 0)) days[day] = 'OT';
+      }
+    }
+    return {
+      employeeId: emp.EmployeeID,
+      name: emp.Name,
+      department: emp.Department,
+      branch: emp.Branch || '',
+      days: days
+    };
+  });
+
+  // daysInMonth returned alongside employees (rather than the caller
+  // re-deriving `new Date(year, month, 0).getDate()` a second time) so the
+  // two can never disagree -- handleDashboardCalendar_ needs this same
+  // number for the response's top-level field.
+  return { daysInMonth: daysInMonth, employees: calendarRows };
+}
+
+/**
+ * Web Dashboard's calendar-tab endpoint (doGet -> dashboardCalendar). Same
+ * auth as handleDashboardSummary_. Deliberately does NOT accept month="All"
+ * the way handleDashboardSummary_ does -- a fiscal year's worth of day
+ * columns (~365) would be a table nobody can actually read, and this tab's
+ * whole point is a single month's day-by-day grid, so the "All" option is
+ * simply out of scope here rather than silently producing something
+ * unusable.
+ */
+function handleDashboardCalendar_(params) {
+  var access = requireDashboardAccess_(params);
+  if (!access.ok) return access.response;
+
+  var year = Number(params.year);
+  var month = Number(params.month);
+  if (!year || !month || month < 1 || month > 12) return fail_('bad_request', 'year and month (1-12) are required');
+
+  var data = getDashboardCalendarData_(year, month);
+  return ok_({ year: year, month: month, daysInMonth: data.daysInMonth, employees: data.employees });
+}
+
+/**
  * Web Dashboard's daily data endpoint (doGet -> dashboardDaily) -- who
  * showed up and who didn't on one specific day, for the executive-facing
  * "today at a glance" view. Same auth as handleDashboardSummary_.

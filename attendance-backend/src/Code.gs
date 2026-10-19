@@ -59,6 +59,8 @@ function doGet(e) {
       return handleDashboardSummary_(params);
     case 'dashboardDaily':
       return handleDashboardDaily_(params);
+    case 'dashboardCalendar':
+      return handleDashboardCalendar_(params);
     default:
       return fail_('unknown_action', 'Unknown action: ' + params.action);
   }
