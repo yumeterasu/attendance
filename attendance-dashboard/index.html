@@ -621,6 +621,10 @@
   .pill.late { background: var(--danger-bg); color: var(--danger-text); }
   .pill.otpay { background: var(--success-bg); color: var(--success-text); }
   .pill.zero { color: var(--text-muted); font-weight: 500; background: none; padding: 0; }
+  /* [title] only -- renderRows() only sets the hover tooltip when there's
+     an actual itemized breakdown to show, so a flat ฿0.00 (no entries this
+     period) gets no "help" cursor implying there's something to hover. */
+  .allowance-pill[title] { cursor: help; }
 
   .leave-badges {
     display: flex;
@@ -1477,6 +1481,17 @@
 
   var otPayFormatter = new Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
+  // otPayFormatter alone puts the minus sign *after* the digits it formats
+  // when fed a negative number directly (e.g. '฿' + otPayFormatter.format(-50)
+  // reads "฿-50.00") -- fine for otPay, which is never negative, but
+  // Special Allowance can be (a corrective entry can net an employee's
+  // total negative). Formats the magnitude and places the sign before the
+  // ฿ symbol instead, so a negative allowance reads as an ordinary signed
+  // currency value ("-฿50.00") rather than looking like a malformed pill.
+  function formatBaht(amount) {
+    return (amount < 0 ? '-' : '') + '฿' + otPayFormatter.format(Math.abs(amount));
+  }
+
   function formatLeaveCount(n) {
     return n % 1 === 0 ? String(n) : n.toFixed(1);
   }
@@ -1532,12 +1547,17 @@
 
       // Unlike otPay, no null/"not eligible" case here -- every employee can
       // have a Special Allowance, so no entries this period is just 0, same
-      // pill styling as otPay's own >0/zero split (reusing .pill.otpay
+      // pill styling as otPay's own nonzero/zero split (reusing .pill.otpay
       // rather than a new color, since both are "money owed to this person"
-      // in the same visual family).
-      var allowanceHtml = emp.specialAllowance > 0
-        ? '<span class="pill otpay">฿' + otPayFormatter.format(emp.specialAllowance) + '</span>'
-        : '<span class="pill zero">฿0.00</span>';
+      // in the same visual family). !== 0, not > 0 -- a correction row can
+      // legitimately net an employee's total negative (real feedback catch,
+      // 2026-10-19: a negative total used to fall into the `else` branch
+      // and silently render as "฿0.00" while its own hover tooltip still
+      // listed the real negative line item underneath it, visibly
+      // disagreeing with the headline pill it belonged to).
+      var allowanceHtml = emp.specialAllowance !== 0
+        ? '<span class="pill otpay allowance-pill">' + formatBaht(emp.specialAllowance) + '</span>'
+        : '<span class="pill zero allowance-pill">฿0.00</span>';
 
       tr.innerHTML =
         '<td class="name">' + escapeHtml(emp.name) + '</td>' +
@@ -1551,8 +1571,30 @@
         '<td class="num">' + otPayHtml + '</td>' +
         '<td class="num">' + allowanceHtml + '</td>' +
         '<td>' + leaveHtml + '</td>';
+      // Same reasoning as the punch-mismatch tooltip above: set as a DOM
+      // .title property, not concatenated into the innerHTML string, so a
+      // stray " or < in a label (free text an admin typed into "Add
+      // Special Allowance") can never break out of the attribute or get
+      // parsed as markup.
+      var allowanceTitle = allowanceTooltip(emp.specialAllowanceDetail);
+      if (allowanceTitle) tr.querySelector('.allowance-pill').title = allowanceTitle;
       body.appendChild(tr);
     });
+  }
+
+  // One line per Special Allowance entry behind the Allowance column's
+  // hover tooltip -- label + amount, and (only in the "All" yearly view,
+  // where one employee's entries can span several months) which month it
+  // was for, since otherwise e.g. two separate "Lunch" entries in
+  // different months would read as one unexplained duplicate line. Amounts
+  // use the same otPayFormatter as the pill itself so the itemized lines
+  // visibly add up to the total shown above them.
+  function allowanceTooltip(detail) {
+    if (!detail || !detail.length) return '';
+    var monthNames = t('months');
+    return detail.map(function (a) {
+      return (a.month ? monthNames[a.month - 1] + ': ' : '') + a.label + ' ' + formatBaht(a.amount);
+    }).join('\n');
   }
 
   function escapeHtml(s) {

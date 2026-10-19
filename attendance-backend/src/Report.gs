@@ -1758,12 +1758,18 @@ function getDashboardSummaryData_(year, month) {
   // "Special Allowance (Baht)" column (writeYearlySummaryData_/
   // writeMonthlySummaryData_, both above) -- one read of the whole
   // Allowances sheet covers every employee, not a per-employee lookup.
-  var allowanceTotalsByEmployee, allowancesByEmployee;
+  var allowancesByEmployee, allowanceEntriesByEmployee;
   if (isAllMonths) {
     var logSheet = getSheet_('AttendanceLog');
     totalsByEmployee = aggregateYearSummary_(logSheet.getDataRange().getValues(), year);
     leaveCountsByEmployee = countLeavesForYear_(year);
-    allowanceTotalsByEmployee = aggregateSpecialAllowancesForYear_(year);
+    // getAllowanceEntriesForYear_ (not aggregateSpecialAllowancesForYear_)
+    // -- this function needs the itemized entries, for the Allowance
+    // column's hover tooltip below, not just the totals that function
+    // returns; the per-employee loop further down sums each employee's own
+    // entries itself (sumRoundedAllowances_), so there's no separate totals
+    // map to keep in sync with this one.
+    allowanceEntriesByEmployee = getAllowanceEntriesForYear_(year);
     sortGroupFor = function (emp) { return reportSortGroupFromTotal_(emp, totalsByEmployee[emp.EmployeeID]); };
   } else {
     var logsByEmployee = getMonthLogsByEmployee_(year, month);
@@ -1800,14 +1806,18 @@ function getDashboardSummaryData_(year, month) {
   // show up here, not just on the Summary sheet.
   var employees = allEmployees.filter(function (emp) {
     // `in` on both sides -- same presence check either way, rather than `in`
-    // on the yearly (number) map and `!!` on the monthly (array) map. A real
-    // allowance total can legitimately round to exactly 0 (entries that net
-    // out, a manually-zeroed correction row), and `!!0` would wrongly drop
-    // that employee despite real Allowances-sheet rows existing for them
-    // (same fix as writeYearlySummaryData_'s identical filter, Report.gs
-    // above) -- `in` avoids relying on each map's storage shape to know
-    // whether this check is safe.
-    var hasAllowance = isAllMonths ? (emp.EmployeeID in allowanceTotalsByEmployee) : (emp.EmployeeID in allowancesByEmployee);
+    // on one map and `!!` on the other. A real allowance total can
+    // legitimately round to exactly 0 (entries that net out, a
+    // manually-zeroed correction row), and `!!0` would wrongly drop that
+    // employee despite real Allowances-sheet rows existing for them (same
+    // fix as writeYearlySummaryData_'s identical filter, Report.gs above)
+    // -- `in` avoids relying on each map's storage shape to know whether
+    // this check is safe. allowanceEntriesByEmployee only ever gets a key
+    // when getAllowanceEntriesForYear_ found at least one real row for that
+    // employee (same guarantee allowanceTotalsByEmployee used to carry),
+    // so checking presence on the entries map itself is exactly equivalent
+    // -- without needing a separate totals map just for this check.
+    var hasAllowance = isAllMonths ? (emp.EmployeeID in allowanceEntriesByEmployee) : (emp.EmployeeID in allowancesByEmployee);
     return (isTrue_(emp.Active) || !!totalsByEmployee[emp.EmployeeID] || hasAllowance) && !isDashboardExcludedEmployee_(emp);
   });
 
@@ -1825,6 +1835,14 @@ function getDashboardSummaryData_(year, month) {
     var totals = totalsByEmployee[emp.EmployeeID] || zeroTotals;
     var leaveCounts = leaveCountsByEmployee[emp.EmployeeID] || zeroLeaveCounts;
     var otPay = computeOtPay_(emp, totals.otMinutesTotal, totals.otQuartersTotal);
+    // One source list feeds both the total and its itemized breakdown below
+    // -- so they can never read from two different maps and drift apart
+    // (a prior version picked the total from a separately-summed map and
+    // the detail from this same entries map via two copies of this same
+    // isAllMonths ternary).
+    var allowanceEntries = isAllMonths
+      ? (allowanceEntriesByEmployee[emp.EmployeeID] || [])
+      : (allowancesByEmployee[emp.EmployeeID] || []);
     // Independent of otPay/computeOtPay_ above -- by design, so this figure
     // can never get folded into or confused with OT pay (same separation
     // writeMonthlySummaryData_/writeYearlySummaryData_ keep on the Summary
@@ -1834,9 +1852,36 @@ function getDashboardSummaryData_(year, month) {
     // one place -- same helper writeMonthlySummaryData_ uses -- so this
     // figure can never disagree by a cent with what the Summary sheet shows
     // for the same employee/period.
-    var specialAllowance = isAllMonths
-      ? (allowanceTotalsByEmployee[emp.EmployeeID] || 0)
-      : sumRoundedAllowances_(allowancesByEmployee[emp.EmployeeID]);
+    var specialAllowance = sumRoundedAllowances_(allowanceEntries);
+    // Itemized breakdown behind the Dashboard's Allowance column hover
+    // tooltip -- each entry rounded the same way sumRoundedAllowances_
+    // rounds it before summing, so the itemized lines always add up to
+    // exactly the pill total shown above them, never off by a cent. The
+    // yearly path's entries (getAllowanceEntriesForYear_) carry `month`
+    // (several months' worth can be grouped under one employee here) while
+    // the monthly path's (getAllowancesForMonth_) don't need it -- already
+    // scoped to the one selected month, so including it would be redundant
+    // on every single line.
+    var specialAllowanceDetail = allowanceEntries.map(function (a) {
+      return isAllMonths
+        ? { label: a.label, amount: round2_(a.amount), month: a.month }
+        : { label: a.label, amount: round2_(a.amount) };
+    });
+    // Sorted into FISCAL-year order (readAllowanceRows_ -- Allowances.gs --
+    // otherwise preserves plain sheet-row order, i.e. whenever each entry
+    // happened to be typed in) -- only meaningful in the "All" yearly view,
+    // where one employee's tooltip can span several months; a late,
+    // backdated entry added to the sheet out of order must still list
+    // chronologically. Plain `a.month - b.month` would sort by calendar
+    // month instead (Jan before Apr), wrong for a fiscal year that starts
+    // in April (FISCAL_YEAR_START_MONTH above) -- same remap
+    // writeYearlyReportData_ uses (monthIndex0 = (FISCAL_YEAR_START_MONTH +
+    // i) % 12) to walk a fiscal year's months in order, inverted here to
+    // rank a calendar month (1-12) by its position within the fiscal year.
+    if (isAllMonths) {
+      var fiscalRank = function (month) { return (month - 1 - FISCAL_YEAR_START_MONTH + 12) % 12; };
+      specialAllowanceDetail.sort(function (a, b) { return fiscalRank(a.month) - fiscalRank(b.month); });
+    }
     return {
       employeeId: emp.EmployeeID,
       name: emp.Name,
@@ -1849,6 +1894,7 @@ function getDashboardSummaryData_(year, month) {
       otQuarters: totals.otQuartersTotal,
       otPay: otPay === '' ? null : otPay, // null = not eligible (e.g. Thai staff with no Salary on file), not zero
       specialAllowance: specialAllowance,
+      specialAllowanceDetail: specialAllowanceDetail,
       leave: {
         annual: leaveCounts['Annual Leave'],
         sick: leaveCounts['Sick Leave'],

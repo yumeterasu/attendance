@@ -177,21 +177,21 @@ function getAllowancesForEmployeeMonth_(employeeId, year, month) {
 }
 
 /**
- * Whole-fiscal-year totals for the Summary sheet's "All" Month option
- * (writeYearlySummaryData_, Report.gs), keyed by EmployeeID -- same fiscal
- * year boundary (FISCAL_YEAR_START_MONTH, Report.gs) aggregateYearSummary_
- * uses for the other yearly totals on that same sheet, so this column lines
- * up with the same 12 months "Days Worked"/"OT Pay" etc. are summed over,
- * not a plain Jan-Dec calendar year. Also backs that same function's
- * employee filter, for the same "a deactivated employee with only a late
- * allowance entry must still show up" reason getAllowancesForMonth_'s doc
- * comment explains for the monthly path.
+ * Every Special Allowance entry within ONE fiscal year
+ * (FISCAL_YEAR_START_MONTH, Report.gs -- same boundary aggregateYearSummary_
+ * uses for every other yearly total on the Summary sheet), grouped by
+ * EmployeeID, full row shape (employeeId/year/month/label/amount) intact.
+ * Split out from aggregateSpecialAllowancesForYear_ (which now just sums
+ * this) so a caller that wants the ITEMIZED list -- the Dashboard
+ * Allowance column's hover tooltip, getDashboardSummaryData_ in Report.gs
+ * -- doesn't have to re-derive the same fiscal-year filtering logic (and
+ * pay for a second full sheet read) just to get the totals-only version.
  *
  * One read of the whole sheet (via readAllowanceRows_) covers every
- * employee's whole-year total at once, instead of writeYearlySummaryData_
- * calling a per-employee, per-month lookup 12x per roster row.
+ * employee's whole-year entries at once, instead of a per-employee,
+ * per-month lookup 12x per roster row.
  */
-function aggregateSpecialAllowancesForYear_(year) {
+function getAllowanceEntriesForYear_(year) {
   var fiscalStart = new Date(year, FISCAL_YEAR_START_MONTH, 1);
   var fiscalEndExclusive = new Date(year + 1, FISCAL_YEAR_START_MONTH, 1);
 
@@ -207,15 +207,34 @@ function aggregateSpecialAllowancesForYear_(year) {
       entriesByEmployee[entry.employeeId].push(entry);
     }
   });
+  return entriesByEmployee;
+}
 
-  // sumRoundedAllowances_ owns the "round each entry, then sum" rule in
-  // exactly one place (see its own doc comment) -- grouping by employee
-  // first, then summing each group through that one shared function, is
-  // what keeps this yearly total from ever being able to drift from the
-  // monthly Summary/Dashboard/PDF figures the same rule governs there.
+/**
+ * Collapses a {employeeId: [entry, ...]} grouping (as
+ * getAllowanceEntriesForYear_ returns) into {employeeId: total}, via
+ * sumRoundedAllowances_ (which owns the "round each entry, then sum" rule
+ * in exactly one place -- see its own doc comment). Pulled out on its own
+ * so aggregateSpecialAllowancesForYear_ below and getDashboardSummaryData_'s
+ * yearly path (Report.gs, which separately needs the itemized entries
+ * getAllowanceEntriesForYear_ returns, not just the totals) can both reuse
+ * it instead of copying the same Object.keys().forEach loop.
+ */
+function sumAllowanceTotalsByEmployee_(entriesByEmployee) {
   var totals = {};
   Object.keys(entriesByEmployee).forEach(function (employeeId) {
     totals[employeeId] = sumRoundedAllowances_(entriesByEmployee[employeeId]);
   });
   return totals;
+}
+
+/**
+ * Whole-fiscal-year totals for the Summary sheet's "All" Month option
+ * (writeYearlySummaryData_, Report.gs), keyed by EmployeeID. Also backs
+ * that same function's employee filter, for the same "a deactivated
+ * employee with only a late allowance entry must still show up" reason
+ * getAllowancesForMonth_'s doc comment explains for the monthly path.
+ */
+function aggregateSpecialAllowancesForYear_(year) {
+  return sumAllowanceTotalsByEmployee_(getAllowanceEntriesForYear_(year));
 }
