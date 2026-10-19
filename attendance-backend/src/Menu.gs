@@ -17,6 +17,7 @@ function onOpen() {
     .addItem('Deactivate Employee (Resignation)', 'menuDeactivateEmployee_')
     .addItem('Add Backdated Check-in/Check-out', 'menuAddBackdatedAttendance_')
     .addItem('Bulk Mark Attendance for a Day', 'menuBulkMarkAttendance_')
+    .addItem('Add Special Allowance', 'menuAddSpecialAllowance_')
     .addItem('Create / Update Schedule Sheet', 'menuCreateScheduleSheet_')
     .addItem('Highlight Shift Mismatches', 'menuHighlightShiftMismatches_')
     .addItem('Recompute Late/OT for One Month', 'menuRecomputeLateOtOneMonth_')
@@ -917,6 +918,220 @@ function menuAddBackdatedAttendance_() {
   });
 
   ui.alert('Done', employee.Name + '\n' + summaryLines.join('\n'), ui.ButtonSet.OK);
+}
+
+/**
+ * Shared Year/Month prompt + validation for menuAddSpecialAllowance_ below
+ * -- same two ui.prompt() calls and the same "thisYear-1..thisYear+3, both
+ * whole numbers" sanity check, factored out so it stays in exactly one
+ * place.
+ *
+ * Same "thisYear-1 .. thisYear+3" sane range the Report/Summary sheets'
+ * own Year dropdown uses (setupLiveReportSheet/setupLiveSummarySheet,
+ * above) -- without a range check here, a typo like "20226" or "-2026"
+ * passes the bare !year check (a truthy, non-NaN number) and silently
+ * writes a row nobody will ever see on any real Summary/Report view for
+ * that year/month, looking to the admin like the entry "didn't save".
+ * Also requires both to be whole numbers -- every reader
+ * (getAllowancesForMonth_/aggregateSpecialAllowancesForYear_, Allowances.gs)
+ * matches Year/Month by exact equality against integers it's given, so a
+ * non-integer typo like "6.5" would pass a range-only check, get written as
+ * Month=6.5, and then never be matched by any Summary total or PDF print --
+ * permanently invisible despite the "Added" alert firing.
+ *
+ * Returns {year, month} on success, or null if the admin cancelled or the
+ * input didn't pass validation -- an ui.alert has already been shown in
+ * that case, so the caller just needs to `return` without its own message.
+ */
+function promptForAllowanceYearMonth_(ui, title) {
+  var now = new Date();
+  var yearResp = ui.prompt(title, 'Year (e.g. ' + now.getFullYear() + '):', ui.ButtonSet.OK_CANCEL);
+  if (yearResp.getSelectedButton() !== ui.Button.OK) return null;
+  var year = Number(yearResp.getResponseText().trim());
+
+  var monthResp = ui.prompt(title, 'Month (1-12):', ui.ButtonSet.OK_CANCEL);
+  if (monthResp.getSelectedButton() !== ui.Button.OK) return null;
+  var month = Number(monthResp.getResponseText().trim());
+
+  if (!year || !month || !Number.isInteger(year) || !Number.isInteger(month) || month < 1 || month > 12 ||
+      year < now.getFullYear() - 1 || year > now.getFullYear() + 3) {
+    ui.alert(title, 'Enter a valid whole-number year (around ' + now.getFullYear() + ') and a whole-number month between 1 and 12.', ui.ButtonSet.OK);
+    return null;
+  }
+
+  return { year: year, month: month };
+}
+
+/**
+ * Records one or more Special Allowance entries -- a flexible, admin-named
+ * monthly money amount (e.g. "ค่าข้าว" rice allowance, a one-off tip bonus,
+ * "Lunch") kept in its own "Allowances" sheet (Allowances.gs) and
+ * deliberately never touching computeOtPay_ or anything OT-related, so this
+ * can never get mixed into the OT Pay figure.
+ *
+ * Takes a comma-separated list of employee names/IDs -- one name works just
+ * as well as several, so this single menu item covers both "give one person
+ * a bonus" and "give the same Lunch allowance to everyone on this shift" in
+ * one flow, instead of keeping two near-identical dialogs (an earlier
+ * version of this feature had a separate single-employee item; it was
+ * folded into this one once it became clear the comma-separated flow
+ * already handles a list of exactly one name with no extra friction). Every
+ * included employee gets the exact same label/amount/year/month -- this is
+ * deliberately not a per-person-value tool; for different amounts per
+ * person, run this again with a different list.
+ *
+ * One employee can have more than one entry in the same month (e.g. rice
+ * allowance AND a tip bonus together) -- running this menu item again for
+ * the same person/month just adds another row rather than overwriting the
+ * last one. A mistaken entry is fixed by editing/deleting its row directly
+ * in the Allowances sheet -- no separate "remove" menu item, same as how a
+ * bad AttendanceLog row is already corrected by hand today.
+ *
+ * Same chained ui.prompt()/ui.alert() pattern as menuAddBackdatedAttendance_
+ * above -- see that function's doc comment for why this project never uses
+ * an HtmlService form for Admin input. Same split this project's other bulk
+ * action (menuBulkMarkAttendance_, above) uses between "the shared part"
+ * and "who's included": there, the group is auto-computed from the Schedule
+ * sheet and the admin only types exceptions; here there's no such natural
+ * group to start from (an allowance isn't tied to who was scheduled), so
+ * the admin instead types the whole list up front, comma-separated, the
+ * same way menuBulkMarkAttendance_'s own absent/late override prompts
+ * already ask for names -- not a new input shape for this project's admins
+ * to learn.
+ */
+function menuAddSpecialAllowance_() {
+  var ui = SpreadsheetApp.getUi();
+  var title = 'Add Special Allowance';
+
+  var namesResp = ui.prompt(title, 'Employee names or IDs, comma-separated (e.g. SHUNYA, EMP025, AYAMI):', ui.ButtonSet.OK_CANCEL);
+  if (namesResp.getSelectedButton() !== ui.Button.OK) return;
+  var queries = namesResp.getResponseText().split(',')
+    .map(function (s) { return s.trim(); })
+    .filter(String);
+  if (queries.length === 0) {
+    ui.alert(title, 'Enter at least one employee name or ID.', ui.ButtonSet.OK);
+    return;
+  }
+
+  // Resolve every query, then dedupe by EmployeeID -- two different typed
+  // queries (e.g. a name and that same person's ID) resolving to the same
+  // employee would otherwise silently double their allowance for this
+  // batch, which is almost certainly not what typing both was meant to do.
+  var matched = []; // array of resolved employee row objects (one per unique EmployeeID)
+  var matchedIds = {}; // EmployeeID -> true, dedupe tracker for the loop below -- not stored on `matched` itself
+  var unmatchedQueries = [];
+  queries.forEach(function (query) {
+    var employee = findEmployeeByNameOrId_(query);
+    if (!employee) {
+      unmatchedQueries.push(query);
+      return;
+    }
+    if (!matchedIds[employee.EmployeeID]) {
+      matchedIds[employee.EmployeeID] = true;
+      matched.push(employee);
+    }
+  });
+
+  // Checked BEFORE the unmatched-continue prompt below -- with zero matches,
+  // "Continue with the 0 employee(s) that WERE found?" is a nonsensical
+  // question that invites a reflexive YES misread as "continue with
+  // everyone" when there is nothing to continue with at all.
+  if (matched.length === 0) {
+    ui.alert(title, 'No employees matched "' + unmatchedQueries.join(', ') + '" -- nothing to add.', ui.ButtonSet.OK);
+    return;
+  }
+
+  if (unmatchedQueries.length > 0) {
+    var continueResp = ui.alert(
+      title,
+      'Could not find: ' + unmatchedQueries.join(', ') + '.\n\n' +
+      'Continue with the ' + matched.length + ' employee(s) that WERE found?',
+      ui.ButtonSet.YES_NO
+    );
+    if (continueResp !== ui.Button.YES) return;
+  }
+
+  // Same "Found: ... Is this the right person?" confirmation reasoning as
+  // menuAddBackdatedAttendance_ above -- a partial-name match could resolve
+  // to the wrong person, and showing the whole resolved list up front (not
+  // just each name in isolation) also makes it easy to spot a
+  // duplicate/unintended match before any real payroll data gets written.
+  var namesList = matched.map(function (e) { return e.Name + ' (' + e.EmployeeID + ')'; }).join('\n');
+  var confirmList = ui.alert(title, 'Found ' + matched.length + ' employee(s):\n' + namesList + '\n\nIs this list correct?', ui.ButtonSet.YES_NO);
+  if (confirmList !== ui.Button.YES) return;
+
+  var yearMonth = promptForAllowanceYearMonth_(ui, title);
+  if (!yearMonth) return;
+  var year = yearMonth.year, month = yearMonth.month;
+
+  var labelResp = ui.prompt(title, 'Name this allowance (e.g. Lunch, ค่าข้าว):', ui.ButtonSet.OK_CANCEL);
+  if (labelResp.getSelectedButton() !== ui.Button.OK) return;
+  var label = labelResp.getResponseText().trim();
+  if (!label) {
+    ui.alert(title, 'Enter a name for this allowance.', ui.ButtonSet.OK);
+    return;
+  }
+
+  var amountResp = ui.prompt(title, 'Amount per employee (Baht):', ui.ButtonSet.OK_CANCEL);
+  if (amountResp.getSelectedButton() !== ui.Button.OK) return;
+  var amount = Number(amountResp.getResponseText().trim());
+  if (!(amount > 0)) {
+    ui.alert(title, 'Enter a positive number for the amount.', ui.ButtonSet.OK);
+    return;
+  }
+
+  var confirmWrite = ui.alert(
+    title,
+    matched.length + ' employee(s) -- ' + label + ': ' + amount + ' Baht each, for ' + month + '/' + year +
+    // Round the PER-ENTRY amount first, then multiply by count -- not
+    // round2_(count * amount) -- matching the "round each stored row, then
+    // sum" order writeMonthlySummaryData_/aggregateSpecialAllowancesForYear_
+    // (Report.gs/Allowances.gs) already use, so this preview total can
+    // never disagree by a cent with what those later reports compute for
+    // this same batch.
+    ' (total ' + round2_(round2_(amount) * matched.length) + ' Baht).\n\nAdd this?',
+    ui.ButtonSet.YES_NO
+  );
+  if (confirmWrite !== ui.Button.YES) return;
+
+  // getActiveUser().getEmail() can come back blank (or throw, on some
+  // domain setups) if this Editor hasn't granted the script permission to
+  // see their email -- AddedBy is an audit nice-to-have, never worth
+  // blocking the actual allowance write over.
+  var addedBy = '';
+  try {
+    addedBy = Session.getActiveUser().getEmail();
+  } catch (e) {}
+
+  // Resolve the sheet once and pass it through, instead of every one of
+  // (possibly dozens of) appendSpecialAllowance_ calls below re-acquiring
+  // the script lock and re-doing getSheetByName for a sheet that's already
+  // guaranteed to exist after the very first row.
+  var sheet = getOrCreateAllowancesSheet_();
+
+  // Per-employee try/catch, same as menuBulkMarkAttendance_'s own write
+  // loop above -- one employee's write failing (e.g. a transient Sheets
+  // error) must not silently abort the rest of the batch or leave the
+  // admin facing a raw script error with no idea which of the N people
+  // actually got paid (and re-running blind would double-pay whoever
+  // already succeeded).
+  var addedNames = [];
+  var failures = [];
+  matched.forEach(function (employee) {
+    try {
+      appendSpecialAllowance_(employee.EmployeeID, employee.Name, year, month, label, amount, '', addedBy, sheet);
+      addedNames.push(employee.Name);
+    } catch (e) {
+      failures.push(employee.Name + ': ' + (e && e.message ? e.message : String(e)));
+    }
+  });
+
+  var summary = 'Added ' + addedNames.length + ' entries (' + label + ': ' + amount + ' Baht each, ' + month + '/' + year + '):\n' +
+    addedNames.join(', ');
+  if (failures.length > 0) {
+    summary += '\n\nFailed (' + failures.length + ') -- these were NOT added, try again for just these:\n' + failures.join('\n');
+  }
+  ui.alert(title, summary, ui.ButtonSet.OK);
 }
 
 /**

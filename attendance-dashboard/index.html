@@ -839,6 +839,7 @@
               <th class="sortable" data-sort="otMinutes" data-i18n="tableOtMin">OT (min)</th>
               <th class="sortable" data-sort="otQuarters" data-i18n="tableOtQtr">OT (qtr)</th>
               <th class="sortable" data-sort="otPay" data-i18n="tableOtPay">OT Pay</th>
+              <th class="sortable" data-sort="specialAllowance" data-i18n="tableAllowance">Allowance</th>
               <th class="sortable" data-sort="leaveTotal" data-i18n="tableLeave">Leave</th>
             </tr>
           </thead>
@@ -964,6 +965,7 @@
       tableOtMin: 'OT (min)',
       tableOtQtr: 'OT (qtr)',
       tableOtPay: 'OT Pay',
+      tableAllowance: 'Allowance',
       tableLeave: 'Leave',
       dateLabel: 'Date',
       absentLabel: 'Absent',
@@ -1026,6 +1028,7 @@
       tableOtMin: '残業(分)',
       tableOtQtr: '残業(15分単位)',
       tableOtPay: '残業代',
+      tableAllowance: '特別手当',
       tableLeave: '休暇',
       dateLabel: '日付',
       absentLabel: '欠勤',
@@ -1520,6 +1523,15 @@
         ? '<span class="pill zero">—</span>'
         : (emp.otPay > 0 ? '<span class="pill otpay">฿' + otPayFormatter.format(emp.otPay) + '</span>' : '<span class="pill zero">฿0.00</span>');
 
+      // Unlike otPay, no null/"not eligible" case here -- every employee can
+      // have a Special Allowance, so no entries this period is just 0, same
+      // pill styling as otPay's own >0/zero split (reusing .pill.otpay
+      // rather than a new color, since both are "money owed to this person"
+      // in the same visual family).
+      var allowanceHtml = emp.specialAllowance > 0
+        ? '<span class="pill otpay">฿' + otPayFormatter.format(emp.specialAllowance) + '</span>'
+        : '<span class="pill zero">฿0.00</span>';
+
       tr.innerHTML =
         '<td class="name">' + escapeHtml(emp.name) + '</td>' +
         '<td class="dept">' + escapeHtml(branchLabel(emp.branch)) + '</td>' +
@@ -1530,6 +1542,7 @@
         '<td class="num">' + emp.otMinutes + '</td>' +
         '<td class="num">' + emp.otQuarters + '</td>' +
         '<td class="num">' + otPayHtml + '</td>' +
+        '<td class="num">' + allowanceHtml + '</td>' +
         '<td>' + leaveHtml + '</td>';
       body.appendChild(tr);
     });
@@ -1586,6 +1599,7 @@
       case 'otMinutes': return emp.otMinutes;
       case 'otQuarters': return emp.otQuarters;
       case 'otPay': return emp.otPay; // can be null (Thai employees have no OT pay rate)
+      case 'specialAllowance': return emp.specialAllowance;
       case 'leaveTotal': return leaveTotal(emp);
       default: return '';
     }

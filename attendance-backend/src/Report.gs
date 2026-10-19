@@ -202,6 +202,45 @@ function writeMonthlyReportData_(sheet, startRow, year, month, precomputedLogsBy
       fontWeights.push(blankRowColors.slice());
     }
 
+    // Special Allowance line items -- only for the single-employee Print
+    // Employee Report PDF (onlyEmployeeId set), never for the full-roster
+    // live Report sheet refresh, which already lists every employee's every
+    // day and doesn't need this extra block repeated for the whole staff on
+    // every dropdown change. Each entry keeps its own admin-chosen label
+    // (getAllowancesForEmployeeMonth_, Allowances.gs) so e.g. a rice
+    // allowance and a tip bonus the same month both show up by name, with a
+    // total line -- deliberately placed below the day table and never
+    // combined with the OT (min)/OT (Quarter) columns above, so it reads as
+    // a clearly separate figure.
+    if (onlyEmployeeId) {
+      var allowances = getAllowancesForEmployeeMonth_(emp.EmployeeID, year, month);
+      if (allowances.length > 0) {
+        allowances.forEach(function (a) {
+          // Round for display -- same per-entry rounding sumRoundedAllowances_
+          // (Allowances.gs) applies before summing below, so the itemized
+          // lines here always visibly add up to the Total line's figure.
+          var allowanceRow = new Array(COLS).fill('');
+          allowanceRow[0] = a.label + ': ' + round2_(a.amount) + ' Baht';
+          rows.push(allowanceRow);
+          backgrounds.push(blankRowColors.slice());
+          fontColors.push(blankRowColors.slice());
+          fontWeights.push(blankRowColors.slice());
+        });
+        // sumRoundedAllowances_ (Allowances.gs) owns the "round each entry,
+        // then sum" rule in exactly one place -- same helper the Summary
+        // sheet and Dashboard use, so this Total can never quietly disagree
+        // with those for the same employee/month.
+        var totalRow = new Array(COLS).fill('');
+        totalRow[0] = 'Total Special Allowance: ' + sumRoundedAllowances_(allowances) + ' Baht';
+        rows.push(totalRow);
+        backgrounds.push(blankRowColors.slice());
+        fontColors.push(blankRowColors.slice());
+        var totalRowFontWeights = blankRowColors.slice();
+        totalRowFontWeights[0] = 'bold';
+        fontWeights.push(totalRowFontWeights);
+      }
+    }
+
     employeeBlocks.push({ startRow: blockStartRow, endRow: startRow + rows.length - 1 });
 
     rows.push(new Array(COLS).fill(''));
@@ -662,10 +701,23 @@ function writeMonthlySummaryData_(sheet, startRow, year, month) {
   var logsByEmployee = getMonthLogsByEmployee_(year, month);
   var scheduledShiftsForMonth = getScheduledShiftsForMonth_(year, month);
   var daysInMonth = new Date(year, month, 0).getDate();
+  // One read of the whole Allowances sheet for every employee's total this
+  // month, not one read per employee (see getAllowancesForMonth_'s doc
+  // comment, Allowances.gs).
+  var allowancesByEmployee = getAllowancesForMonth_(year, month);
 
-  // Same rule as the Report sheet: Active, or has data this month.
+  // Same rule as the Report sheet: Active, or has data this month -- PLUS a
+  // Special Allowance entry this month, so a deactivated employee given one
+  // final backdated allowance still shows up here instead of it silently
+  // existing in the Allowances sheet but never appearing on any Summary view.
   var employees = getAllEmployees_().filter(function (emp) {
-    return isTrue_(emp.Active) || !!logsByEmployee[emp.EmployeeID];
+    // `in`, same presence check as the yearly path's allowanceTotalsByEmployee
+    // (writeYearlySummaryData_/getDashboardSummaryData_ above) -- getAllowancesForMonth_
+    // only ever sets a key when at least one entry matched, so this is
+    // equivalent to the old `!!` here, but keeping one idiom everywhere
+    // avoids relying on "this map happens to never store an empty array" to
+    // stay true as a separate, undocumented invariant.
+    return isTrue_(emp.Active) || !!logsByEmployee[emp.EmployeeID] || (emp.EmployeeID in allowancesByEmployee);
   });
 
   employees = employees.slice().sort(function (a, b) {
@@ -675,11 +727,11 @@ function writeMonthlySummaryData_(sheet, startRow, year, month) {
     return String(a.EmployeeID).localeCompare(String(b.EmployeeID));
   });
 
-  var COLS = 8 + LEAVE_COUNT_TYPES.length; // Employee, Department, Days Worked, Late Count, Over Count, OT (min), OT (Quarter), OT Pay (Baht), then one column per LEAVE_COUNT_TYPES entry
+  var COLS = 9 + LEAVE_COUNT_TYPES.length; // Employee, Department, Days Worked, Late Count, Over Count, OT (min), OT (Quarter), OT Pay (Baht), Special Allowance (Baht), then one column per LEAVE_COUNT_TYPES entry
   var LATE_COUNT_COL = 4;
   var OVER_COUNT_COL = 5;
   var OT_PAY_COL = 8;
-  var rows = [['Employee', 'Department', 'Days Worked', 'Late Count', 'Over Count', 'OT (min)', 'OT (Quarter)', 'OT Pay (Baht)'].concat(LEAVE_COUNT_TYPES)];
+  var rows = [['Employee', 'Department', 'Days Worked', 'Late Count', 'Over Count', 'OT (min)', 'OT (Quarter)', 'OT Pay (Baht)', 'Special Allowance (Baht)'].concat(LEAVE_COUNT_TYPES)];
   var lateHighlightRows = []; // sheet row numbers (1-indexed) where Late Count > 0, for the red highlight below
   var overHighlightRows = []; // sheet row numbers (1-indexed) where Over Count > 0, for the red highlight below
   var otPayHighlightRows = []; // sheet row numbers (1-indexed) where OT Pay > 0, for the light-green highlight below
@@ -690,10 +742,19 @@ function writeMonthlySummaryData_(sheet, startRow, year, month) {
     var daysWorked = totals.daysWorked, lateCount = totals.lateCount, overCount = totals.overCount;
     var otMinutesTotal = totals.otMinutesTotal, otQuartersTotal = totals.otQuartersTotal;
 
+    // computeOtPay_ and allowancesByEmployee (Allowances.gs) are two
+    // completely independent reads/calculations -- allowance totals never
+    // feed into or adjust OT pay, by design, so that column keeps meaning
+    // exactly what it always has.
     var otPay = computeOtPay_(emp, otMinutesTotal, otQuartersTotal);
+    // sumRoundedAllowances_ (Allowances.gs) owns the "round each entry,
+    // then sum" rule in exactly one place -- see its own doc comment for
+    // why that matters (keeps this figure, the PDF's, and the Dashboard's
+    // from ever quietly disagreeing by a cent on the same employee/month).
+    var specialAllowance = sumRoundedAllowances_(allowancesByEmployee[emp.EmployeeID]);
     var leaveCounts = countLeavesForEmployee_(scheduledShiftsForMonth, emp.EmployeeID);
     var leaveCountValues = LEAVE_COUNT_TYPES.map(function (t) { return leaveCounts[t]; });
-    rows.push([emp.Name + ' (' + emp.EmployeeID + ')', emp.Department, daysWorked, lateCount, overCount, otMinutesTotal, otQuartersTotal, otPay].concat(leaveCountValues));
+    rows.push([emp.Name + ' (' + emp.EmployeeID + ')', emp.Department, daysWorked, lateCount, overCount, otMinutesTotal, otQuartersTotal, otPay, specialAllowance].concat(leaveCountValues));
     if (lateCount > 0) lateHighlightRows.push(startRow + rows.length - 1);
     if (overCount > 0) overHighlightRows.push(startRow + rows.length - 1);
     if (otPay > 0) otPayHighlightRows.push(startRow + rows.length - 1);
@@ -737,10 +798,25 @@ function writeYearlySummaryData_(sheet, startRow, year) {
   var logSheet = getSheet_('AttendanceLog');
   var totalsByEmployee = aggregateYearSummary_(logSheet.getDataRange().getValues(), year);
   var leaveCountsByEmployee = countLeavesForYear_(year);
+  // One read of the whole Allowances sheet for every employee's yearly
+  // total, not one per employee -- see aggregateSpecialAllowancesForYear_'s
+  // doc comment (Allowances.gs), same "read once" reasoning as
+  // aggregateYearSummary_ just above for AttendanceLog. Computed here,
+  // before the employee filter below, since that filter also needs it.
+  var allowanceTotalsByEmployee = aggregateSpecialAllowancesForYear_(year);
 
-  // Same rule as the monthly view, just "has data this YEAR" instead of this month.
+  // Same rule as the monthly view, just "has data this YEAR" instead of
+  // this month -- PLUS a Special Allowance entry this fiscal year, same
+  // "a deactivated employee with a late allowance entry must still show up"
+  // reasoning as the monthly path (writeMonthlySummaryData_) just above.
+  // Checked with `in`, not `!!...[id]` -- aggregateSpecialAllowancesForYear_
+  // only ever sets a key when at least one real entry matched, but that
+  // entry's rounded total can legitimately be exactly 0 (e.g. two entries
+  // that net out, or a manually-zeroed correction row) -- `!!0` is false,
+  // which would wrongly drop that employee from this filter despite real
+  // rows existing for them.
   var employees = getAllEmployees_().filter(function (emp) {
-    return isTrue_(emp.Active) || !!totalsByEmployee[emp.EmployeeID];
+    return isTrue_(emp.Active) || !!totalsByEmployee[emp.EmployeeID] || (emp.EmployeeID in allowanceTotalsByEmployee);
   });
 
   employees = employees.slice().sort(function (a, b) {
@@ -750,11 +826,11 @@ function writeYearlySummaryData_(sheet, startRow, year) {
     return String(a.EmployeeID).localeCompare(String(b.EmployeeID));
   });
 
-  var COLS = 8 + LEAVE_COUNT_TYPES.length; // Employee, Department, Days Worked, Late Count, Over Count, OT (min), OT (Quarter), OT Pay (Baht), then one column per LEAVE_COUNT_TYPES entry
+  var COLS = 9 + LEAVE_COUNT_TYPES.length; // Employee, Department, Days Worked, Late Count, Over Count, OT (min), OT (Quarter), OT Pay (Baht), Special Allowance (Baht), then one column per LEAVE_COUNT_TYPES entry
   var LATE_COUNT_COL = 4;
   var OVER_COUNT_COL = 5;
   var OT_PAY_COL = 8;
-  var rows = [['Employee', 'Department', 'Days Worked', 'Late Count', 'Over Count', 'OT (min)', 'OT (Quarter)', 'OT Pay (Baht)'].concat(LEAVE_COUNT_TYPES)];
+  var rows = [['Employee', 'Department', 'Days Worked', 'Late Count', 'Over Count', 'OT (min)', 'OT (Quarter)', 'OT Pay (Baht)', 'Special Allowance (Baht)'].concat(LEAVE_COUNT_TYPES)];
   var lateHighlightRows = [];
   var overHighlightRows = [];
   var otPayHighlightRows = [];
@@ -765,9 +841,10 @@ function writeYearlySummaryData_(sheet, startRow, year) {
   employees.forEach(function (emp) {
     var totals = totalsByEmployee[emp.EmployeeID] || { daysWorked: 0, lateCount: 0, overCount: 0, otMinutesTotal: 0, otQuartersTotal: 0 };
     var otPay = computeOtPay_(emp, totals.otMinutesTotal, totals.otQuartersTotal);
+    var specialAllowance = allowanceTotalsByEmployee[emp.EmployeeID] || 0;
     var leaveCounts = leaveCountsByEmployee[emp.EmployeeID] || zeroLeaveCounts;
     var leaveCountValues = LEAVE_COUNT_TYPES.map(function (t) { return leaveCounts[t]; });
-    rows.push([emp.Name + ' (' + emp.EmployeeID + ')', emp.Department, totals.daysWorked, totals.lateCount, totals.overCount, totals.otMinutesTotal, totals.otQuartersTotal, otPay].concat(leaveCountValues));
+    rows.push([emp.Name + ' (' + emp.EmployeeID + ')', emp.Department, totals.daysWorked, totals.lateCount, totals.overCount, totals.otMinutesTotal, totals.otQuartersTotal, otPay, specialAllowance].concat(leaveCountValues));
     if (totals.lateCount > 0) lateHighlightRows.push(startRow + rows.length - 1);
     if (totals.overCount > 0) overHighlightRows.push(startRow + rows.length - 1);
     if (otPay > 0) otPayHighlightRows.push(startRow + rows.length - 1);
@@ -1677,10 +1754,16 @@ function getDashboardSummaryData_(year, month) {
   var allEmployees = getAllEmployees_();
 
   var totalsByEmployee, leaveCountsByEmployee, sortGroupFor;
+  // Same two Allowances.gs readers the Summary sheet uses for its own
+  // "Special Allowance (Baht)" column (writeYearlySummaryData_/
+  // writeMonthlySummaryData_, both above) -- one read of the whole
+  // Allowances sheet covers every employee, not a per-employee lookup.
+  var allowanceTotalsByEmployee, allowancesByEmployee;
   if (isAllMonths) {
     var logSheet = getSheet_('AttendanceLog');
     totalsByEmployee = aggregateYearSummary_(logSheet.getDataRange().getValues(), year);
     leaveCountsByEmployee = countLeavesForYear_(year);
+    allowanceTotalsByEmployee = aggregateSpecialAllowancesForYear_(year);
     sortGroupFor = function (emp) { return reportSortGroupFromTotal_(emp, totalsByEmployee[emp.EmployeeID]); };
   } else {
     var logsByEmployee = getMonthLogsByEmployee_(year, month);
@@ -1704,14 +1787,28 @@ function getDashboardSummaryData_(year, month) {
     allEmployees.forEach(function (emp) {
       leaveCountsByEmployee[emp.EmployeeID] = countLeavesForEmployee_(scheduledShiftsForMonth, emp.EmployeeID);
     });
+    allowancesByEmployee = getAllowancesForMonth_(year, month);
     sortGroupFor = function (emp) { return reportSortGroup_(emp, logsByEmployee[emp.EmployeeID]); };
   }
 
   // Same "Active, or has data this period" rule as the Summary sheet
   // (writeYearlySummaryData_), PLUS a Dashboard-only exclusion the Summary
-  // sheet deliberately does not have -- see isDashboardExcludedEmployee_.
+  // sheet deliberately does not have (see isDashboardExcludedEmployee_) PLUS
+  // "or has a Special Allowance entry this period" -- same reasoning as the
+  // identical addition to writeMonthlySummaryData_/writeYearlySummaryData_:
+  // a deactivated employee given one final backdated allowance must still
+  // show up here, not just on the Summary sheet.
   var employees = allEmployees.filter(function (emp) {
-    return (isTrue_(emp.Active) || !!totalsByEmployee[emp.EmployeeID]) && !isDashboardExcludedEmployee_(emp);
+    // `in` on both sides -- same presence check either way, rather than `in`
+    // on the yearly (number) map and `!!` on the monthly (array) map. A real
+    // allowance total can legitimately round to exactly 0 (entries that net
+    // out, a manually-zeroed correction row), and `!!0` would wrongly drop
+    // that employee despite real Allowances-sheet rows existing for them
+    // (same fix as writeYearlySummaryData_'s identical filter, Report.gs
+    // above) -- `in` avoids relying on each map's storage shape to know
+    // whether this check is safe.
+    var hasAllowance = isAllMonths ? (emp.EmployeeID in allowanceTotalsByEmployee) : (emp.EmployeeID in allowancesByEmployee);
+    return (isTrue_(emp.Active) || !!totalsByEmployee[emp.EmployeeID] || hasAllowance) && !isDashboardExcludedEmployee_(emp);
   });
 
   employees = employees.slice().sort(function (a, b) {
@@ -1728,6 +1825,18 @@ function getDashboardSummaryData_(year, month) {
     var totals = totalsByEmployee[emp.EmployeeID] || zeroTotals;
     var leaveCounts = leaveCountsByEmployee[emp.EmployeeID] || zeroLeaveCounts;
     var otPay = computeOtPay_(emp, totals.otMinutesTotal, totals.otQuartersTotal);
+    // Independent of otPay/computeOtPay_ above -- by design, so this figure
+    // can never get folded into or confused with OT pay (same separation
+    // writeMonthlySummaryData_/writeYearlySummaryData_ keep on the Summary
+    // sheet). Unlike otPay there's no "not eligible" concept here -- no
+    // entries this period just means 0, never null. sumRoundedAllowances_
+    // (Allowances.gs) owns the "round each entry, then sum" rule in exactly
+    // one place -- same helper writeMonthlySummaryData_ uses -- so this
+    // figure can never disagree by a cent with what the Summary sheet shows
+    // for the same employee/period.
+    var specialAllowance = isAllMonths
+      ? (allowanceTotalsByEmployee[emp.EmployeeID] || 0)
+      : sumRoundedAllowances_(allowancesByEmployee[emp.EmployeeID]);
     return {
       employeeId: emp.EmployeeID,
       name: emp.Name,
@@ -1739,6 +1848,7 @@ function getDashboardSummaryData_(year, month) {
       otMinutes: totals.otMinutesTotal,
       otQuarters: totals.otQuartersTotal,
       otPay: otPay === '' ? null : otPay, // null = not eligible (e.g. Thai staff with no Salary on file), not zero
+      specialAllowance: specialAllowance,
       leave: {
         annual: leaveCounts['Annual Leave'],
         sick: leaveCounts['Sick Leave'],
