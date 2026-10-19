@@ -156,16 +156,7 @@
   #logoutBtn:hover { background: #F4F7FD; }
 
   main {
-    /* Widened from 1100px when the Allowance column (Special Allowance
-       feature) pushed the Monthly table to 11 columns -- at 1100px the
-       table outgrew `main` and spilled into the page-wide horizontal
-       scroll described below (#monthlyView .card's comment), which read
-       as the table being cut off on a normal desktop window instead of
-       using the screen it had. 1600px comfortably fits every Monthly
-       column without scrolling on a typical desktop viewport while still
-       leaving the narrower views (login, Daily stat tiles) centered with
-       reasonable margins, since those use their own tighter max-widths. */
-    max-width: 1600px;
+    max-width: 1100px;
     margin: 0 auto;
     padding: 40px 24px 80px;
   }
@@ -569,6 +560,13 @@
     top: var(--sticky-top-offset, 0px);
     z-index: 1;
   }
+  /* 14px side padding (the original figure, from before the Allowance
+     column existed) no longer fits 11 columns inside `main`'s 1100px --
+     tightened just the horizontal padding here (and on tbody td, pill,
+     and leave-badge below) rather than widening `main`, since widening it
+     read as worse (real feedback, 2026-10-19): a near-empty page with the
+     table stranded in the middle, not actually easier to read. */
+  thead th { padding-left: 10px; padding-right: 10px; }
   /* Rounds the corners #monthlyView .card's overflow:hidden used to clip
      for free (see that rule's own comment) -- top corners only need it on
      thead (opaque #F4F7FD background); tbody td itself has no background,
@@ -598,7 +596,7 @@
   thead th.sortable.sort-asc, thead th.sortable.sort-desc { color: var(--accent-dark); }
 
   tbody td {
-    padding: 11px 14px;
+    padding: 11px 10px;
     border-bottom: 1px solid var(--border);
     white-space: nowrap;
   }
@@ -616,7 +614,7 @@
     display: inline-block;
     font-weight: 700;
     font-variant-numeric: tabular-nums;
-    padding: 3px 9px;
+    padding: 3px 7px;
     border-radius: 999px;
     font-size: 12px;
   }
