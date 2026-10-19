@@ -17,7 +17,7 @@ function onOpen() {
     .addItem('Deactivate Employee (Resignation)', 'menuDeactivateEmployee_')
     .addItem('Add Backdated Check-in/Check-out', 'menuAddBackdatedAttendance_')
     .addItem('Bulk Mark Attendance for a Day', 'menuBulkMarkAttendance_')
-    .addItem('Add Special Allowance', 'menuAddSpecialAllowance_')
+    .addItem('Allowancer', 'menuAddSpecialAllowance_')
     .addItem('Create / Update Schedule Sheet', 'menuCreateScheduleSheet_')
     .addItem('Highlight Shift Mismatches', 'menuHighlightShiftMismatches_')
     .addItem('Recompute Late/OT for One Month', 'menuRecomputeLateOtOneMonth_')
@@ -1001,7 +1001,7 @@ function promptForAllowanceYearMonth_(ui, title) {
  */
 function menuAddSpecialAllowance_() {
   var ui = SpreadsheetApp.getUi();
-  var title = 'Add Special Allowance';
+  var title = 'Allowancer'; // matches the "Allowancer" menu label (onOpen above) -- every dialog in this flow shares this one title string
 
   var namesResp = ui.prompt(title, 'Employee names or IDs, comma-separated (e.g. SHUNYA, EMP025, AYAMI):', ui.ButtonSet.OK_CANCEL);
   if (namesResp.getSelectedButton() !== ui.Button.OK) return;
