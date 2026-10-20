@@ -141,7 +141,13 @@ function writeMonthlyReportData_(sheet, startRow, year, month, precomputedLogsBy
         : getAllowancesForEmployeeMonth_(emp.EmployeeID, year, month))
       : [];
 
-    rows.push([emp.Name + ' (' + emp.EmployeeID + ')', emp.Department, '', '', '', '', '', '', '', '']);
+    // Name + Department as ONE string, not two separate cells -- columns A+B
+    // get merged into a single cell for this row further down (right after
+    // the border pass below), specifically so a long name ("PINGPONG
+    // (EMP010)") no longer forces column A (Date) wide just to avoid
+    // clipping against Department sitting in column B on this one row. See
+    // this function's own notes on that merge for why.
+    rows.push([emp.Name + ' (' + emp.EmployeeID + ')    ' + emp.Department, '', '', '', '', '', '', '', '', '']);
     backgrounds.push(nameRowBackgrounds.slice());
     fontColors.push(blankRowColors.slice());
     fontWeights.push(nameRowFontWeights.slice());
@@ -340,6 +346,22 @@ function writeMonthlyReportData_(sheet, startRow, year, month, precomputedLogsBy
         .getRange(block.startRow, 1, block.endRow - block.startRow + 1, COLS)
         .setBorder(true, true, true, true, true, true, 'black', SpreadsheetApp.BorderStyle.SOLID);
     });
+
+    // Merge columns A+B on each employee's Name/Department row
+    // (block.startRow) into one cell -- can't be expressed in the bulk
+    // setValues/setBackgrounds calls above, so it's its own small pass.
+    // This is the actual fix for the Date column rendering too wide:
+    // without it, Name+Department live in two separate, unmerged cells
+    // (column A/B), and since Department (column B) is never blank on this
+    // row, a long name ("PINGPONG (EMP010)") can't overflow into it and
+    // forces column A wide enough to fit the whole name -- which then makes
+    // every DATE row below inherit that same oversized column, even though
+    // a date only ever needs ~10 characters. Merging spreads Name+Department
+    // across both columns together instead, so column A's own width ends up
+    // driven by Date's real content, not Name's.
+    employeeBlocks.forEach(function (block) {
+      sheet.getRange(block.startRow, 1, 1, 2).merge().setWrap(true);
+    });
   }
   // autoResizeColumnsWithPadding_ (not plain autoResizeColumns) -- same
   // helper the Summary sheet's writers already use, so every column gets a
@@ -348,6 +370,16 @@ function writeMonthlyReportData_(sheet, startRow, year, month, precomputedLogsBy
   // once the PDF export's fitw=true scales the whole table up to fill the
   // page width.
   autoResizeColumnsWithPadding_(sheet, COLS);
+  // Date/Day get an explicit, deterministic width instead of trusting
+  // auto-size for these two specifically -- auto-size already got fooled
+  // twice this session (by the title row, then by this row's own
+  // Name/Department text) into sizing column A off something other than an
+  // actual date, so pin it directly: "dd/MM/yyyy" is always exactly 10
+  // characters, and the longest weekday name ("Wednesday") is 9. These are
+  // deliberately tight, not generous -- if a real exported PDF ever shows
+  // either clipped, raise the matching number a bit.
+  sheet.setColumnWidth(1, 95); // Date
+  sheet.setColumnWidth(2, 90); // Day
   return rows.length; // lets writeYearlyReportData_ know where the next month's block should start
 }
 
