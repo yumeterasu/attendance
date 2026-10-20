@@ -1807,6 +1807,12 @@ function buildSalarySheet_(year, month) {
       });
       existing.getRange(2, 1, dataRows.length, headers.length).setValues(dataRows);
     }
+    // Floor, not a fixed width -- auto-fit (new-sheet branch below) sizes
+    // the column to whatever's typed in SO FAR, which is too narrow the
+    // moment someone enters a salary with real cents (e.g. "19,599.30"
+    // visually clipped) -- never shrinks a column an admin widened further
+    // by hand.
+    if (existing.getColumnWidth(3) < 100) existing.setColumnWidth(3, 100);
     return sheetName;
   }
 
@@ -1822,6 +1828,11 @@ function buildSalarySheet_(year, month) {
     sheet.getRange(2, 3, rows.length - 1, 1).setNumberFormat('#,##0.00');
   }
   sheet.autoResizeColumns(1, 3);
+  // Same floor as the existing-sheet branch above -- auto-fit alone sizes
+  // the Salary column to whatever's already filled in (often blank, or
+  // short whole-baht legacy values), too narrow for a real value with
+  // cents typed in later.
+  if (sheet.getColumnWidth(3) < 100) sheet.setColumnWidth(3, 100);
   return sheetName;
 }
 
