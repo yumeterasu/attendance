@@ -144,6 +144,12 @@ const MONTH_NAMES = [
 // Monday->Sunday (2026-10-20 -- was Sunday->Saturday) -- buildCalendarWeeks'
 // own firstWeekday remap below must stay in sync with this exact order.
 const WEEKDAY_HEADERS = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
+// Column indexes for the weekend tint below (2026-10-20) -- named and
+// shared by both the header row's and the day grid's render loops, rather
+// than two separate `=== 5`/`=== 6` literals that could drift apart if
+// the column order ever changes again (as it already did once).
+const SATURDAY_COLUMN_INDEX = 5;
+const SUNDAY_COLUMN_INDEX = 6;
 
 // ScheduleDay's `note` is set only for a day with no actual punch that was
 // scheduled as something other than a real clock-time shift (Leave,
@@ -2255,7 +2261,12 @@ export default function KioskScreen({ navigation }: Props) {
 
         <View style={styles.calendarWeekRow}>
           {WEEKDAY_HEADERS.map((h, i) => (
-            <Text key={i} style={styles.calendarHeaderCell}>{h}</Text>
+            <Text
+              key={i}
+              style={[styles.calendarHeaderCell, i === SATURDAY_COLUMN_INDEX && styles.calendarCellSaturday, i === SUNDAY_COLUMN_INDEX && styles.calendarCellSunday]}
+            >
+              {h}
+            </Text>
           ))}
         </View>
         </View>
@@ -2289,6 +2300,8 @@ export default function KioskScreen({ navigation }: Props) {
                     { height: cellHeight },
                     !cell && styles.calendarCellBlank,
                     cell && cell.entry && styles.calendarCellWorked,
+                    cell && ci === SATURDAY_COLUMN_INDEX && styles.calendarCellSaturday,
+                    cell && ci === SUNDAY_COLUMN_INDEX && styles.calendarCellSunday,
                     isHoliday && styles.calendarCellHoliday,
                     isLeave && styles.calendarCellLeave
                   ]}
@@ -3048,6 +3061,18 @@ const SCHEDULE_ACCENT_BG = '#F3ECFB'; // Violet Soft
 const SCHEDULE_ACCENT_DARK = '#8C6FBE';
 const SCHEDULE_BORDER = '#E1D3F3';
 const SCHEDULE_CARD = '#FCFAFF'; // "worked" calendar days -- near-white, standing out from the muted violet default cells
+// Saturday matches the Dashboard web calendar's --saturday-bg
+// (attendance-dashboard/index.html) exactly -- one consistent light-blue
+// vocabulary across both surfaces. Sunday does NOT reuse that Dashboard's
+// --sunday-bg (#FDECEE) -- this screen's calendar, unlike the Dashboard's,
+// already has calendarCellHoliday/calendarCellLeave in that same pale
+// peach/pink family (#FFF3E0/#FDECEA), and #FDECEE sits close enough to
+// calendarCellLeave's #FDECEA (4/255 apart) to be indistinguishable at a
+// glance -- exactly what this change exists to prevent. A more clearly
+// "red" (less peach) shade keeps Sunday unmistakable from a Leave day in
+// this screen's specific palette.
+const CALENDAR_SATURDAY_BG = '#E8F1FE';
+const CALENDAR_SUNDAY_BG = '#F8D7DA';
 const EXIT_ACCENT_BG = '#FAD9C8'; // Warm Medium
 const EXIT_ACCENT_DARK = '#A83A1C';
 const EXIT_BORDER = '#EEB79B';
@@ -3488,7 +3513,13 @@ const styles = StyleSheet.create({
     color: TEXT_MUTED,
     fontSize: 13,
     fontFamily: FONT_DISPLAY_BOLD,
-    paddingBottom: 6
+    paddingBottom: 6,
+    // Invisible on an ordinary header cell (no background set here to
+    // clip) -- only matters for the Saturday/Sunday tint below, so those
+    // two columns' colored header cells round the same way the bordered,
+    // rounded day cells beneath them already do, instead of rendering as
+    // flat-cornered rectangles that look inconsistent with the grid.
+    borderRadius: 6
   },
   // No aspectRatio anymore (dropped 2026-10-20) -- height is set per-cell
   // at render time instead (measured remaining space / weeks.length, see
@@ -3507,6 +3538,19 @@ const styles = StyleSheet.create({
   },
   calendarCellBlank: { borderColor: 'transparent', backgroundColor: 'transparent' },
   calendarCellWorked: { backgroundColor: SCHEDULE_CARD, borderColor: SCHEDULE_BORDER }, // days with an actual record stand out against the muted default
+  // Weekend tint (2026-10-20, real feedback -- easier to spot Sat/Sun at a
+  // glance scanning a month) -- applied by column index (Monday-first, so
+  // index 5/6 are always Saturday/Sunday -- see the render loop below),
+  // not by re-deriving day-of-week from the date, since the grid's column
+  // order already guarantees it. Comes AFTER calendarCellWorked in the
+  // style array (so it wins over the plain "has a record" near-white
+  // background -- knowing a day is a weekend matters more here than that
+  // generic signal, and a worked day's real time-in/out text is still
+  // its own obvious "has a record" cue) but BEFORE Holiday/Leave (so a
+  // weekend that's also a company Holiday still reads as the Holiday
+  // orange, the more specific/important fact).
+  calendarCellSaturday: { backgroundColor: CALENDAR_SATURDAY_BG },
+  calendarCellSunday: { backgroundColor: CALENDAR_SUNDAY_BG },
   calendarCellHoliday: { backgroundColor: '#FFF3E0', borderColor: '#F5C88F' },
   calendarCellLeave: { backgroundColor: '#FDECEA', borderColor: '#F1B3AB' },
   calendarDayNum: { color: TEXT, fontSize: 15, fontFamily: FONT_BODY_EXTRABOLD },
