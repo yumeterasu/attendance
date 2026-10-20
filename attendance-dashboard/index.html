@@ -1169,6 +1169,7 @@
       leaveAnnual: 'Annual',
       leaveSick: 'Sick',
       leavePaidSpecial: 'Paid Special',
+      leaveSubstitutional: 'Substitutional',
       leaveUnpaid: 'Unpaid',
       viewerName: 'Viewer',
       updateAvailable: 'A new version of this page is available.',
@@ -1239,6 +1240,7 @@
       leaveAnnual: '年次有給',
       leaveSick: '病気休暇',
       leavePaidSpecial: '特別有給',
+      leaveSubstitutional: '代休',
       leaveUnpaid: '無給休暇',
       viewerName: 'ビューアー',
       updateAvailable: 'このページの新しいバージョンが利用可能です。',
@@ -1713,6 +1715,7 @@
       if (emp.leave.annual) leaveBadges.push(t('leaveAnnual') + ' ' + formatLeaveCount(emp.leave.annual));
       if (emp.leave.sick) leaveBadges.push(t('leaveSick') + ' ' + formatLeaveCount(emp.leave.sick));
       if (emp.leave.paidSpecial) leaveBadges.push(t('leavePaidSpecial') + ' ' + formatLeaveCount(emp.leave.paidSpecial));
+      if (emp.leave.substitutional) leaveBadges.push(t('leaveSubstitutional') + ' ' + formatLeaveCount(emp.leave.substitutional));
       if (emp.leave.unpaid) leaveBadges.push(t('leaveUnpaid') + ' ' + formatLeaveCount(emp.leave.unpaid));
       var leaveHtml = leaveBadges.length
         ? '<div class="leave-badges">' + leaveBadges.map(function (b) { return '<span class="leave-badge">' + b + '</span>'; }).join('') + '</div>'
@@ -1821,7 +1824,7 @@
   var dailyErrorInfo = null;
 
   function leaveTotal(emp) {
-    return (emp.leave.annual || 0) + (emp.leave.sick || 0) + (emp.leave.paidSpecial || 0) + (emp.leave.unpaid || 0);
+    return (emp.leave.annual || 0) + (emp.leave.sick || 0) + (emp.leave.paidSpecial || 0) + (emp.leave.substitutional || 0) + (emp.leave.unpaid || 0);
   }
 
   function sortValueFor(emp, key) {

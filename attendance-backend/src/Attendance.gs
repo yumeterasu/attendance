@@ -28,16 +28,21 @@ var DUPLICATE_GUARD_MS = 60 * 1000; // reject re-scans within 60s of the last lo
 // recompute/Report/Dashboard/PDF read all already gate on the same check.
 // Unlike 'Event 8:00-17:00' (right before it below), the real tap time is
 // still what's recorded -- only Late/OT math is skipped on top of it.
-var SHIFTS = ['7:00-16:00', '7:30-16:30', '8:00-17:00', '8:30-17:30', '7:00-17:00', '7:00-17:30', '8:00-18:00', '8:00-18:30', 'Event 8:00-17:00', 'Special 8:30-17:30', 'Annual Leave', 'Sick Leave', 'Unpaid Leave', 'Paid Special Leave', 'Half Day Annual Leave AM 8:00-12:30', 'Half Day Annual Leave PM 12:30-17:00', 'Half Day Sick Leave AM 8:00-12:30', 'Half Day Sick Leave PM 12:30-17:00', 'Half Day Unpaid Leave AM 8:00-12:30', 'Half Day Unpaid Leave PM 12:30-17:00', 'Holiday'];
+var SHIFTS = ['7:00-16:00', '7:30-16:30', '8:00-17:00', '8:30-17:30', '7:00-17:00', '7:00-17:30', '8:00-18:00', '8:00-18:30', 'Event 8:00-17:00', 'Special 8:30-17:30', 'Annual Leave', 'Sick Leave', 'Unpaid Leave', 'Paid Special Leave', 'Substitutional Leave', 'Half Day Annual Leave AM 8:00-12:30', 'Half Day Annual Leave PM 12:30-17:00', 'Half Day Sick Leave AM 8:00-12:30', 'Half Day Sick Leave PM 12:30-17:00', 'Half Day Unpaid Leave AM 8:00-12:30', 'Half Day Unpaid Leave PM 12:30-17:00', 'Holiday'];
 // Shift values that mean "nobody's expected in at all that day" -- as
 // opposed to a blank cell (not scheduled yet) or a Half Day Leave entry
 // (still expected in for half the day -- see isHalfDayLeaveShift_). Used
 // wherever a scheduled-but-not-working day should be excluded from an
 // absence/attendance check: "Annual Leave", "Sick Leave", "Unpaid Leave"
 // and "Paid Special Leave" are one person's own day off (paid or not
-// doesn't matter here, just whether they're expected in), "Holiday" is the
-// whole company closed.
-var FULL_DAY_OFF_SHIFTS = ['Annual Leave', 'Sick Leave', 'Unpaid Leave', 'Paid Special Leave', 'Holiday'];
+// doesn't matter here, just whether they're expected in); "Substitutional
+// Leave" is identical to "Paid Special Leave" in every computation (same
+// full-day-off treatment, same no-Late/no-OT), kept as its own label only
+// so the Schedule sheet records WHY the day's off -- a genuine Paid
+// Special Leave entitlement vs. a day taken in lieu of having worked a
+// weekend/Holiday -- and so Summary/Report/PDF total them separately (see
+// LEAVE_COUNT_TYPES, Report.gs). "Holiday" is the whole company closed.
+var FULL_DAY_OFF_SHIFTS = ['Annual Leave', 'Sick Leave', 'Unpaid Leave', 'Paid Special Leave', 'Substitutional Leave', 'Holiday'];
 var BRANCHES = ['PP', 'TL']; // Phrom Phong, Thonglor -- Schedule sheet row order: this branch order first, then Japanese before Thai within each branch
 
 /**

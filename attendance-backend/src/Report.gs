@@ -527,7 +527,7 @@ function refreshLiveSummarySheet_() {
  * this needs to know WHICH full leave type each variant counts toward, not
  * just "is this a Half Day cell at all".
  */
-var LEAVE_COUNT_TYPES = ['Annual Leave', 'Sick Leave', 'Paid Special Leave', 'Unpaid Leave'];
+var LEAVE_COUNT_TYPES = ['Annual Leave', 'Sick Leave', 'Paid Special Leave', 'Substitutional Leave', 'Unpaid Leave'];
 var HALF_DAY_LEAVE_COUNTS_AS_ = {
   'Half Day Annual Leave': 'Annual Leave', // legacy, pre-2026-10-02
   'Half Day Annual Leave AM 8:00-12:30': 'Annual Leave',
@@ -1899,6 +1899,7 @@ function getDashboardSummaryData_(year, month) {
         annual: leaveCounts['Annual Leave'],
         sick: leaveCounts['Sick Leave'],
         paidSpecial: leaveCounts['Paid Special Leave'],
+        substitutional: leaveCounts['Substitutional Leave'],
         unpaid: leaveCounts['Unpaid Leave']
       }
     };
@@ -2131,7 +2132,7 @@ function handleDashboardCalendar_(params) {
  *     an intentional day off is only ever a real FULL_DAY_OFF_SHIFTS value
  *     an admin wrote in.
  *   - onLeave: no tap in, and the day's shift IS one of FULL_DAY_OFF_SHIFTS
- *     (Annual/Sick/Unpaid/Paid Special Leave, or Holiday).
+ *     (Annual/Sick/Unpaid/Paid Special/Substitutional Leave, or Holiday).
  *
  * An "Event ..." shift is a fifth case, checked before absent/onLeave and
  * overriding onTime/late above: no matter whether the person taps IN, taps
