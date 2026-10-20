@@ -453,7 +453,11 @@ function menuCreateScheduleSheet_() {
  * Sheet" just above, for the Salary sheet instead (see buildSalarySheet_'s
  * own doc comment, Report.gs, for what it does and why it exists -- OT Pay
  * for a given month needs to stay fixed to what that month's actual salary
- * was, even after a later raise).
+ * was, even after a later raise). Month also accepts "All" -- same word
+ * the Summary/Report sheets' own Month dropdowns already use for "the whole
+ * fiscal year" -- to create/update all 12 months in one go
+ * (getFiscalMonths_, Report.gs: Year 2026 = April 2026 through March 2027)
+ * instead of running this 12 times by hand.
  */
 function menuCreateSalarySheet_() {
   var ui = SpreadsheetApp.getUi();
@@ -463,18 +467,29 @@ function menuCreateSalarySheet_() {
   var yearResp = ui.prompt(title, 'Year (e.g. ' + now.getFullYear() + '):', ui.ButtonSet.OK_CANCEL);
   if (yearResp.getSelectedButton() !== ui.Button.OK) return;
   var year = Number(yearResp.getResponseText().trim());
+  if (!year) {
+    ui.alert('Enter a valid year.');
+    return;
+  }
 
-  var monthResp = ui.prompt(title, 'Month (1-12):', ui.ButtonSet.OK_CANCEL);
+  var monthResp = ui.prompt(title, 'Month (1-12), or "All" for the whole fiscal year (April ' + year + ' - March ' + (year + 1) + '):', ui.ButtonSet.OK_CANCEL);
   if (monthResp.getSelectedButton() !== ui.Button.OK) return;
-  var month = Number(monthResp.getResponseText().trim());
+  var monthText = monthResp.getResponseText().trim();
 
-  if (!year || !month || month < 1 || month > 12) {
-    ui.alert('Enter a valid year and a month between 1 and 12.');
+  if (monthText.toLowerCase() === 'all') {
+    var sheetNames = getFiscalMonths_(year).map(function (fm) { return buildSalarySheet_(fm.calYear, fm.calMonth); });
+    ui.alert('Done', 'Fiscal year ' + year + ' ready: ' + sheetNames.join(', ') + '. Each new row is seeded from the previous month\'s salary (or the Employees sheet, for the current calendar month only) -- only edit a cell when that person\'s salary actually changed.', ui.ButtonSet.OK);
+    return;
+  }
+
+  var month = Number(monthText);
+  if (!month || month < 1 || month > 12) {
+    ui.alert('Enter a valid month between 1 and 12, or "All".');
     return;
   }
 
   var sheetName = buildSalarySheet_(year, month);
-  ui.alert('Done', '"' + sheetName + '" is ready. Each new row is seeded from last month\'s salary (or the Employees sheet, if this is the first month) -- only edit a cell when that person\'s salary actually changed.', ui.ButtonSet.OK);
+  ui.alert('Done', '"' + sheetName + '" is ready. Each new row is seeded from last month\'s salary (or the Employees sheet, if this is the current month) -- only edit a cell when that person\'s salary actually changed.', ui.ButtonSet.OK);
 }
 
 /**
