@@ -772,7 +772,11 @@ function generateEmployeeReportPdf_(employee, year, month) {
       daysInMonth,
       allowancesByEmployee[employee.EmployeeID] || []
     );
-    sheet.getRange(2, 1, 1, 10).merge().setValue(summaryLine).setFontWeight('bold').setBackground('#fff2cc'); // light amber -- distinct "at a glance" caption line, outside the table's own border
+    // setWrap so this long line doesn't force column A (Date) artificially
+    // wide -- same reasoning the title row above already has (see its own
+    // comment): an unwrapped long line in a merged cell gets attributed to
+    // column 1's width by writeMonthlyReportData_'s autoResizeColumns call.
+    sheet.getRange(2, 1, 1, 10).merge().setValue(summaryLine).setFontWeight('bold').setBackground('#fff2cc').setWrap(true); // light amber -- distinct "at a glance" caption line, outside the table's own border
 
     writeMonthlyReportData_(sheet, 4, year, month, logsByEmployee, employee.EmployeeID, true, scheduledShiftsForMonth, allowancesByEmployee);
     SpreadsheetApp.flush(); // commit the sheet's real content/sizing before exporting it

@@ -341,7 +341,13 @@ function writeMonthlyReportData_(sheet, startRow, year, month, precomputedLogsBy
         .setBorder(true, true, true, true, true, true, 'black', SpreadsheetApp.BorderStyle.SOLID);
     });
   }
-  sheet.autoResizeColumns(1, COLS);
+  // autoResizeColumnsWithPadding_ (not plain autoResizeColumns) -- same
+  // helper the Summary sheet's writers already use, so every column gets a
+  // bit of breathing room beyond its tightest-fit content width instead of
+  // being sized to the exact pixel, which otherwise tends to look cramped
+  // once the PDF export's fitw=true scales the whole table up to fill the
+  // page width.
+  autoResizeColumnsWithPadding_(sheet, COLS);
   return rows.length; // lets writeYearlyReportData_ know where the next month's block should start
 }
 
@@ -438,7 +444,10 @@ function generateAllEmployeesReportPdf_(year, month, precomputedLogsByEmployee) 
       var summaryLine = buildEmployeeReportSummaryLine_(
         emp, logsByEmployee[emp.EmployeeID] || {}, scheduledShiftsForMonth[emp.EmployeeID], daysInMonth, allowancesForEmp
       );
-      sheet.getRange(row + 1, 1, 1, 10).merge().setValue(summaryLine).setFontWeight('bold').setBackground('#fff2cc');
+      // setWrap -- same reasoning as the title row above: an unwrapped long
+      // line in a merged cell gets attributed to column 1's (Date) width by
+      // writeMonthlyReportData_'s autoResizeColumns call, below.
+      sheet.getRange(row + 1, 1, 1, 10).merge().setValue(summaryLine).setFontWeight('bold').setBackground('#fff2cc').setWrap(true);
 
       var rowsWritten = writeMonthlyReportData_(
         sheet, row + 3, year, month, logsByEmployee, emp.EmployeeID, true,
