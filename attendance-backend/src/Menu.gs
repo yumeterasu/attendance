@@ -472,11 +472,15 @@ function menuCreateSalarySheet_() {
     return;
   }
 
-  var monthResp = ui.prompt(title, 'Month (1-12), or "All" for the whole fiscal year (April ' + year + ' - March ' + (year + 1) + '):', ui.ButtonSet.OK_CANCEL);
+  // Apps Script's native prompt has no pre-filled/default text box, so
+  // "defaults to All" is implemented as "leave it blank and press OK" --
+  // the closest equivalent this dialog type can offer. Typing a specific
+  // month still overrides it, same as before.
+  var monthResp = ui.prompt(title, 'Month (1-12) -- leave blank and press OK for the whole fiscal year (April ' + year + ' - March ' + (year + 1) + '):', ui.ButtonSet.OK_CANCEL);
   if (monthResp.getSelectedButton() !== ui.Button.OK) return;
   var monthText = monthResp.getResponseText().trim();
 
-  if (monthText.toLowerCase() === 'all') {
+  if (monthText === '' || monthText.toLowerCase() === 'all') {
     var sheetNames = getFiscalMonths_(year).map(function (fm) { return buildSalarySheet_(fm.calYear, fm.calMonth); });
     ui.alert('Done', 'Fiscal year ' + year + ' ready: ' + sheetNames.join(', ') + '. Each new row is seeded from the previous month\'s salary (or the Employees sheet, for the current calendar month only) -- only edit a cell when that person\'s salary actually changed.', ui.ButtonSet.OK);
     return;
