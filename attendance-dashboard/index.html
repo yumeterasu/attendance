@@ -878,6 +878,17 @@
     main { max-width: none; padding: 0; }
     .card { border: none; border-radius: 0; }
     #calendarTableWrap { overflow-x: visible; }
+    /* Chrome's print dialog strips background colors by default (its
+       "Background graphics" option under More settings, OFF unless the
+       person remembers to turn it on) -- without forcing this, the OT/SP
+       pills' fill and the Saturday/Sunday/Holiday column tints silently
+       disappear in print, leaving plain text/borders instead of the same
+       rounded, colored look the Dashboard shows on screen. This forces
+       them to print exactly as styled regardless of that toggle. */
+    #calendarTable, #calendarTable * {
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
+    }
     /* position:sticky has no meaning on a printed/paginated page and can
        make a browser repeat or misplace the first column across page
        breaks -- static positioning lets it flow like an ordinary cell. */
