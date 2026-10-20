@@ -140,7 +140,9 @@ const MONTH_NAMES = [
   'January', 'February', 'March', 'April', 'May', 'June',
   'July', 'August', 'September', 'October', 'November', 'December'
 ];
-const WEEKDAY_HEADERS = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
+// Monday->Sunday (2026-10-20 -- was Sunday->Saturday) -- buildCalendarWeeks'
+// own firstWeekday remap below must stay in sync with this exact order.
+const WEEKDAY_HEADERS = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
 
 // ScheduleDay's `note` is set only for a day with no actual punch that was
 // scheduled as something other than a real clock-time shift (Leave,
@@ -173,7 +175,12 @@ const CALENDAR_GRID_HEIGHT = 780;
 // have a record -- makes it easy to spot missed days at a glance.
 function buildCalendarWeeks(year: number, month: number, days: ScheduleDay[]): CalendarCell[][] {
   const daysInMonth = new Date(year, month, 0).getDate();
-  const firstWeekday = new Date(year, month - 1, 1).getDay();
+  // Columns run Monday->Sunday (WEEKDAY_HEADERS below, 2026-10-20 -- was
+  // Sunday->Saturday). Date.getDay() is always 0=Sunday..6=Saturday
+  // regardless of this -- (getDay() + 6) % 7 is what remaps that to
+  // 0=Monday..6=Sunday, matching the new column order, instead of the
+  // plain getDay() this used to pad leading blanks with directly.
+  const firstWeekday = (new Date(year, month - 1, 1).getDay() + 6) % 7;
   const byDay = new Map(days.map((d) => [d.day, d]));
 
   const cells: CalendarCell[] = [];
