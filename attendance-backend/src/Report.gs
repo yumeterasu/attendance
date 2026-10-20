@@ -1067,6 +1067,16 @@ function writeMonthlySummaryData_(sheet, startRow, year, month) {
 
   sheet.getRange(startRow, 1, rows.length, COLS).setValues(rows);
   sheet.getRange(startRow, 1, 1, COLS).setFontWeight('bold').setBackground('#ffe6dd');
+  // Explicit 2-decimal format -- without this the cell can display OT Pay
+  // rounded to a whole baht (Sheets' automatic number formatting, or
+  // whatever format this column happened to inherit, doesn't reliably show
+  // the real cents computeOtPay_/round2_ already computed), even though the
+  // underlying stored value always has them. Refreshed on every write, same
+  // "cosmetic formatting is safe to reapply every run" reasoning as the
+  // dropdown/color refreshes elsewhere in this file.
+  if (rows.length > 1) {
+    sheet.getRange(startRow + 1, OT_PAY_COL, rows.length - 1, 1).setNumberFormat('#,##0.00');
+  }
 
   if (lateHighlightRows.length > 0) {
     var lateA1Notations = lateHighlightRows.map(function (r) { return sheet.getRange(r, LATE_COUNT_COL).getA1Notation(); });
@@ -1165,6 +1175,12 @@ function writeYearlySummaryData_(sheet, startRow, year) {
 
   sheet.getRange(startRow, 1, rows.length, COLS).setValues(rows);
   sheet.getRange(startRow, 1, 1, COLS).setFontWeight('bold').setBackground('#ffe6dd');
+  // Same reasoning as writeMonthlySummaryData_'s identical line -- without
+  // an explicit format, the cell can display OT Pay rounded to a whole
+  // baht even though the stored value already has real cents.
+  if (rows.length > 1) {
+    sheet.getRange(startRow + 1, OT_PAY_COL, rows.length - 1, 1).setNumberFormat('#,##0.00');
+  }
 
   if (lateHighlightRows.length > 0) {
     var lateA1Notations = lateHighlightRows.map(function (r) { return sheet.getRange(r, LATE_COUNT_COL).getA1Notation(); });
