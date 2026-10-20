@@ -702,13 +702,11 @@
     height: 32px;
   }
   /* Every day column (all but the employee-name first column) gets the
-     same fixed width, so a cell holding an "OT"/"SP" pill and a blank
-     cell both render the same size. Tighter horizontal padding than the
-     general th/td rule above, since a 2-letter pill needs less room than
-     a day column would otherwise take -- but wide enough (40px, with
-     .cal-pill's own padding trimmed below) to leave real margin around
-     the pill rather than a near-exact fit, which earlier read as
-     slightly uneven cells depending on font rendering. */
+     same fixed width, so a cell holding "OT"/"SP" text (or an OT/SP
+     colored background -- see td.ot/td.sp below) and a blank cell both
+     render the same size. Tighter horizontal padding than the general
+     th/td rule above, since a 2-letter mark needs less room than a day
+     column would otherwise take. */
   #calendarTable th:not(:first-child), #calendarTable td:not(:first-child) {
     width: 40px;
     padding: 6px 2px;
@@ -750,20 +748,15 @@
   #calendarTable th.saturday, #calendarTable td.saturday { background: var(--saturday-bg); }
   #calendarTable th.sunday, #calendarTable td.sunday { background: var(--sunday-bg); }
   #calendarTable th.holiday, #calendarTable td.holiday { background: var(--warn-bg); }
-  .cal-pill {
-    display: inline-block;
-    font-size: 10px;
-    font-weight: 700;
-    padding: 2px 5px;
-    border-radius: 999px;
-    border: 1px solid transparent;
-  }
-  .cal-pill.ot { background: var(--success-bg); color: var(--success-text); border-color: var(--success-border); }
-  /* Explicit border-color (not just background) matters here specifically
-     -- a 'SP' cell can land in a Holiday-tinted column (td.holiday uses
-     this same --warn-bg), and without its own border the pill would be
-     invisible, same color as the cell behind it. */
-  .cal-pill.sp { background: var(--warn-bg); color: var(--warn-text); border-color: var(--warn-border); }
+  /* A real OT/SP mark fills the WHOLE cell with its color (renderCalendarTable
+     sets class="ot"/"sp" directly on the td, in place of the day-type class,
+     for that one cell) rather than a smaller pill floating inside a
+     fixed-size cell -- a pill's own box could end up a pixel or two off from
+     the grid depending on font rendering, which read as the day columns not
+     quite lining up evenly; a flat cell background can't do that, since it's
+     exactly the same box table-layout:fixed already sizes every cell to. */
+  #calendarTable td.ot { background: var(--success-bg); color: var(--success-text); font-weight: 700; }
+  #calendarTable td.sp { background: var(--warn-bg); color: var(--warn-text); font-weight: 700; }
 
   #emptyState, #loadingState, #errorState {
     text-align: center;
@@ -884,10 +877,10 @@
     /* Chrome's print dialog strips background colors by default (its
        "Background graphics" option under More settings, OFF unless the
        person remembers to turn it on) -- without forcing this, the OT/SP
-       pills' fill and the Saturday/Sunday/Holiday column tints silently
+       cells' fill and the Saturday/Sunday/Holiday column tints silently
        disappear in print, leaving plain text/borders instead of the same
-       rounded, colored look the Dashboard shows on screen. This forces
-       them to print exactly as styled regardless of that toggle. */
+       colored look the Dashboard shows on screen. This forces them to
+       print exactly as styled regardless of that toggle. */
     #calendarTable, #calendarTable * {
       -webkit-print-color-adjust: exact;
       print-color-adjust: exact;
@@ -901,17 +894,15 @@
        ~1380px total) is wider than A3 portrait's printable area (~273mm /
        ~1032px after the @page margin below) -- shrunk here so a full month
        still fits on one page width instead of the trailing days being cut
-       off. 90 + 28*31 = ~958px, comfortably inside that budget, with real
-       margin around the (also shrunk) pill rather than a near-exact fit. */
+       off. 90 + 28*31 = ~958px, comfortably inside that budget. */
     #calendarTable { font-size: 9px; }
-    /* height overrides the 32px screen value -- the shrunk print padding/
-       font/pill sizing below needs its own smaller fixed row height, same
-       reasoning as that 32px rule (a row with a pill vs. an all-blank row
-       must still come out the same height). */
+    /* height overrides the 32px screen value -- the shrunk print padding
+       below needs its own smaller fixed row height, same reasoning as
+       that 32px rule (a row with a mark vs. an all-blank row must still
+       come out the same height). */
     #calendarTable th, #calendarTable td { padding: 3px 1px; height: 18px; }
     #calendarTable th:first-child, #calendarTable td:first-child { width: 90px; }
     #calendarTable th:not(:first-child), #calendarTable td:not(:first-child) { width: 28px; }
-    .cal-pill { font-size: 8px; padding: 1px 2px; }
   }
   @page { size: A3 portrait; margin: 12mm; }
 </style>
@@ -2191,11 +2182,17 @@
     filtered.forEach(function (emp) {
       var rowHtml = '<td>' + escapeHtml(emp.name) + '</td>';
       for (var d = 1; d <= lastCalendarDaysInMonth; d++) {
-        var cellClass = calendarDayClass(lastCalendarYear, lastCalendarMonth, d, lastCalendarHolidayDays);
         var mark = emp.days && emp.days[d];
-        var markHtml = mark === 'OT' ? '<span class="cal-pill ot">OT</span>'
-          : (mark === 'SP' ? '<span class="cal-pill sp">SP</span>' : '');
-        rowHtml += '<td class="' + cellClass + '">' + markHtml + '</td>';
+        // An OT/SP mark colors the WHOLE cell (its own td.ot/td.sp
+        // background, Yuyu's requested fix for the pill-vs-blank-cell
+        // "not quite equal size" look) rather than a smaller pill floating
+        // inside it -- so it wins over the column's own Saturday/Sunday/
+        // Holiday tint for this one cell. A day that's both a company
+        // Holiday AND has a real OT/SP mark that employee still shows the
+        // mark text, same orange as a plain Holiday cell in the SP case --
+        // the two are told apart by the SP label itself, not by color.
+        var cellClass = mark === 'OT' ? 'ot' : (mark === 'SP' ? 'sp' : calendarDayClass(lastCalendarYear, lastCalendarMonth, d, lastCalendarHolidayDays));
+        rowHtml += '<td class="' + cellClass + '">' + (mark || '') + '</td>';
       }
       var tr = document.createElement('tr');
       tr.innerHTML = rowHtml;
