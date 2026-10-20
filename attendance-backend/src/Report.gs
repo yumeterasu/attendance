@@ -1778,7 +1778,15 @@ function buildSalarySheet_(year, month) {
         existing.insertRowsAfter(existing.getMaxRows(), neededRows - existing.getMaxRows());
       }
       existing.getRange(startRow, 1, newRows.length, 3).setValues(newRows);
-      existing.getRange(startRow, 3, newRows.length, 1).setNumberFormat('#,##0');
+    }
+    // Whole column, not just the newly-appended rows -- #,##0.00 (not the
+    // whole-baht #,##0 this used before a real salary turned out to have
+    // its own cents, e.g. 19599.30 displaying as "19,599") is refreshed
+    // across every data row every run, so a sheet created before this fix
+    // picks it up too, same "cosmetic formatting is safe to reapply every
+    // run" reasoning as the dropdown/color refreshes elsewhere in this file.
+    if (existing.getLastRow() > 1) {
+      existing.getRange(2, 3, existing.getLastRow() - 1, 1).setNumberFormat('#,##0.00');
     }
 
     // Re-sort the whole sheet (existing rows + whatever just got appended)
@@ -1810,7 +1818,7 @@ function buildSalarySheet_(year, month) {
   sheet.getRange(1, 1, 1, 3).setFontWeight('bold');
   sheet.setFrozenRows(1);
   if (rows.length > 1) {
-    sheet.getRange(2, 3, rows.length - 1, 1).setNumberFormat('#,##0');
+    sheet.getRange(2, 3, rows.length - 1, 1).setNumberFormat('#,##0.00');
   }
   sheet.autoResizeColumns(1, 3);
   return sheetName;
