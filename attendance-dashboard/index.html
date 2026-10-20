@@ -53,10 +53,11 @@
        orange the "On Leave" stat tile already uses. */
     --saturday-bg: #E8F1FE;
     --sunday-bg: #FDECEE;
-    /* Calendar tab zebra striping (even data rows) -- its own token since
-       it has to stay visually distinct from the saturday/sunday/holiday
-       tints above (all four can appear on the same row at once). */
-    --row-stripe-bg: #E7ECF8;
+    /* Calendar tab grid lines -- deliberately darker than the page-wide
+       --border (#E4EBF9, too faint to read as a grid across 30+ narrow
+       columns), its own token since every other bordered element on the
+       page (cards, inputs, .stat-tile) should keep the lighter one. */
+    --calendar-border: #B9C8E8;
   }
 
   * { box-sizing: border-box; }
@@ -678,7 +679,7 @@
   }
   #calendarTable th, #calendarTable td {
     padding: 8px 6px;
-    border: 1px solid var(--border);
+    border: 1px solid var(--calendar-border);
     text-align: center;
     white-space: nowrap;
   }
@@ -703,9 +704,9 @@
      scrolled-under cells from showing through it. Same shade as the header
      row (not var(--card)/white like an ordinary cell) so the name column
      reads as its own frame next to the data grid, same idea as a
-     spreadsheet's frozen/shaded header column -- deliberately NOT part of
-     the zebra striping below, a uniform treatment makes it stand out
-     consistently rather than blending into whichever row it's on. */
+     spreadsheet's frozen/shaded header column. Darker/thicker right border
+     (vs. the 1px --calendar-border grid lines everywhere else) reinforces
+     that same frame-vs-grid separation. */
   #calendarTable th:first-child, #calendarTable td:first-child {
     position: sticky;
     left: 0;
@@ -713,19 +714,10 @@
     text-align: left;
     font-weight: 700;
     background: #F4F7FD;
-    border-right: 2px solid var(--border);
+    border-right: 2px solid var(--calendar-border);
     z-index: 1;
   }
   #calendarTable thead th:first-child { z-index: 2; }
-  /* Zebra striping, Google Sheets' "alternating colors" idea -- a cell's
-     own background (an OT/SP pill's cell is still plain, but
-     .saturday/.sunday/.holiday below are not) always paints over a row's
-     background per the table background-layering rules, so this only
-     shows through on an otherwise-unflagged day cell -- no fighting with
-     those tints, and no special-casing needed here for them. The
-     first-column's own background (above) always wins over this too, by
-     the same rule, which is what keeps it from being striped. */
-  #calendarTable tbody tr:nth-child(even) { background: var(--row-stripe-bg); }
   #calendarTable tbody tr:hover td:first-child { background: #FAFBFF; }
   #calendarTable tbody tr:hover { background: #FAFBFF; }
   /* Sat/Sun/Holiday day columns tinted, same idea as applyWeekendColors_ /
