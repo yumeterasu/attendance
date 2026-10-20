@@ -6,6 +6,37 @@
  */
 
 /**
+ * Picks and orders the employees a monthly report table should show --
+ * factored out of writeMonthlyReportData_ so generateAllEmployeesReportPdf_
+ * can walk the exact same roster, in the exact same order, one page per
+ * employee, without the two ever being able to silently disagree on "who's
+ * included" or "in what order" (a real risk if this logic were duplicated).
+ *
+ * onlyEmployeeId (optional): see writeMonthlyReportData_'s own doc comment.
+ */
+function getSortedReportEmployees_(logsByEmployee, onlyEmployeeId) {
+  // Show an employee if they're currently Active, or they have any
+  // attendance data this month (e.g. someone who left mid-month still needs
+  // to show up for the month they actually worked) -- otherwise a departed
+  // employee would clutter every future month's report forever. Skipped
+  // entirely when onlyEmployeeId is given -- see writeMonthlyReportData_'s
+  // doc comment.
+  var employees = getAllEmployees_().filter(function (emp) {
+    if (onlyEmployeeId) return String(emp.EmployeeID) === String(onlyEmployeeId);
+    return isTrue_(emp.Active) || !!logsByEmployee[emp.EmployeeID];
+  });
+
+  // Order: Japanese staff first, then Thai staff who did any OT this month,
+  // then everyone else -- Employee ID order within each group.
+  return employees.slice().sort(function (a, b) {
+    var groupA = reportSortGroup_(a, logsByEmployee[a.EmployeeID]);
+    var groupB = reportSortGroup_(b, logsByEmployee[b.EmployeeID]);
+    if (groupA !== groupB) return groupA - groupB;
+    return String(a.EmployeeID).localeCompare(String(b.EmployeeID));
+  });
+}
+
+/**
  * Writes the report table (employee blocks, colors, borders) into `sheet`
  * starting at `startRow`, column 1. Shared by the one-off "Report YYYY-MM"
  * generator and the permanent live "Report" sheet (see refreshLiveReportSheet_).
@@ -16,8 +47,24 @@
  * demand, bypassing the normal "Active, or has data" filter below (a
  * deliberately-requested reprint should still show a genuinely blank month
  * for that person, not silently produce nothing).
+ *
+ * includeSummaryBlock (optional) adds a per-employee Late/OT/Over Break/
+ * Special Allowance summary line plus the itemized Allowance lines+total --
+ * used by both menuPrintEmployeeReport_ (single person) and
+ * generateAllEmployeesReportPdf_ (everyone), never by the live "Report"
+ * sheet or the yearly "All" view, which would otherwise repeat the same
+ * totals the "Summary" sheet already shows once per employee, for no
+ * reason, on every dropdown change.
+ *
+ * precomputedScheduledShiftsForMonth/precomputedAllowancesByEmployee
+ * (optional) -- same "pass it in once, skip the fresh read" reasoning as
+ * precomputedLogsByEmployee above, specifically for generateAllEmployeesReportPdf_,
+ * which otherwise calls this function once per employee in a loop: without
+ * these, EVERY one of those calls would independently re-read the whole
+ * Schedule sheet and the whole Allowances sheet from scratch just to pull
+ * out one employee's slice, scaling with roster size for no reason.
  */
-function writeMonthlyReportData_(sheet, startRow, year, month, precomputedLogsByEmployee, onlyEmployeeId) {
+function writeMonthlyReportData_(sheet, startRow, year, month, precomputedLogsByEmployee, onlyEmployeeId, includeSummaryBlock, precomputedScheduledShiftsForMonth, precomputedAllowancesByEmployee) {
   var tz = Session.getScriptTimeZone();
   var daysInMonth = new Date(year, month, 0).getDate();
   // Omit precomputedLogsByEmployee (undefined) to keep the old single-call
@@ -32,26 +79,9 @@ function writeMonthlyReportData_(sheet, startRow, year, month, precomputedLogsBy
   // stay blank either way when there's no real IN, so a genuinely forgotten
   // clock-in still visibly stands out (just via the blank times now,
   // instead of a blank Shift cell too).
-  var scheduledShiftsForMonth = getScheduledShiftsForMonth_(year, month);
+  var scheduledShiftsForMonth = precomputedScheduledShiftsForMonth !== undefined ? precomputedScheduledShiftsForMonth : getScheduledShiftsForMonth_(year, month);
 
-  // Show an employee if they're currently Active, or they have any
-  // attendance data this month (e.g. someone who left mid-month still needs
-  // to show up for the month they actually worked) -- otherwise a departed
-  // employee would clutter every future month's report forever. Skipped
-  // entirely when onlyEmployeeId is given -- see doc comment above.
-  var employees = getAllEmployees_().filter(function (emp) {
-    if (onlyEmployeeId) return String(emp.EmployeeID) === String(onlyEmployeeId);
-    return isTrue_(emp.Active) || !!logsByEmployee[emp.EmployeeID];
-  });
-
-  // Order: Japanese staff first, then Thai staff who did any OT this month,
-  // then everyone else -- Employee ID order within each group.
-  employees = employees.slice().sort(function (a, b) {
-    var groupA = reportSortGroup_(a, logsByEmployee[a.EmployeeID]);
-    var groupB = reportSortGroup_(b, logsByEmployee[b.EmployeeID]);
-    if (groupA !== groupB) return groupA - groupB;
-    return String(a.EmployeeID).localeCompare(String(b.EmployeeID));
-  });
+  var employees = getSortedReportEmployees_(logsByEmployee, onlyEmployeeId);
 
   var COLS = 10; // Date, Day, Time In, Time Out, Shift, Late, OT (min), OT (Quarter), Break (min), Over
   var rows = [];
@@ -70,17 +100,60 @@ function writeMonthlyReportData_(sheet, startRow, year, month, precomputedLogsBy
 
   employees.forEach(function (emp) {
     var blockStartRow = startRow + rows.length;
+    var dayLogs = logsByEmployee[emp.EmployeeID] || {};
+    // Read once per employee, reused below for both the summary line's
+    // total and the itemized lines further down -- so the two can never
+    // show different totals for the same employee/month (same "one source
+    // list feeds both" reasoning getDashboardSummaryData_ already follows
+    // for the Dashboard's Allowance tooltip). Pulled from
+    // precomputedAllowancesByEmployee when the caller already read the whole
+    // Allowances sheet once (generateAllEmployeesReportPdf_'s loop), falling
+    // back to a fresh per-employee read otherwise (menuPrintEmployeeReport_,
+    // which only ever needs the one employee).
+    var allowancesForSummary = includeSummaryBlock
+      ? (precomputedAllowancesByEmployee !== undefined
+        ? (precomputedAllowancesByEmployee[emp.EmployeeID] || [])
+        : getAllowancesForEmployeeMonth_(emp.EmployeeID, year, month))
+      : [];
 
     rows.push([emp.Name + ' (' + emp.EmployeeID + ')', emp.Department, '', '', '', '', '', '', '', '']);
     backgrounds.push(nameRowBackgrounds.slice());
     fontColors.push(blankRowColors.slice());
     fontWeights.push(nameRowFontWeights.slice());
+
+    if (includeSummaryBlock) {
+      // One compact line, not a sub-table -- this has to fit comfortably
+      // inside PAGE_ROWS (generateAllEmployeesReportPdf_) alongside up to 31
+      // day rows, so it stays a single row regardless of how many figures it
+      // shows. Same wording/unit choice (otUnitForDepartment_) as the
+      // Kiosk's own My Schedule stat boxes and the Dashboard, so "OT" means
+      // the same thing and uses the same unit everywhere an admin or
+      // employee might compare the two.
+      var summaryTotals = sumMonthTotals_(dayLogs, scheduledShiftsForMonth[emp.EmployeeID], daysInMonth);
+      var otUnit = otUnitForDepartment_(emp.Department);
+      var otText = otUnit === 'minutes'
+        ? summaryTotals.otMinutesTotal + ' min'
+        : summaryTotals.otQuartersTotal + ' quarter' + (summaryTotals.otQuartersTotal === 1 ? '' : 's');
+      var summaryLine = 'Late ' + summaryTotals.lateCount + ' day' + (summaryTotals.lateCount === 1 ? '' : 's') +
+        '   |   OT ' + otText +
+        '   |   Over Break ' + summaryTotals.overCount + ' day' + (summaryTotals.overCount === 1 ? '' : 's') +
+        '   |   Special Allowance ' + sumRoundedAllowances_(allowancesForSummary) + ' Baht';
+      var summaryRow = new Array(COLS).fill('');
+      summaryRow[0] = summaryLine;
+      rows.push(summaryRow);
+      var summaryRowBg = new Array(COLS).fill('#fff2cc'); // light amber -- distinct from the name row's white and the column-header row's pink, reads as its own "at a glance" line
+      backgrounds.push(summaryRowBg);
+      fontColors.push(blankRowColors.slice());
+      var summaryRowFontWeights = blankRowColors.slice();
+      summaryRowFontWeights[0] = 'bold';
+      fontWeights.push(summaryRowFontWeights);
+    }
+
     rows.push(['Date', 'Day', 'Time In', 'Time Out', 'Shift', 'Late', 'OT (min)', 'OT (Quarter)', 'Break (min)', 'Over']);
     backgrounds.push(headerRowColors.slice());
     fontColors.push(blankRowColors.slice());
     fontWeights.push(blankRowColors.slice());
 
-    var dayLogs = logsByEmployee[emp.EmployeeID] || {};
     for (var d = 1; d <= daysInMonth; d++) {
       var date = new Date(year, month - 1, d);
       var dayEntry = dayLogs[d];
@@ -202,18 +275,20 @@ function writeMonthlyReportData_(sheet, startRow, year, month, precomputedLogsBy
       fontWeights.push(blankRowColors.slice());
     }
 
-    // Special Allowance line items -- only for the single-employee Print
-    // Employee Report PDF (onlyEmployeeId set), never for the full-roster
-    // live Report sheet refresh, which already lists every employee's every
-    // day and doesn't need this extra block repeated for the whole staff on
-    // every dropdown change. Each entry keeps its own admin-chosen label
-    // (getAllowancesForEmployeeMonth_, Allowances.gs) so e.g. a rice
-    // allowance and a tip bonus the same month both show up by name, with a
-    // total line -- deliberately placed below the day table and never
-    // combined with the OT (min)/OT (Quarter) columns above, so it reads as
-    // a clearly separate figure.
-    if (onlyEmployeeId) {
-      var allowances = getAllowancesForEmployeeMonth_(emp.EmployeeID, year, month);
+    // Special Allowance line items -- only for a print PDF (includeSummaryBlock
+    // set, whether single-employee or the all-employees bulk PDF), never for
+    // the full-roster live Report sheet refresh, which already lists every
+    // employee's every day and doesn't need this extra block repeated for the
+    // whole staff on every dropdown change. Each entry keeps its own
+    // admin-chosen label (getAllowancesForEmployeeMonth_, Allowances.gs) so
+    // e.g. a rice allowance and a tip bonus the same month both show up by
+    // name, with a total line -- deliberately placed below the day table and
+    // never combined with the OT (min)/OT (Quarter) columns above, so it
+    // reads as a clearly separate figure. Reuses allowancesForSummary (read
+    // once above) rather than re-querying the Allowances sheet a second time
+    // for the same employee/month.
+    if (includeSummaryBlock) {
+      var allowances = allowancesForSummary;
       if (allowances.length > 0) {
         allowances.forEach(function (a) {
           // Round for display -- same per-entry rounding sumRoundedAllowances_
@@ -281,6 +356,133 @@ function reportSortGroup_(emp, dayLogs) {
     if (dayLogs[day].otQuarters) return 1;
   }
   return 2;
+}
+
+// generateAllEmployeesReportPdf_ pads every employee's block out to a whole
+// multiple of this many rows, so the NEXT employee always starts at what
+// ends up being a fresh PDF page -- Apps Script/Sheets has no API for an
+// explicit "page break here", so this is the only lever available: as long
+// as row heights are never auto-shrunk to fit (true here -- the export URL
+// below only passes fitw=true, which scales WIDTH only, exactly like the
+// existing single-employee PDF already relies on), each page holds a fixed,
+// predictable number of default-height rows.
+//
+// This constant MUST be >= the true number of default-height rows that fit
+// on one real A4 page, never below it -- padding to a count still smaller
+// than the page's real capacity does nothing (the real page break still
+// lands wherever the renderer's own ~true-capacity row count falls, which
+// would land partway into the NEXT employee's block, not at this padding's
+// boundary). The direction that's always safe is to overshoot: if this
+// constant is larger than true capacity, the real page break always lands
+// somewhere inside the (blank, harmless) padding rows themselves -- the next
+// employee's title still starts cleanly on a fresh page, just not
+// necessarily at the very top of it.
+//
+// Two different plausible estimates of true capacity, depending on which
+// px->pt conversion the export renderer actually uses for default 21px
+// Sheets rows: ~49 rows/page at 96dpi (web pixel basis), or ~37 rows/page at
+// 72dpi (print-point basis, 1px=1pt) -- A4 portrait minus the 0.4in top+
+// bottom margins generateEmployeeReportPdf_ already uses = ~784pt usable.
+// Neither can be confirmed by actually rendering a PDF from here, so this is
+// set comfortably ABOVE both estimates rather than between/below them.
+// If a real exported copy ever shows noticeably more blank space at the
+// bottom of every page than expected, this can be lowered a bit -- but never
+// below ~50 (the top of the estimate range above), or the original bug
+// (padding too small to force a real break) comes back.
+var ALL_EMPLOYEES_REPORT_PAGE_ROWS = 70;
+
+/**
+ * One combined, multi-page PDF covering every employee writeMonthlyReportData_
+ * would normally show for this month (getSortedReportEmployees_ -- same
+ * roster/order as the live Report sheet), each starting on their own fresh
+ * page -- see ALL_EMPLOYEES_REPORT_PAGE_ROWS above for how the page breaks
+ * are produced. Mirrors generateEmployeeReportPdf_'s (Menu.gs) throwaway-sheet
+ * / export / Drive-folder / cleanup pattern exactly, just looping per
+ * employee into ONE sheet instead of writing one employee into its own
+ * one-off sheet.
+ *
+ * precomputedLogsByEmployee (optional) -- menuPrintAllEmployeeReports_
+ * (Menu.gs) already has to read this to count the roster for its
+ * confirmation prompt before calling this function; passing that same map
+ * through avoids reading the whole AttendanceLog sheet a second time right
+ * after the first.
+ */
+function generateAllEmployeesReportPdf_(year, month, precomputedLogsByEmployee) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var tempName = '_PrintAllReportsTemp_' + new Date().getTime();
+  var sheet = ss.insertSheet(tempName);
+
+  try {
+    var tz = Session.getScriptTimeZone();
+    // Read once and reuse across every employee below -- same reasoning
+    // writeYearlyReportData_ already uses precomputedLogsByEmployee for: a
+    // dozen-plus writeMonthlyReportData_ calls would otherwise each re-read
+    // the whole AttendanceLog/Schedule/Allowances sheets from scratch, once
+    // per employee, for no reason (all three are the same regardless of
+    // which employee is currently being written).
+    var logsByEmployee = precomputedLogsByEmployee !== undefined ? precomputedLogsByEmployee : getMonthLogsByEmployee_(year, month);
+    var scheduledShiftsForMonth = getScheduledShiftsForMonth_(year, month);
+    var allowancesByEmployee = getAllowancesForMonth_(year, month);
+    var employees = getSortedReportEmployees_(logsByEmployee, undefined);
+
+    var row = 1;
+    employees.forEach(function (emp) {
+      var blockStartRow = row;
+      var headerLabel = emp.Name + ' (' + emp.EmployeeID + ') -- ' +
+        Utilities.formatDate(new Date(year, month - 1, 1), tz, 'MMMM yyyy');
+      // Same 10-column merge/wrap treatment generateEmployeeReportPdf_ uses
+      // for its single title row -- COLS (writeMonthlyReportData_) is 10.
+      sheet.getRange(row, 1, 1, 10).merge().setValue(headerLabel).setFontWeight('bold').setFontSize(14).setWrap(true);
+
+      var rowsWritten = writeMonthlyReportData_(
+        sheet, row + 2, year, month, logsByEmployee, emp.EmployeeID, true,
+        scheduledShiftsForMonth, allowancesByEmployee
+      );
+      // +2: the title row itself, plus one blank gap row below it -- same
+      // layout generateEmployeeReportPdf_ uses (title at row 1, table at row 3).
+      var blockRows = rowsWritten + 2;
+
+      // Round UP to the next whole PAGE_ROWS multiple rather than always
+      // adding exactly (PAGE_ROWS - blockRows) -- a block that happens to be
+      // taller than PAGE_ROWS (many Allowance entries in one month, for
+      // example) still ends up spanning a whole number of pages cleanly, so
+      // every employee AFTER this one still starts at a correct page
+      // boundary instead of everything downstream sliding out of alignment.
+      var pages = Math.ceil(blockRows / ALL_EMPLOYEES_REPORT_PAGE_ROWS);
+      row = blockStartRow + pages * ALL_EMPLOYEES_REPORT_PAGE_ROWS;
+    });
+
+    SpreadsheetApp.flush(); // commit the sheet's real content/sizing before exporting it
+
+    // Same export endpoint/params as generateEmployeeReportPdf_ (Menu.gs) --
+    // A4 portrait, fit-width only (never fit-height -- see
+    // ALL_EMPLOYEES_REPORT_PAGE_ROWS's comment above for why that matters here).
+    var exportUrl = 'https://docs.google.com/spreadsheets/d/' + ss.getId() + '/export' +
+      '?format=pdf&gid=' + sheet.getSheetId() +
+      '&size=A4&portrait=true&fitw=true' +
+      '&top_margin=0.4&bottom_margin=0.4&left_margin=0.4&right_margin=0.4' +
+      '&sheetnames=false&printtitle=false&pagenumbers=false&gridlines=false&fzr=false';
+    var response = UrlFetchApp.fetch(exportUrl, {
+      headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
+      muteHttpExceptions: true
+    });
+    var contentType = response.getHeaders()['Content-Type'] || '';
+    if (response.getResponseCode() !== 200 || contentType.indexOf('pdf') === -1) {
+      throw new Error('Export endpoint returned ' + response.getResponseCode() + ' (' + contentType + ') instead of a PDF -- try again in a moment.');
+    }
+
+    var fileName = 'All Employee Reports - ' + Utilities.formatDate(new Date(year, month - 1, 1), tz, 'yyyy-MM') + '.pdf';
+    var blob = response.getBlob().setName(fileName);
+
+    // Same folder, same sharing, same "always a new file" reasoning as
+    // generateEmployeeReportPdf_ -- see its own doc comment (Menu.gs).
+    var folder = getOrCreateDriveFolder_('Attendance Reports');
+    var file = folder.createFile(blob);
+    file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+    return file;
+  } finally {
+    ss.deleteSheet(sheet);
+  }
 }
 
 /**

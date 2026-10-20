@@ -21,6 +21,7 @@ function onOpen() {
     .addItem('Highlight Shift Mismatches', 'menuHighlightShiftMismatches_')
     .addItem('Recompute Late/OT for One Month', 'menuRecomputeLateOtOneMonth_')
     .addItem('Print Employee Report (Choose Person/Month/Year)', 'menuPrintEmployeeReport_')
+    .addItem('Print Employee Report - All Employees', 'menuPrintAllEmployeeReports_')
     .addSeparator()
     .addItem('Issue New Setup Code', 'menuIssueSetupCode_')
     .addItem('Set Kiosk Exit PIN', 'menuSetKioskExitPin_')
@@ -656,6 +657,74 @@ function menuPrintEmployeeReport_() {
 }
 
 /**
+ * Same idea as menuPrintEmployeeReport_ above, but for the whole roster at
+ * once -- one Year/Month prompt (no name lookup needed), one combined PDF
+ * with every employee (same "Active, or has data this month" roster the live
+ * Report sheet uses -- getSortedReportEmployees_, Report.gs) each starting on
+ * their own page. See generateAllEmployeesReportPdf_'s own doc comment
+ * (Report.gs) for how the page breaks are produced without a real Apps
+ * Script page-break API.
+ */
+function menuPrintAllEmployeeReports_() {
+  var ui = SpreadsheetApp.getUi();
+  var title = 'Print Employee Report - All Employees';
+
+  var now = new Date();
+  var yearResp = ui.prompt(title, 'Year (e.g. ' + now.getFullYear() + '):', ui.ButtonSet.OK_CANCEL);
+  if (yearResp.getSelectedButton() !== ui.Button.OK) return;
+  var year = Number(yearResp.getResponseText().trim());
+
+  var monthResp = ui.prompt(title, 'Month (1-12):', ui.ButtonSet.OK_CANCEL);
+  if (monthResp.getSelectedButton() !== ui.Button.OK) return;
+  var month = Number(monthResp.getResponseText().trim());
+
+  if (!year || !month || month < 1 || month > 12) {
+    ui.alert(title, 'Enter a valid year and a month between 1 and 12.', ui.ButtonSet.OK);
+    return;
+  }
+
+  // Same roster the PDF itself will use (getSortedReportEmployees_), counted
+  // here first just so the confirmation step below can say how many people
+  // are about to be included -- this can take a little while for a large
+  // roster (one writeMonthlyReportData_ call per employee), so worth a
+  // chance to back out before it runs rather than after.
+  var logsByEmployee = getMonthLogsByEmployee_(year, month);
+  var employeeCount = getSortedReportEmployees_(logsByEmployee, undefined).length;
+  if (employeeCount === 0) {
+    ui.alert(title, 'No employees to include for that month (none are Active and none have any data).', ui.ButtonSet.OK);
+    return;
+  }
+  var confirm = ui.alert(
+    title,
+    'This will generate one combined PDF covering ' + employeeCount + ' employee(s) for ' +
+      Utilities.formatDate(new Date(year, month - 1, 1), Session.getScriptTimeZone(), 'MMMM yyyy') +
+      ', each on their own page. This may take a moment. Continue?',
+    ui.ButtonSet.YES_NO
+  );
+  if (confirm !== ui.Button.YES) return;
+
+  var pdfFile;
+  try {
+    // logsByEmployee was already read above for the roster count -- passed
+    // through so generateAllEmployeesReportPdf_ doesn't read the whole
+    // AttendanceLog sheet a second time right after this.
+    pdfFile = generateAllEmployeesReportPdf_(year, month, logsByEmployee);
+  } catch (err) {
+    ui.alert(title, 'Could not generate the PDF: ' + err.message, ui.ButtonSet.OK);
+    return;
+  }
+
+  var html = HtmlService.createHtmlOutput(
+    '<div style="font-family:Arial,sans-serif;padding:6px;">' +
+    '<p>PDF is ready!</p>' +
+    '<p><a href="' + pdfFile.getUrl() + '" target="_blank" style="font-size:16px;">📄 Open / Download PDF</a></p>' +
+    '<p style="color:#666;font-size:12px;">Anyone with this link can open it -- feel free to forward it to anyone else.</p>' +
+    '</div>'
+  ).setWidth(340).setHeight(160);
+  ui.showModalDialog(html, title);
+}
+
+/**
  * Builds one employee's report for one month on a throwaway sheet (always
  * deleted before this returns, success or failure -- see the finally
  * block), exports that sheet as PDF via Sheets' own export endpoint
@@ -685,7 +754,7 @@ function generateEmployeeReportPdf_(employee, year, month) {
     // and an unwrapped long single line would otherwise win that measurement.
     sheet.getRange(1, 1, 1, 10).merge().setValue(headerLabel).setFontWeight('bold').setFontSize(14).setWrap(true); // 10 = writeMonthlyReportData_'s COLS
 
-    writeMonthlyReportData_(sheet, 3, year, month, undefined, employee.EmployeeID);
+    writeMonthlyReportData_(sheet, 3, year, month, undefined, employee.EmployeeID, true);
     SpreadsheetApp.flush(); // commit the sheet's real content/sizing before exporting it
 
     var exportUrl = 'https://docs.google.com/spreadsheets/d/' + ss.getId() + '/export' +
