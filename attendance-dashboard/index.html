@@ -654,6 +654,15 @@
     font-variant-numeric: tabular-nums;
   }
 
+  /* .card's own border-radius (16px) rounds its corners by clipping
+     (overflow:hidden) -- fine for a card with padding around its content,
+     but #calendarTableWrap's content IS the grid itself, so that clip was
+     cutting the corner cells' own border lines off into the curve instead
+     of meeting it squarely. Square corners here so the grid lines run
+     edge-to-edge and stay visible everywhere, matching the grid look
+     requested for this table specifically (other .card uses on the page
+     keep their rounded corners). */
+  #calendarTableWrap { border-radius: 0; }
   /* OT / Special calendar table -- deliberately its own layout, not a
      reuse of #summaryTable's page-wide-sticky-header approach (see that
      table's own thead th comment): up to 31 narrow day columns needs a
