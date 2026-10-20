@@ -754,7 +754,27 @@ function generateEmployeeReportPdf_(employee, year, month) {
     // and an unwrapped long single line would otherwise win that measurement.
     sheet.getRange(1, 1, 1, 10).merge().setValue(headerLabel).setFontWeight('bold').setFontSize(14).setWrap(true); // 10 = writeMonthlyReportData_'s COLS
 
-    writeMonthlyReportData_(sheet, 3, year, month, undefined, employee.EmployeeID, true);
+    // Summary line (Late/OT/Over Break/Special Allowance) goes ABOVE the
+    // bordered day table, row 2, not as a row inside it -- see
+    // buildEmployeeReportSummaryLine_'s own doc comment (Report.gs) for why.
+    // Fetched here (rather than left for writeMonthlyReportData_ to fetch
+    // internally) so the same logsByEmployee/scheduledShiftsForMonth/
+    // allowances can be handed to it below instead of it re-reading
+    // AttendanceLog/Schedule/Allowances a second time right after this.
+    var logsByEmployee = getMonthLogsByEmployee_(year, month);
+    var scheduledShiftsForMonth = getScheduledShiftsForMonth_(year, month);
+    var allowancesByEmployee = getAllowancesForMonth_(year, month);
+    var daysInMonth = new Date(year, month, 0).getDate();
+    var summaryLine = buildEmployeeReportSummaryLine_(
+      employee,
+      logsByEmployee[employee.EmployeeID] || {},
+      scheduledShiftsForMonth[employee.EmployeeID],
+      daysInMonth,
+      allowancesByEmployee[employee.EmployeeID] || []
+    );
+    sheet.getRange(2, 1, 1, 10).merge().setValue(summaryLine).setFontWeight('bold').setBackground('#fff2cc'); // light amber -- distinct "at a glance" caption line, outside the table's own border
+
+    writeMonthlyReportData_(sheet, 4, year, month, logsByEmployee, employee.EmployeeID, true, scheduledShiftsForMonth, allowancesByEmployee);
     SpreadsheetApp.flush(); // commit the sheet's real content/sizing before exporting it
 
     var exportUrl = 'https://docs.google.com/spreadsheets/d/' + ss.getId() + '/export' +

@@ -37,6 +37,30 @@ function getSortedReportEmployees_(logsByEmployee, onlyEmployeeId) {
 }
 
 /**
+ * One compact line -- Late days / OT / Over Break days / Special Allowance --
+ * for one employee's one month. Written by the PDF-generating callers
+ * (generateEmployeeReportPdf_, Menu.gs; generateAllEmployeesReportPdf_ below)
+ * as a plain text line ABOVE the bordered day table, between the title and
+ * the table itself -- not as a row inside writeMonthlyReportData_'s table,
+ * which would otherwise stretch that table's own bordered box by one row
+ * for no table-shaped reason. Same wording/unit choice (otUnitForDepartment_)
+ * as the Kiosk's own My Schedule stat boxes and the Dashboard, so "OT" means
+ * the same thing and uses the same unit everywhere an admin or employee
+ * might compare the two.
+ */
+function buildEmployeeReportSummaryLine_(emp, dayLogs, scheduledShiftsForEmployee, daysInMonth, allowances) {
+  var totals = sumMonthTotals_(dayLogs, scheduledShiftsForEmployee, daysInMonth);
+  var otUnit = otUnitForDepartment_(emp.Department);
+  var otText = otUnit === 'minutes'
+    ? totals.otMinutesTotal + ' min'
+    : totals.otQuartersTotal + ' quarter' + (totals.otQuartersTotal === 1 ? '' : 's');
+  return 'Late ' + totals.lateCount + ' day' + (totals.lateCount === 1 ? '' : 's') +
+    '   |   OT ' + otText +
+    '   |   Over Break ' + totals.overCount + ' day' + (totals.overCount === 1 ? '' : 's') +
+    '   |   Special Allowance ' + sumRoundedAllowances_(allowances) + ' Baht';
+}
+
+/**
  * Writes the report table (employee blocks, colors, borders) into `sheet`
  * starting at `startRow`, column 1. Shared by the one-off "Report YYYY-MM"
  * generator and the permanent live "Report" sheet (see refreshLiveReportSheet_).
@@ -48,13 +72,15 @@ function getSortedReportEmployees_(logsByEmployee, onlyEmployeeId) {
  * deliberately-requested reprint should still show a genuinely blank month
  * for that person, not silently produce nothing).
  *
- * includeSummaryBlock (optional) adds a per-employee Late/OT/Over Break/
- * Special Allowance summary line plus the itemized Allowance lines+total --
- * used by both menuPrintEmployeeReport_ (single person) and
- * generateAllEmployeesReportPdf_ (everyone), never by the live "Report"
- * sheet or the yearly "All" view, which would otherwise repeat the same
- * totals the "Summary" sheet already shows once per employee, for no
- * reason, on every dropdown change.
+ * includeSummaryBlock (optional) adds the itemized Allowance lines+total
+ * below each employee's day table -- used by both menuPrintEmployeeReport_
+ * (single person) and generateAllEmployeesReportPdf_ (everyone), never by
+ * the live "Report" sheet or the yearly "All" view, which would otherwise
+ * repeat the same totals the "Summary" sheet already shows once per
+ * employee, for no reason, on every dropdown change. The Late/OT/Over
+ * Break/Special Allowance summary LINE itself is NOT written here -- both
+ * of those same callers write it themselves, above this function's table,
+ * via buildEmployeeReportSummaryLine_ (see its own doc comment for why).
  *
  * precomputedScheduledShiftsForMonth/precomputedAllowancesByEmployee
  * (optional) -- same "pass it in once, skip the fresh read" reasoning as
@@ -101,16 +127,15 @@ function writeMonthlyReportData_(sheet, startRow, year, month, precomputedLogsBy
   employees.forEach(function (emp) {
     var blockStartRow = startRow + rows.length;
     var dayLogs = logsByEmployee[emp.EmployeeID] || {};
-    // Read once per employee, reused below for both the summary line's
-    // total and the itemized lines further down -- so the two can never
-    // show different totals for the same employee/month (same "one source
-    // list feeds both" reasoning getDashboardSummaryData_ already follows
-    // for the Dashboard's Allowance tooltip). Pulled from
-    // precomputedAllowancesByEmployee when the caller already read the whole
-    // Allowances sheet once (generateAllEmployeesReportPdf_'s loop), falling
-    // back to a fresh per-employee read otherwise (menuPrintEmployeeReport_,
-    // which only ever needs the one employee).
-    var allowancesForSummary = includeSummaryBlock
+    // Read once per employee, reused for the itemized Allowance lines below
+    // (and by the caller for the summary line written above the table --
+    // see buildEmployeeReportSummaryLine_'s own doc comment -- so the two
+    // can never show different totals for the same employee/month). Pulled
+    // from precomputedAllowancesByEmployee when the caller already read the
+    // whole Allowances sheet once (generateAllEmployeesReportPdf_'s loop),
+    // falling back to a fresh per-employee read otherwise
+    // (menuPrintEmployeeReport_, which only ever needs the one employee).
+    var allowances = includeSummaryBlock
       ? (precomputedAllowancesByEmployee !== undefined
         ? (precomputedAllowancesByEmployee[emp.EmployeeID] || [])
         : getAllowancesForEmployeeMonth_(emp.EmployeeID, year, month))
@@ -120,34 +145,6 @@ function writeMonthlyReportData_(sheet, startRow, year, month, precomputedLogsBy
     backgrounds.push(nameRowBackgrounds.slice());
     fontColors.push(blankRowColors.slice());
     fontWeights.push(nameRowFontWeights.slice());
-
-    if (includeSummaryBlock) {
-      // One compact line, not a sub-table -- this has to fit comfortably
-      // inside PAGE_ROWS (generateAllEmployeesReportPdf_) alongside up to 31
-      // day rows, so it stays a single row regardless of how many figures it
-      // shows. Same wording/unit choice (otUnitForDepartment_) as the
-      // Kiosk's own My Schedule stat boxes and the Dashboard, so "OT" means
-      // the same thing and uses the same unit everywhere an admin or
-      // employee might compare the two.
-      var summaryTotals = sumMonthTotals_(dayLogs, scheduledShiftsForMonth[emp.EmployeeID], daysInMonth);
-      var otUnit = otUnitForDepartment_(emp.Department);
-      var otText = otUnit === 'minutes'
-        ? summaryTotals.otMinutesTotal + ' min'
-        : summaryTotals.otQuartersTotal + ' quarter' + (summaryTotals.otQuartersTotal === 1 ? '' : 's');
-      var summaryLine = 'Late ' + summaryTotals.lateCount + ' day' + (summaryTotals.lateCount === 1 ? '' : 's') +
-        '   |   OT ' + otText +
-        '   |   Over Break ' + summaryTotals.overCount + ' day' + (summaryTotals.overCount === 1 ? '' : 's') +
-        '   |   Special Allowance ' + sumRoundedAllowances_(allowancesForSummary) + ' Baht';
-      var summaryRow = new Array(COLS).fill('');
-      summaryRow[0] = summaryLine;
-      rows.push(summaryRow);
-      var summaryRowBg = new Array(COLS).fill('#fff2cc'); // light amber -- distinct from the name row's white and the column-header row's pink, reads as its own "at a glance" line
-      backgrounds.push(summaryRowBg);
-      fontColors.push(blankRowColors.slice());
-      var summaryRowFontWeights = blankRowColors.slice();
-      summaryRowFontWeights[0] = 'bold';
-      fontWeights.push(summaryRowFontWeights);
-    }
 
     rows.push(['Date', 'Day', 'Time In', 'Time Out', 'Shift', 'Late', 'OT (min)', 'OT (Quarter)', 'Break (min)', 'Over']);
     backgrounds.push(headerRowColors.slice());
@@ -284,11 +281,10 @@ function writeMonthlyReportData_(sheet, startRow, year, month, precomputedLogsBy
     // e.g. a rice allowance and a tip bonus the same month both show up by
     // name, with a total line -- deliberately placed below the day table and
     // never combined with the OT (min)/OT (Quarter) columns above, so it
-    // reads as a clearly separate figure. Reuses allowancesForSummary (read
-    // once above) rather than re-querying the Allowances sheet a second time
-    // for the same employee/month.
+    // reads as a clearly separate figure. Reuses `allowances` (read once
+    // above) rather than re-querying the Allowances sheet a second time for
+    // the same employee/month.
     if (includeSummaryBlock) {
-      var allowances = allowancesForSummary;
       if (allowances.length > 0) {
         allowances.forEach(function (a) {
           // Round for display -- same per-entry rounding sumRoundedAllowances_
@@ -424,6 +420,7 @@ function generateAllEmployeesReportPdf_(year, month, precomputedLogsByEmployee) 
     var scheduledShiftsForMonth = getScheduledShiftsForMonth_(year, month);
     var allowancesByEmployee = getAllowancesForMonth_(year, month);
     var employees = getSortedReportEmployees_(logsByEmployee, undefined);
+    var daysInMonth = new Date(year, month, 0).getDate();
 
     var row = 1;
     employees.forEach(function (emp) {
@@ -434,13 +431,22 @@ function generateAllEmployeesReportPdf_(year, month, precomputedLogsByEmployee) 
       // for its single title row -- COLS (writeMonthlyReportData_) is 10.
       sheet.getRange(row, 1, 1, 10).merge().setValue(headerLabel).setFontWeight('bold').setFontSize(14).setWrap(true);
 
+      // Summary line goes on row + 1, ABOVE the bordered day table -- same
+      // layout/reasoning as generateEmployeeReportPdf_ (Menu.gs): title, then
+      // summary, then a blank gap row, then the table.
+      var allowancesForEmp = allowancesByEmployee[emp.EmployeeID] || [];
+      var summaryLine = buildEmployeeReportSummaryLine_(
+        emp, logsByEmployee[emp.EmployeeID] || {}, scheduledShiftsForMonth[emp.EmployeeID], daysInMonth, allowancesForEmp
+      );
+      sheet.getRange(row + 1, 1, 1, 10).merge().setValue(summaryLine).setFontWeight('bold').setBackground('#fff2cc');
+
       var rowsWritten = writeMonthlyReportData_(
-        sheet, row + 2, year, month, logsByEmployee, emp.EmployeeID, true,
+        sheet, row + 3, year, month, logsByEmployee, emp.EmployeeID, true,
         scheduledShiftsForMonth, allowancesByEmployee
       );
-      // +2: the title row itself, plus one blank gap row below it -- same
-      // layout generateEmployeeReportPdf_ uses (title at row 1, table at row 3).
-      var blockRows = rowsWritten + 2;
+      // +3: the title row, the summary line row, plus one blank gap row
+      // below it -- same layout generateEmployeeReportPdf_ uses.
+      var blockRows = rowsWritten + 3;
 
       // Round UP to the next whole PAGE_ROWS multiple rather than always
       // adding exactly (PAGE_ROWS - blockRows) -- a block that happens to be
