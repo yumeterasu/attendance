@@ -370,6 +370,24 @@ function writeMonthlyReportData_(sheet, startRow, year, month, precomputedLogsBy
   // once the PDF export's fitw=true scales the whole table up to fill the
   // page width.
   autoResizeColumnsWithPadding_(sheet, COLS);
+  // Cap Date's (column 1) width directly rather than continuing to guess at
+  // what's inflating autoResizeColumns' measurement there -- the
+  // Name/Department merge above did NOT fix this in practice (a real
+  // exported PDF still showed Date too wide), so something else -- most
+  // likely the title and summary lines written by the caller at rows 1-2
+  // (generateEmployeeReportPdf_/generateAllEmployeesReportPdf_), both
+  // merged across all 10 columns -- is still influencing it, regardless of
+  // their .setWrap(true): wrap only controls whether text WRAPS once a
+  // width is already decided, not whether autoResizeColumns considers the
+  // text's natural unwrapped length when deciding that width in the first
+  // place. This caps rather than forces a fixed width (only shrinks column
+  // 1 if auto-size left it wider than 150px, never narrows it below that),
+  // and ONLY touches column 1 -- a previous attempt forced BOTH Date and
+  // Day down to a tight ~90px each and made the whole table vanish from the
+  // export (suspected: fitw=true scaling the table up by a much larger
+  // factor once the total width shrank a lot, pushing content past page 1)
+  // -- this is a single, much smaller, one-column change to reduce that risk.
+  if (sheet.getColumnWidth(1) > 150) sheet.setColumnWidth(1, 150);
   return rows.length; // lets writeYearlyReportData_ know where the next month's block should start
 }
 
