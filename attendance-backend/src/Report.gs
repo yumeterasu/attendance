@@ -1981,6 +1981,13 @@ function handleDashboardSummary_(params) {
  * overwhelming majority of cells in any real month, so this keeps the
  * response small without the client needing to do anything but treat a
  * missing key as blank.
+ *
+ * Also returns `holidayDays`, a flat array of day numbers where the whole
+ * company is closed (a strict majority of active employees' Schedule
+ * cells that day read exactly 'Holiday' -- see the majority-threshold
+ * comment inline below for why "any one" isn't enough) -- a day-level
+ * fact the client uses to tint that column, kept separate from any one
+ * employee's per-day 'OT'/'SP' verdict above.
  */
 function getDashboardCalendarData_(year, month) {
   var allEmployees = getAllEmployees_();
@@ -2039,11 +2046,38 @@ function getDashboardCalendarData_(year, month) {
     };
   });
 
+  // A company-wide Holiday (whole branch/office closed, as opposed to one
+  // person's own Leave) is entered as the exact string 'Holiday' on each
+  // employee's Schedule row for that day -- same exact-match convention
+  // applyLeaveHolidayConditionalFormat_ (above) already relies on. There is
+  // no admin tool that writes 'Holiday' atomically across every row at
+  // once (it's typed in per-cell), so a STRICT MAJORITY of active
+  // employees reading 'Holiday' that day is required here, not just one --
+  // a single stray/stale 'Holiday' cell (a terminated employee's old row,
+  // a typo) must not tint the whole column for everyone, only a day that's
+  // genuinely a company-wide closure for (almost) everyone should.
+  // Same isDashboardExcludedEmployee_ filter as the roster above (not just
+  // Active) -- an excluded admin/test account's Schedule row is never
+  // maintained, so counting it in the denominator without it ever being
+  // able to contribute 'Holiday' would silently drag the threshold out of
+  // reach on a small branch.
+  var activeEmployees = allEmployees.filter(function (emp) { return isTrue_(emp.Active) && !isDashboardExcludedEmployee_(emp); });
+  var holidayDays = [];
+  if (activeEmployees.length > 0) {
+    for (var holidayDay = 1; holidayDay <= daysInMonth; holidayDay++) {
+      var holidayCount = activeEmployees.reduce(function (count, emp) {
+        var shifts = scheduledShiftsForMonth[emp.EmployeeID];
+        return count + (shifts && shifts[holidayDay] === 'Holiday' ? 1 : 0);
+      }, 0);
+      if (holidayCount > activeEmployees.length / 2) holidayDays.push(holidayDay);
+    }
+  }
+
   // daysInMonth returned alongside employees (rather than the caller
   // re-deriving `new Date(year, month, 0).getDate()` a second time) so the
   // two can never disagree -- handleDashboardCalendar_ needs this same
   // number for the response's top-level field.
-  return { daysInMonth: daysInMonth, employees: calendarRows };
+  return { daysInMonth: daysInMonth, employees: calendarRows, holidayDays: holidayDays };
 }
 
 /**
@@ -2064,7 +2098,7 @@ function handleDashboardCalendar_(params) {
   if (!year || !month || month < 1 || month > 12) return fail_('bad_request', 'year and month (1-12) are required');
 
   var data = getDashboardCalendarData_(year, month);
-  return ok_({ year: year, month: month, daysInMonth: data.daysInMonth, employees: data.employees });
+  return ok_({ year: year, month: month, daysInMonth: data.daysInMonth, employees: data.employees, holidayDays: data.holidayDays });
 }
 
 /**

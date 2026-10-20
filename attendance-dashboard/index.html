@@ -46,6 +46,13 @@
     --branch-pp-text: #2E63D6;
     --branch-tl-bg: #F3EEFE;
     --branch-tl-text: #7C3AED;
+    /* Calendar tab day-of-week tinting only -- deliberately NOT reused from
+       the success/warn/danger/late/branch tokens above, since these mark
+       which day of the week a column is, not a status. Holiday (company
+       closed, a status) reuses --warn-bg/--warn-text below instead, same
+       orange the "On Leave" stat tile already uses. */
+    --saturday-bg: #E8F1FE;
+    --sunday-bg: #FDECEE;
   }
 
   * { box-sizing: border-box; }
@@ -647,23 +654,39 @@
      position:sticky on the first column work (no ancestor between it and
      the viewport needs overflow:visible for a LEFT-sticky column the way
      a TOP-sticky one does).  */
+  /* table-layout: fixed is what actually makes the day columns equal width
+     -- without it, `width` on a th/td is only a hint the automatic layout
+     algorithm is free to override once a cell's content (the "OT"/"SP"
+     pill) needs more room, which is exactly the raggedness this is meant
+     to fix. Fixed layout takes column widths from this (the first) row's
+     cells only, which is why the first column's width is set explicitly
+     below too instead of left to its content. */
   #calendarTable {
     width: auto;
     border-collapse: collapse;
+    table-layout: fixed;
     font-size: 12px;
   }
   #calendarTable th, #calendarTable td {
     padding: 8px 6px;
-    border-bottom: 1px solid var(--border);
+    border: 1px solid var(--border);
     text-align: center;
     white-space: nowrap;
+  }
+  /* Every day column (all but the employee-name first column) gets the
+     same fixed width, so a cell holding an "OT"/"SP" pill and a blank
+     cell both render the same size. Tighter horizontal padding than the
+     general th/td rule above, since a 2-letter pill needs less room than
+     the 34px+padding a day column would otherwise take. */
+  #calendarTable th:not(:first-child), #calendarTable td:not(:first-child) {
+    width: 36px;
+    padding: 6px 2px;
   }
   #calendarTable thead th {
     font-size: 11px;
     font-weight: 700;
     color: var(--text-muted);
     background: #F4F7FD;
-    border-bottom: 1px solid var(--border);
   }
   /* First column (employee name) pinned left in both header and body, so
      it's still readable after scrolling through a month's worth of day
@@ -672,6 +695,7 @@
   #calendarTable th:first-child, #calendarTable td:first-child {
     position: sticky;
     left: 0;
+    width: 140px;
     text-align: left;
     font-weight: 700;
     background: var(--card);
@@ -680,20 +704,29 @@
   #calendarTable thead th:first-child { background: #F4F7FD; z-index: 2; }
   #calendarTable tbody tr:hover td:first-child { background: #FAFBFF; }
   #calendarTable tbody tr:hover { background: #FAFBFF; }
-  #calendarTable tbody tr:last-child td { border-bottom: none; }
-  /* Sat/Sun day columns tinted, same idea as applyWeekendColors_ on the
-     Schedule sheet server-side -- makes the weekly rhythm readable at a
-     glance across up to 31 columns. */
-  #calendarTable th.weekend, #calendarTable td.weekend { background: #FAFAFC; }
+  /* Sat/Sun/Holiday day columns tinted, same idea as applyWeekendColors_ /
+     applyLeaveHolidayConditionalFormat_ on the Schedule sheet server-side
+     -- makes the weekly rhythm (and a company-wide day off) readable at a
+     glance across up to 31 columns. calendarDayClass() below gives
+     'holiday' priority over 'saturday'/'sunday' when a Holiday lands on a
+     weekend, so only one of the three ever applies to a given column. */
+  #calendarTable th.saturday, #calendarTable td.saturday { background: var(--saturday-bg); }
+  #calendarTable th.sunday, #calendarTable td.sunday { background: var(--sunday-bg); }
+  #calendarTable th.holiday, #calendarTable td.holiday { background: var(--warn-bg); }
   .cal-pill {
     display: inline-block;
     font-size: 10px;
     font-weight: 700;
     padding: 2px 6px;
     border-radius: 999px;
+    border: 1px solid transparent;
   }
-  .cal-pill.ot { background: var(--success-bg); color: var(--success-text); }
-  .cal-pill.sp { background: var(--warn-bg); color: var(--warn-text); }
+  .cal-pill.ot { background: var(--success-bg); color: var(--success-text); border-color: var(--success-border); }
+  /* Explicit border-color (not just background) matters here specifically
+     -- a 'SP' cell can land in a Holiday-tinted column (td.holiday uses
+     this same --warn-bg), and without its own border the pill would be
+     invisible, same color as the cell behind it. */
+  .cal-pill.sp { background: var(--warn-bg); color: var(--warn-text); border-color: var(--warn-border); }
 
   #emptyState, #loadingState, #errorState {
     text-align: center;
@@ -787,6 +820,43 @@
     .controls { flex-wrap: wrap; }
     table { font-size: 12px; }
   }
+
+  /* Print support for the OT/Special calendar tab (#calendarPrintBtn calls
+     window.print(), no PDF generation of our own -- this just governs how
+     the existing page looks in the browser's native print dialog).
+     Landscape + no max-width on main gives a wide month's worth of day
+     columns the most room; everything that isn't the table itself (chrome,
+     toolbar, buttons, banners, loading/error/empty states) is hidden so
+     only the data prints. Whichever tab happens to be on screen when Print
+     is clicked is what prints -- #monthlyView/#dailyView are already
+     display:none while on the Calendar tab, so no separate "only print
+     calendar" rule is needed beyond hiding the chrome shared by all three. */
+  @media print {
+    #updateBanner, header, .controls, .stale-banner,
+    #calendarLoadingState, #calendarErrorState, #calendarAllMonthsNotice, #calendarEmptyState {
+      display: none !important;
+    }
+    main { max-width: none; padding: 0; }
+    .card { border: none; border-radius: 0; }
+    #calendarTableWrap { overflow-x: visible; }
+    /* position:sticky has no meaning on a printed/paginated page and can
+       make a browser repeat or misplace the first column across page
+       breaks -- static positioning lets it flow like an ordinary cell. */
+    #calendarTable th:first-child, #calendarTable td:first-child { position: static; }
+    #calendarTable tbody tr:hover, #calendarTable tbody tr:hover td:first-child { background: inherit; }
+    /* The screen sizing (140px name column + 36px x up to 31 day columns,
+       ~1256px total) is wider than a landscape page's printable area
+       (~950-1030px after the @page margin below, on common paper sizes) --
+       shrunk here so a full month still fits on one page width instead of
+       the trailing days being cut off. 90 + 24*31 = ~834px, comfortably
+       inside that budget even on the narrower Letter size. */
+    #calendarTable { font-size: 9px; }
+    #calendarTable th, #calendarTable td { padding: 3px 1px; }
+    #calendarTable th:first-child, #calendarTable td:first-child { width: 90px; }
+    #calendarTable th:not(:first-child), #calendarTable td:not(:first-child) { width: 24px; }
+    .cal-pill { font-size: 8px; padding: 1px 3px; }
+  }
+  @page { size: landscape; margin: 12mm; }
 </style>
 </head>
 <body>
@@ -888,6 +958,9 @@
       <button class="refresh-btn" id="calendarRefreshBtn" type="button" data-i18n-title="reloadTitle" title="Reload from Google Sheet" style="display:none;">
         <span id="calendarRefreshIcon">↻</span> <span data-i18n="refresh">Refresh</span>
       </button>
+      <button class="refresh-btn" id="calendarPrintBtn" type="button" disabled style="display:none;">
+        <span>🖨</span> <span data-i18n="printBtn">Print</span>
+      </button>
 
       <div class="spacer"></div>
       <p class="fiscal-hint" id="fiscalHint" style="display:none;"></p>
@@ -941,7 +1014,7 @@
            all. -->
       <div id="calendarAllMonthsNotice" style="text-align:center;padding:60px 20px;color:var(--text-muted);font-size:14px;display:none;" data-i18n="calendarAllMonthsNotice">Pick a specific month — this view doesn't support "All (fiscal year)".</div>
       <div id="calendarEmptyState" style="text-align:center;padding:60px 20px;color:var(--text-muted);font-size:14px;display:none;" data-i18n="noEmployees">No employees to show for this period.</div>
-      <div class="card" id="calendarTableWrap" style="display:none;overflow-x:auto;">
+      <div class="card" id="calendarTableWrap" style="display:none;">
         <table id="calendarTable">
           <thead><tr id="calendarHeaderRow"></tr></thead>
           <tbody id="calendarBody"></tbody>
@@ -1053,6 +1126,7 @@
       deptFilterJapanese: 'Japanese',
       deptFilterThai: 'Thai',
       calendarAllMonthsNotice: 'Pick a specific month — this view doesn\'t support "All (fiscal year)".',
+      printBtn: 'Print',
       yearLabel: 'Year',
       monthLabel: 'Month',
       monthAll: 'All (fiscal year)',
@@ -1122,6 +1196,7 @@
       deptFilterJapanese: '日本人',
       deptFilterThai: 'タイ人',
       calendarAllMonthsNotice: '特定の月を選択してください —「全期間(会計年度)」はこの画面では表示できません。',
+      printBtn: '印刷',
       yearLabel: '年',
       monthLabel: '月',
       monthAll: '全期間(会計年度)',
@@ -1950,7 +2025,8 @@
     document.getElementById('yearField'),
     document.getElementById('monthField'),
     document.getElementById('deptFilterField'),
-    document.getElementById('calendarRefreshBtn')
+    document.getElementById('calendarRefreshBtn'),
+    document.getElementById('calendarPrintBtn')
   ];
   var ALL_TOOLBAR_ELS = toolbarMonthlyEls.concat(toolbarDailyEls, toolbarCalendarEls)
     .filter(function (el, i, arr) { return arr.indexOf(el) === i; });
@@ -2014,13 +2090,19 @@
     });
   }
 
-  // True for a Saturday/Sunday day-of-month in the given year/month -- used
-  // to tint those columns, same idea as applyWeekendColors_ on the Schedule
-  // sheet server-side (Report.gs), computed client-side since the backend
-  // payload has no reason to carry day-of-week itself.
-  function isCalendarWeekendDay(year, month, day) {
+  // Which of 'holiday' / 'saturday' / 'sunday' / '' a given day-of-month
+  // column should be tinted -- day-of-week computed client-side since the
+  // backend payload has no reason to carry it itself, but 'holiday' comes
+  // from the server's holidayDays (a company-wide Holiday is Schedule-sheet
+  // data, not derivable from the date alone). Holiday checked FIRST so it
+  // wins over a weekend tint on the rare day a Holiday falls on a
+  // Saturday/Sunday, rather than the two colors fighting over the cell.
+  function calendarDayClass(year, month, day, holidayDaySet) {
+    if (holidayDaySet.has(day)) return 'holiday';
     var dow = new Date(year, month - 1, day).getDay();
-    return dow === 0 || dow === 6;
+    if (dow === 6) return 'saturday';
+    if (dow === 0) return 'sunday';
+    return '';
   }
 
   var lastCalendarEmployees = [];
@@ -2031,6 +2113,7 @@
   var lastCalendarYear = null;
   var lastCalendarMonth = null;
   var lastCalendarDaysInMonth = 0;
+  var lastCalendarHolidayDays = new Set();
 
   function renderCalendarTable(employees) {
     var deptValue = deptFilterSelect.value;
@@ -2038,8 +2121,8 @@
 
     var headerHtml = '<th>' + escapeHtml(t('tableEmployee')) + '</th>';
     for (var day = 1; day <= lastCalendarDaysInMonth; day++) {
-      var headWeekend = isCalendarWeekendDay(lastCalendarYear, lastCalendarMonth, day) ? ' class="weekend"' : '';
-      headerHtml += '<th' + headWeekend + '>' + day + '</th>';
+      var headClass = calendarDayClass(lastCalendarYear, lastCalendarMonth, day, lastCalendarHolidayDays);
+      headerHtml += '<th' + (headClass ? ' class="' + headClass + '"' : '') + '>' + day + '</th>';
     }
     document.getElementById('calendarHeaderRow').innerHTML = headerHtml;
 
@@ -2048,11 +2131,11 @@
     filtered.forEach(function (emp) {
       var rowHtml = '<td>' + escapeHtml(emp.name) + '</td>';
       for (var d = 1; d <= lastCalendarDaysInMonth; d++) {
-        var cellWeekend = isCalendarWeekendDay(lastCalendarYear, lastCalendarMonth, d) ? ' weekend' : '';
+        var cellClass = calendarDayClass(lastCalendarYear, lastCalendarMonth, d, lastCalendarHolidayDays);
         var mark = emp.days && emp.days[d];
         var markHtml = mark === 'OT' ? '<span class="cal-pill ot">OT</span>'
           : (mark === 'SP' ? '<span class="cal-pill sp">SP</span>' : '');
-        rowHtml += '<td class="' + cellWeekend.trim() + '">' + markHtml + '</td>';
+        rowHtml += '<td class="' + cellClass + '">' + markHtml + '</td>';
       }
       var tr = document.createElement('tr');
       tr.innerHTML = rowHtml;
@@ -2064,6 +2147,17 @@
     // way reads correctly for both, no need to tell them apart.
     document.getElementById('calendarEmptyState').style.display = filtered.length === 0 ? 'block' : 'none';
     document.getElementById('calendarTableWrap').style.display = filtered.length === 0 ? 'none' : 'block';
+    updateCalendarPrintAvailability();
+  }
+
+  // Print only makes sense once there's an actual table on screen --
+  // disabled the rest of the time (loading, error, empty, All-months
+  // notice) so clicking it can never hand the browser's print dialog a
+  // blank page. Driven off calendarTableWrap's own display rather than a
+  // second parallel flag, so it can never drift out of sync with what's
+  // actually visible.
+  function updateCalendarPrintAvailability() {
+    document.getElementById('calendarPrintBtn').disabled = document.getElementById('calendarTableWrap').style.display === 'none';
   }
 
   function renderCalendarResult(data) {
@@ -2071,6 +2165,7 @@
     lastCalendarYear = data.year;
     lastCalendarMonth = data.month;
     lastCalendarDaysInMonth = data.daysInMonth;
+    lastCalendarHolidayDays = new Set(data.holidayDays || []);
     renderCalendarTable(lastCalendarEmployees);
   }
 
@@ -2085,6 +2180,7 @@
     document.getElementById('calendarEmptyState').style.display = 'none';
     document.getElementById('calendarErrorState').style.display = 'none';
     document.getElementById('calendarTableWrap').style.display = 'none';
+    updateCalendarPrintAvailability();
     hideStaleBanner('calendarStaleBanner');
 
     // Same guard handleDashboardCalendar_ enforces server-side (Report.gs)
@@ -2142,6 +2238,12 @@
     if (e.target.closest('.stale-retry-btn')) loadCalendar();
   });
   document.getElementById('calendarRefreshBtn').addEventListener('click', loadCalendar);
+  // window.print() alone is enough -- the @media print rules below hide
+  // everything except the currently-rendered calendar table, so whatever
+  // month/department filter is on screen is exactly what prints. No print
+  // preview/PDF generation of our own; this just hands off to the
+  // browser's native print dialog (same as any other page).
+  document.getElementById('calendarPrintBtn').addEventListener('click', function () { window.print(); });
   document.getElementById('calendarErrorRetryBtn').addEventListener('click', loadCalendar);
 
   // ---------- Dashboard: Daily view ----------
