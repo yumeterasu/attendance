@@ -705,9 +705,12 @@
      same fixed width, so a cell holding an "OT"/"SP" pill and a blank
      cell both render the same size. Tighter horizontal padding than the
      general th/td rule above, since a 2-letter pill needs less room than
-     the 34px+padding a day column would otherwise take. */
+     a day column would otherwise take -- but wide enough (40px, with
+     .cal-pill's own padding trimmed below) to leave real margin around
+     the pill rather than a near-exact fit, which earlier read as
+     slightly uneven cells depending on font rendering. */
   #calendarTable th:not(:first-child), #calendarTable td:not(:first-child) {
-    width: 36px;
+    width: 40px;
     padding: 6px 2px;
   }
   #calendarTable thead th {
@@ -751,7 +754,7 @@
     display: inline-block;
     font-size: 10px;
     font-weight: 700;
-    padding: 2px 6px;
+    padding: 2px 5px;
     border-radius: 999px;
     border: 1px solid transparent;
   }
@@ -894,11 +897,12 @@
        breaks -- static positioning lets it flow like an ordinary cell. */
     #calendarTable th:first-child, #calendarTable td:first-child { position: static; }
     #calendarTable tbody tr:hover, #calendarTable tbody tr:hover td:first-child { background: inherit; }
-    /* The screen sizing (140px name column + 36px x up to 31 day columns,
-       ~1256px total) is wider than A3 portrait's printable area (~273mm /
+    /* The screen sizing (140px name column + 40px x up to 31 day columns,
+       ~1380px total) is wider than A3 portrait's printable area (~273mm /
        ~1032px after the @page margin below) -- shrunk here so a full month
        still fits on one page width instead of the trailing days being cut
-       off. 90 + 24*31 = ~834px, comfortably inside that budget. */
+       off. 90 + 28*31 = ~958px, comfortably inside that budget, with real
+       margin around the (also shrunk) pill rather than a near-exact fit. */
     #calendarTable { font-size: 9px; }
     /* height overrides the 32px screen value -- the shrunk print padding/
        font/pill sizing below needs its own smaller fixed row height, same
@@ -906,8 +910,8 @@
        must still come out the same height). */
     #calendarTable th, #calendarTable td { padding: 3px 1px; height: 18px; }
     #calendarTable th:first-child, #calendarTable td:first-child { width: 90px; }
-    #calendarTable th:not(:first-child), #calendarTable td:not(:first-child) { width: 24px; }
-    .cal-pill { font-size: 8px; padding: 1px 3px; }
+    #calendarTable th:not(:first-child), #calendarTable td:not(:first-child) { width: 28px; }
+    .cal-pill { font-size: 8px; padding: 1px 2px; }
   }
   @page { size: A3 portrait; margin: 12mm; }
 </style>
