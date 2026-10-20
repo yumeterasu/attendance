@@ -839,9 +839,14 @@
 
   /* Print support for the OT/Special calendar tab (#calendarPrintBtn calls
      window.print(), no PDF generation of our own -- this just governs how
-     the existing page looks in the browser's native print dialog).
-     Landscape + no max-width on main gives a wide month's worth of day
-     columns the most room; everything that isn't the table itself (chrome,
+     the existing page looks in the browser's native print dialog). A3
+     portrait (see @page below) rather than landscape -- A3's 297mm width
+     is the same as A4 landscape's (A3 is just 2x A4), so the day columns
+     still fit the same budget computed below, but A3 portrait's extra
+     420mm height fits far more employee rows per page before paginating,
+     which matters more here than column width once a month's worth of
+     columns already fits either way. No max-width on main gives that
+     width its full use; everything that isn't the table itself (chrome,
      toolbar, buttons, banners, loading/error/empty states) is hidden so
      only the data prints. Whichever tab happens to be on screen when Print
      is clicked is what prints -- #monthlyView/#dailyView are already
@@ -861,18 +866,17 @@
     #calendarTable th:first-child, #calendarTable td:first-child { position: static; }
     #calendarTable tbody tr:hover, #calendarTable tbody tr:hover td:first-child { background: inherit; }
     /* The screen sizing (140px name column + 36px x up to 31 day columns,
-       ~1256px total) is wider than a landscape page's printable area
-       (~950-1030px after the @page margin below, on common paper sizes) --
-       shrunk here so a full month still fits on one page width instead of
-       the trailing days being cut off. 90 + 24*31 = ~834px, comfortably
-       inside that budget even on the narrower Letter size. */
+       ~1256px total) is wider than A3 portrait's printable area (~273mm /
+       ~1032px after the @page margin below) -- shrunk here so a full month
+       still fits on one page width instead of the trailing days being cut
+       off. 90 + 24*31 = ~834px, comfortably inside that budget. */
     #calendarTable { font-size: 9px; }
     #calendarTable th, #calendarTable td { padding: 3px 1px; }
     #calendarTable th:first-child, #calendarTable td:first-child { width: 90px; }
     #calendarTable th:not(:first-child), #calendarTable td:not(:first-child) { width: 24px; }
     .cal-pill { font-size: 8px; padding: 1px 3px; }
   }
-  @page { size: landscape; margin: 12mm; }
+  @page { size: A3 portrait; margin: 12mm; }
 </style>
 </head>
 <body>
