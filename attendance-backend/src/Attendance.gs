@@ -8,16 +8,34 @@ var DUPLICATE_GUARD_MS = 60 * 1000; // reject re-scans within 60s of the last lo
 // half, 8:00-12:30, off in the afternoon -- ลาบ่าย) and "PM" (works the
 // afternoon half, 12:30-17:00, off in the morning -- ลาเช้า, which CAN
 // still earn real OT). Embedding the real H:MM range directly in the
-// label (same convention "Event 8:00-17:00" already uses) is deliberate --
-// isLate_/getShiftStartTime_/getShiftEndTime_/minutesPastShiftEnd_ all just
-// regex-match the first/last "H:MM" anywhere in the string, so this reuses
-// every bit of existing Late/OT machinery for free, instead of a plain
-// "Half Day X Leave" label with no parseable time, which used to leave
-// Late wrongly TRUE (computed against whatever shift the employee picked
-// before the admin corrected it) and, worse, silently zero out genuinely
-// -earned ลาเช้า OT the moment Recompute ran (no end time to compute OT
-// against) -- see isHalfDayLeaveShift_ and previewRecomputeLateAndOt_'s own
-// comments for the rest of this fix.
+// label (same convention "Event Full Day 8:00-17:00" already uses) is
+// deliberate -- isLate_/getShiftStartTime_/getShiftEndTime_/
+// minutesPastShiftEnd_ all just regex-match the first/last "H:MM" anywhere
+// in the string, so this reuses every bit of existing Late/OT machinery
+// for free, instead of a plain "Half Day X Leave" label with no parseable
+// time, which used to leave Late wrongly TRUE (computed against whatever
+// shift the employee picked before the admin corrected it) and, worse,
+// silently zero out genuinely-earned ลาเช้า OT the moment Recompute ran
+// (no end time to compute OT against) -- see isHalfDayLeaveShift_ and
+// previewRecomputeLateAndOt_'s own comments for the rest of this fix.
+// 'Event Full Day 8:00-17:00' / 'Event Half Day 8:00-12:30' (renamed +
+// split from the original single 'Event 8:00-17:00', 2026-10-20): both are
+// still just "Event" shifts to every piece of Late/OT/absence logic in
+// this codebase -- isEventShift_'s /^Event\b/ prefix match, and therefore
+// isNoLateNoOtShift_/eventShiftOverrideTimestamp_/every later Report/
+// Dashboard/PDF read, treat them completely identically (no Late, no OT,
+// recorded IN/OUT forced to the embedded time regardless of the real tap).
+// The TWO labels exist purely so the Schedule sheet records which kind of
+// event day it was -- an admin looking back later can tell "came for the
+// whole event" from "came for just the half-day session" at a glance,
+// even though neither one affects a single number anywhere in payroll.
+// Deliberately kept the H:MM suffix in both names (rather than a bare
+// "Event Full Day"/"Event Half Day" with the time looked up separately) --
+// this codebase has no name-to-time mapping table anywhere, every Late/OT/
+// forced-timestamp calculation parses the time straight out of the shift
+// string itself, and building a separate mapping just for these two was
+// explicitly declined as unnecessary complexity for what a slightly longer
+// label already solves with zero new code.
 // 'Special 8:30-17:30': an admin-picked, FIXED version of the "Special"
 // shift concept (see isSpecialShift_, isNoLateNoOtShift_) -- same "no Late,
 // no OT" treatment as the Kiosk's own free-typed "Special H:MM-H:MM" one-off
@@ -26,9 +44,9 @@ var DUPLICATE_GUARD_MS = 60 * 1000; // reject re-scans within 60s of the last lo
 // this needed zero changes to Late/OT computation anywhere -- Japanese OT
 // (otEligibleForDay_), Thai OT (resolveThaiOt_), and every later
 // recompute/Report/Dashboard/PDF read all already gate on the same check.
-// Unlike 'Event 8:00-17:00' (right before it below), the real tap time is
-// still what's recorded -- only Late/OT math is skipped on top of it.
-var SHIFTS = ['7:00-16:00', '7:30-16:30', '8:00-17:00', '8:30-17:30', '7:00-17:00', '7:00-17:30', '8:00-18:00', '8:00-18:30', 'Event 8:00-17:00', 'Special 8:30-17:30', 'Annual Leave', 'Sick Leave', 'Unpaid Leave', 'Paid Special Leave', 'Substitutional Leave', 'Half Day Annual Leave AM 8:00-12:30', 'Half Day Annual Leave PM 12:30-17:00', 'Half Day Sick Leave AM 8:00-12:30', 'Half Day Sick Leave PM 12:30-17:00', 'Half Day Unpaid Leave AM 8:00-12:30', 'Half Day Unpaid Leave PM 12:30-17:00', 'Holiday'];
+// Unlike the two Event shifts above, the real tap time is still what's
+// recorded for Special -- only Late/OT math is skipped on top of it.
+var SHIFTS = ['7:00-16:00', '7:30-16:30', '8:00-17:00', '8:30-17:30', '7:00-17:00', '7:00-17:30', '8:00-18:00', '8:00-18:30', 'Event Full Day 8:00-17:00', 'Event Half Day 8:00-12:30', 'Special 8:30-17:30', 'Annual Leave', 'Sick Leave', 'Unpaid Leave', 'Paid Special Leave', 'Substitutional Leave', 'Half Day Annual Leave AM 8:00-12:30', 'Half Day Annual Leave PM 12:30-17:00', 'Half Day Sick Leave AM 8:00-12:30', 'Half Day Sick Leave PM 12:30-17:00', 'Half Day Unpaid Leave AM 8:00-12:30', 'Half Day Unpaid Leave PM 12:30-17:00', 'Holiday'];
 // Shift values that mean "nobody's expected in at all that day" -- as
 // opposed to a blank cell (not scheduled yet) or a Half Day Leave entry
 // (still expected in for half the day -- see isHalfDayLeaveShift_). Used
@@ -205,7 +223,7 @@ function getShiftStartTime_(shiftOrEvent) {
 }
 
 /**
- * For "Event" shifts specifically (e.g. "Event 8:00-17:00"): the recorded
+ * For "Event" shifts specifically (e.g. "Event Full Day 8:00-17:00"): the recorded
  * IN/OUT time is always the shift's own start/end time, never the actual
  * tap time -- an admin explicitly asked for event-day attendance to always
  * read as the clean official hours, with no Late flag and no OT, no matter
@@ -2702,7 +2720,7 @@ function recordBackdatedAttendance_(employeeId, type, timestamp, ot, precomputed
     // checks -- an earlier version of this line was isOtEligible_(emp)
     // alone, which meant a Japanese employee backdated on an Event/Special
     // day could still get real, non-zero computeJapaneseOtMinutes_ output
-    // (it happily parses "Event 8:00-17:00"'s embedded time), contradicting
+    // (it happily parses "Event Full Day 8:00-17:00"'s embedded time), contradicting
     // the "Event/Special never has OT" rule.
     var todayOtEligible = otEligibleForDay_(emp, todayShift);
     if (emp.Department === 'Japanese') {
@@ -2875,7 +2893,7 @@ function recordOfflineSyncedAttendance_(employeeId, type, timestamp, ot, clientI
     // checks -- an earlier version of this line was isOtEligible_(emp)
     // alone, which meant a Japanese employee backdated on an Event/Special
     // day could still get real, non-zero computeJapaneseOtMinutes_ output
-    // (it happily parses "Event 8:00-17:00"'s embedded time), contradicting
+    // (it happily parses "Event Full Day 8:00-17:00"'s embedded time), contradicting
     // the "Event/Special never has OT" rule.
     var todayOtEligible = otEligibleForDay_(emp, todayShift);
     if (emp.Department === 'Japanese') {

@@ -464,9 +464,20 @@ function checkCurrentSchedule_(findings, activeEmployees) {
       // not-yet-migrated label from being wrongly flagged too. Don't drop
       // this check as "redundant" -- it's the legacy labels' only path to
       // passing, even though it looks like a no-op for the current ones.
-      // Only a value that fails ALL THREE checks is a real typo/corruption
+      // isEventShift_ alongside them for the exact same reason, added
+      // 2026-10-20 when 'Event 8:00-17:00' was renamed/split into 'Event
+      // Full Day 8:00-17:00'/'Event Half Day 8:00-12:30' with no migration
+      // of already-existing Schedule sheet cells -- an old cell still
+      // reading the pre-rename label is no longer an exact SHIFTS member,
+      // but isEventShift_'s /^Event\b/ prefix match (the same check every
+      // other piece of Late/OT/absence logic already trusts) still
+      // recognizes it correctly, so Health Check must too. Unlike the
+      // other two checks, this one never goes stale the way a hardcoded
+      // legacy-label list would -- any future Event-prefixed rename stays
+      // covered automatically.
+      // Only a value that fails ALL FOUR checks is a real typo/corruption
       // worth flagging.
-      if (SHIFTS.indexOf(cellValue) === -1 && !isValidSpecialShiftSubmission_(cellValue) && !HALF_DAY_LEAVE_COUNTS_AS_.hasOwnProperty(cellValue)) {
+      if (SHIFTS.indexOf(cellValue) === -1 && !isEventShift_(cellValue) && !isValidSpecialShiftSubmission_(cellValue) && !HALF_DAY_LEAVE_COUNTS_AS_.hasOwnProperty(cellValue)) {
         findings.push({
           sheetName: sheetName,
           a1: sheet.getRange(r + 1, dayCol + 1).getA1Notation(),

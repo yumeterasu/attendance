@@ -664,6 +664,13 @@ function sumMonthTotals_(dayLogs, scheduledShiftsForEmployee, daysInMonth) {
     // only real row is an OUT, which this IN-based synthesis doesn't see).
     // The Late/OT skip below, however, DOES need to cover Special too -- see
     // the isNoLateNoOtShift_ call.
+    // Full Day and Half Day Event both credit exactly one full day worked
+    // here, with no 0.5 discount the way HALF_DAY_LEAVE_COUNTS_AS_ gives a
+    // Half Day Leave elsewhere in this function -- confirmed intentional
+    // (2026-10-20): the two Event labels exist purely so the Schedule
+    // sheet records which kind of event day it was, explicitly NOT to
+    // change any computed number, Days Worked included -- see SHIFTS' own
+    // comment block in Attendance.gs.
     if (isEventShift_(scheduledShift)) {
       daysWorked++;
       continue;
@@ -1388,7 +1395,7 @@ function minutesToHHMM_(totalMinutes) {
  *     mirrors the IN side exactly, just checking the other end of the day
  *     (leaving early instead of arriving late).
  * Leave/Holiday never match anything on either side, having no real time
- * to compare. Event shifts (e.g. "Event 8:00-17:00") are skipped entirely,
+ * to compare. Event shifts (e.g. "Event Full Day 8:00-17:00") are skipped entirely,
  * both as a day to check and as a candidate "closer" match on either
  * side -- they're one-off/irregular by nature, not a stale entry that
  * should get flagged or "corrected" back into the normal rotation. Half
