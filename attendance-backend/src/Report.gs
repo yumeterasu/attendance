@@ -1858,15 +1858,16 @@ function getDashboardSummaryData_(year, month) {
     // rounds it before summing, so the itemized lines always add up to
     // exactly the pill total shown above them, never off by a cent. The
     // yearly path's entries (getAllowanceEntriesForYear_) carry `month`
-    // (several months' worth can be grouped under one employee here) while
-    // the monthly path's (getAllowancesForMonth_) don't need it -- already
-    // scoped to the one selected month, so including it would be redundant
-    // on every single line.
-    var specialAllowanceDetail = allowanceEntries.map(function (a) {
-      return isAllMonths
-        ? { label: a.label, amount: round2_(a.amount), month: a.month }
-        : { label: a.label, amount: round2_(a.amount) };
-    });
+    // (several months' worth can be grouped under one employee here) --
+    // kept as its own local map rather than roundedAllowanceDetail_
+    // (Allowances.gs) below, since that shared helper's {label, amount}
+    // shape has nowhere to put it -- while the monthly path's
+    // (getAllowancesForMonth_) doesn't need it at all -- already scoped to
+    // the one selected month, so including it would be redundant on every
+    // single line -- and so reuses that shared helper directly.
+    var specialAllowanceDetail = isAllMonths
+      ? allowanceEntries.map(function (a) { return { label: a.label, amount: round2_(a.amount), month: a.month }; })
+      : roundedAllowanceDetail_(allowanceEntries);
     // Sorted into FISCAL-year order (readAllowanceRows_ -- Allowances.gs --
     // otherwise preserves plain sheet-row order, i.e. whenever each entry
     // happened to be typed in) -- only meaningful in the "All" yearly view,

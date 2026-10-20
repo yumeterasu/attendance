@@ -183,6 +183,16 @@ export type OtUnit = 'minutes' | 'quarters';
 // current month (the default, and the only case the server's fast bounded
 // read covers; a past month falls back to a slower full-sheet read there,
 // see handleKioskMyAttendance_).
+// Itemized breakdown behind allowanceTotal -- which Special Allowance
+// entries (Allowances.gs) actually make up that number this month, shown
+// on tap (see the Allowance box in KioskScreen's My Schedule summary grid).
+// Optional, unlike lateCount/overCount/allowanceTotal above -- those 3
+// forced a cache-key version bump (scheduleCache.ts) because the whole
+// summary grid is unusable without them; this is a nice-to-have detail
+// view that degrades gracefully to "no detail available" (the Allowance
+// box just isn't tappable) when missing, so it doesn't need one too.
+export type AllowanceDetailEntry = { label: string; amount: number };
+
 export function kioskMyAttendance(pin: string, year?: number, month?: number) {
   const now = new Date();
   const isCurrentMonth = year === undefined || month === undefined || (year === now.getFullYear() && month === now.getMonth() + 1);
@@ -197,6 +207,7 @@ export function kioskMyAttendance(pin: string, year?: number, month?: number) {
     lateCount: number;
     overCount: number;
     allowanceTotal: number;
+    allowanceDetail?: AllowanceDetailEntry[];
   }>('kioskMyAttendance', { pin, year, month }, isCurrentMonth ? SCHEDULE_TIMEOUT_MS : SCHEDULE_MONTH_NAV_TIMEOUT_MS);
 }
 
@@ -211,7 +222,7 @@ const SCHEDULE_BULK_SYNC_TIMEOUT_MS = 45000;
 export function kioskMyAttendanceBulk(pin: string) {
   return postAction<{
     name: string;
-    months: { year: number; month: number; days: ScheduleDay[]; otUnit: OtUnit; otMinutesTotal: number; otQuartersTotal: number; lateCount: number; overCount: number; allowanceTotal: number }[];
+    months: { year: number; month: number; days: ScheduleDay[]; otUnit: OtUnit; otMinutesTotal: number; otQuartersTotal: number; lateCount: number; overCount: number; allowanceTotal: number; allowanceDetail?: AllowanceDetailEntry[] }[];
   }>('kioskMyAttendanceBulk', { pin }, SCHEDULE_BULK_SYNC_TIMEOUT_MS);
 }
 
@@ -257,7 +268,7 @@ export function kioskDirectory() {
 // shape for its own `employees` parameter, rather than a second inline
 // copy of these 9 fields that could silently drift out of sync with this
 // one the next time a field is added here and forgotten there.
-export type ScheduleSyncEmployee = { pin: string; name: string; days: ScheduleDay[]; otUnit: OtUnit; otMinutesTotal: number; otQuartersTotal: number; lateCount: number; overCount: number; allowanceTotal: number };
+export type ScheduleSyncEmployee = { pin: string; name: string; days: ScheduleDay[]; otUnit: OtUnit; otMinutesTotal: number; otQuartersTotal: number; lateCount: number; overCount: number; allowanceTotal: number; allowanceDetail?: AllowanceDetailEntry[] };
 
 // Device-wide daily background sync (see useScheduleSync) -- every active
 // employee's current month in one call, no PIN. Same budget as

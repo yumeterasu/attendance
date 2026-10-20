@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { View, Text, StyleSheet, Pressable, ScrollView, ActivityIndicator, FlatList, NativeSyntheticEvent, NativeScrollEvent } from 'react-native';
+import { View, Text, StyleSheet, Pressable, ScrollView, ActivityIndicator, FlatList, NativeSyntheticEvent, NativeScrollEvent, Modal } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
 import Constants from 'expo-constants';
@@ -466,6 +466,26 @@ function HourMinuteSliders({
   );
 }
 
+// One of the 4 My Schedule month-stat boxes (OT/Late/Over Break/Allowance) --
+// shared markup so all 4 can only ever look and size identically (no risk of
+// one getting a styling/copy fix the others don't), and so the Pressable-vs-
+// plain-View choice (only the Allowance box is ever tappable, and only once
+// it actually has itemized detail -- see hasAllowanceDetail below) lives in
+// ONE place instead of two near-duplicate JSX blocks. `hint` is always
+// rendered (even as '') rather than only when non-empty -- statsGridTapHint
+// reserves a fixed height either way, so every box comes out the same total
+// height regardless of which one(s) happen to have a hint this time.
+function renderMyScheduleStatBox(label: string, value: string, hint: string = '', onPress?: () => void) {
+  const Wrapper = onPress ? Pressable : View;
+  return (
+    <Wrapper style={styles.statsGridItem} {...(onPress ? { onPress } : {})}>
+      <Text style={styles.otSummaryLabel}>{label}</Text>
+      <Text style={styles.otSummaryValue} numberOfLines={1}>{value}</Text>
+      <Text style={styles.statsGridTapHint}>{hint}</Text>
+    </Wrapper>
+  );
+}
+
 export default function KioskScreen({ navigation }: Props) {
   const isConnected = useNetworkStatus();
   useOfflineSync(isConnected);
@@ -636,6 +656,13 @@ export default function KioskScreen({ navigation }: Props) {
   const [scheduleError, setScheduleError] = useState(false);
   const [isLoadingSchedule, setIsLoadingSchedule] = useState(false);
   const [scheduleData, setScheduleData] = useState<ScheduleData | null>(null);
+  // Itemized Allowance breakdown modal (which entries make up allowanceTotal
+  // this month) -- reset in resetSchedule (so it never silently reopens
+  // already-expanded the next time someone else uses this shared tablet)
+  // and whenever the viewed month/employee changes below (so Prev/Next
+  // paging never leaves last month's itemized list on screen under this
+  // month's total).
+  const [showAllowanceDetail, setShowAllowanceDetail] = useState(false);
   // Set only for a lookup that fails for a retriable reason (timeout/no
   // connection) -- pin stays put so "Try Again" can resubmit it as-is,
   // same pattern as lookupIssue on the main check-in screen.
@@ -719,6 +746,7 @@ export default function KioskScreen({ navigation }: Props) {
     setScheduleError(false);
     setScheduleIssue(null);
     setScheduleData(null);
+    setShowAllowanceDetail(false);
     // Pre-existing gap, closed here since this is now the one shared reset
     // path: neither the old Cancel/Done handlers nor submitSchedulePin ever
     // cleared this, so a failed goToScheduleMonth's error banner for one
@@ -950,6 +978,14 @@ export default function KioskScreen({ navigation }: Props) {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode]);
+
+  // Closes the Allowance detail modal whenever the viewed month or employee
+  // changes (Prev/Next paging, or a fresh PIN entry) -- without this, paging
+  // away from a month whose detail was left open would carry that same
+  // itemized list over, now mislabeled under a different month's total.
+  useEffect(() => {
+    setShowAllowanceDetail(false);
+  }, [scheduleData?.year, scheduleData?.month, scheduleAuthPin]);
 
   // Pre-select IN during the morning arrival window and OUT once it's late
   // enough that nobody is realistically checking IN -- still fully
@@ -2041,6 +2077,7 @@ export default function KioskScreen({ navigation }: Props) {
 
   if (mode === 'scheduleResult' && scheduleData) {
     const weeks = buildCalendarWeeks(scheduleData.year, scheduleData.month, scheduleData.days);
+    const hasAllowanceDetail = (scheduleData.allowanceDetail?.length ?? 0) > 0;
 
     return (
       <LinearGradient
@@ -2240,33 +2277,94 @@ export default function KioskScreen({ navigation }: Props) {
             less of the calendar visible without scrolling; a 2x2 grid
             keeps the footer's height increase to 1 extra row instead of 3. */}
         <View style={styles.statsGrid}>
-          <View style={styles.statsGridItem}>
-            <Text style={styles.otSummaryLabel}>Total OT this month / OT รวมเดือนนี้</Text>
-            <Text style={styles.otSummaryValue} numberOfLines={1}>
-              {scheduleData.otUnit === 'minutes'
-                ? `${scheduleData.otMinutesTotal} min`
-                : `${scheduleData.otQuartersTotal} quarter${scheduleData.otQuartersTotal === 1 ? '' : 's'}`}
-            </Text>
-          </View>
-          <View style={styles.statsGridItem}>
-            <Text style={styles.otSummaryLabel}>Late days this month / วันมาสายเดือนนี้</Text>
-            <Text style={styles.otSummaryValue} numberOfLines={1}>
-              {scheduleData.lateCount} day{scheduleData.lateCount === 1 ? '' : 's'}
-            </Text>
-          </View>
-          <View style={styles.statsGridItem}>
-            <Text style={styles.otSummaryLabel}>Over Break days this month / วันพักเกินเดือนนี้</Text>
-            <Text style={styles.otSummaryValue} numberOfLines={1}>
-              {scheduleData.overCount} day{scheduleData.overCount === 1 ? '' : 's'}
-            </Text>
-          </View>
-          <View style={styles.statsGridItem}>
-            <Text style={styles.otSummaryLabel}>Special Allowance this month / เงินพิเศษเดือนนี้</Text>
-            <Text style={styles.otSummaryValue} numberOfLines={1}>
-              ฿{scheduleData.allowanceTotal.toLocaleString(undefined, { maximumFractionDigits: 2 })}
-            </Text>
-          </View>
+          {renderMyScheduleStatBox(
+            'Total OT this month / OT รวมเดือนนี้',
+            scheduleData.otUnit === 'minutes'
+              ? `${scheduleData.otMinutesTotal} min`
+              : `${scheduleData.otQuartersTotal} quarter${scheduleData.otQuartersTotal === 1 ? '' : 's'}`
+          )}
+          {renderMyScheduleStatBox(
+            'Late days this month / วันมาสายเดือนนี้',
+            `${scheduleData.lateCount} day${scheduleData.lateCount === 1 ? '' : 's'}`
+          )}
+          {renderMyScheduleStatBox(
+            'Over Break days this month / วันพักเกินเดือนนี้',
+            `${scheduleData.overCount} day${scheduleData.overCount === 1 ? '' : 's'}`
+          )}
+          {/* Pressable only when there's itemized detail to actually show --
+              allowanceDetail is optional (older cached data, or a brief
+              deploy-skew window, see its own comment in client.ts) and an
+              employee with no allowance entries that month has nothing to
+              expand into either way, so this falls back to the same plain,
+              non-interactive box the other 3 stats use. */}
+          {renderMyScheduleStatBox(
+            'Special Allowance this month / เงินพิเศษเดือนนี้',
+            `฿${scheduleData.allowanceTotal.toLocaleString(undefined, { maximumFractionDigits: 2 })}`,
+            hasAllowanceDetail ? 'Tap for details / แตะเพื่อดูรายละเอียด' : '',
+            hasAllowanceDetail ? () => setShowAllowanceDetail(true) : undefined
+          )}
         </View>
+
+        {/* Itemized Allowance breakdown -- entries always add up to
+            allowanceTotal above (see allowanceDetail's own comment,
+            client.ts, for why: both come from the same source list
+            server-side). Transparent Modal + its own backdrop Pressable
+            (not a 3rd-party library -- nothing else on this screen needed
+            one either) so tapping outside the card closes it, same as the
+            hardware back button (onRequestClose) and the Close button.
+            onTouchStart/onTouchMove on the backdrop -- without them, time
+            spent reading this modal doesn't count as activity (RN's Modal
+            renders in its own native layer, outside the LinearGradient
+            container the idle timer's own touch handlers are bound to
+            below), so SCHEDULE_IDLE_TIMEOUT_MS could fire and yank the
+            screen back to PIN entry out from under someone still reading
+            it -- same handlers, same reasoning as that container's own. */}
+        <Modal
+          visible={showAllowanceDetail}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setShowAllowanceDetail(false)}
+        >
+          <Pressable
+            style={styles.allowanceModalBackdrop}
+            onPress={() => setShowAllowanceDetail(false)}
+            onTouchStart={resetScheduleIdleTimer}
+            onTouchMove={resetScheduleIdleTimer}
+          >
+            {/* Swallows the tap so it doesn't bubble to the backdrop Pressable
+                above and close the card the instant it's opened. */}
+            <Pressable style={styles.allowanceModalCard} onPress={() => {}}>
+              <Text style={styles.allowanceModalTitle}>Special Allowance / เงินพิเศษ</Text>
+              <Text style={styles.allowanceModalSubtitle}>
+                {scheduleData && `${MONTH_NAMES[scheduleData.month - 1]} ${scheduleData.year}`}
+              </Text>
+              {/* Scrollable, not a plain View -- CLAUDE.md: one employee can
+                  have several differently-named entries in the same month,
+                  and this card's own maxHeight: '80%' cap would otherwise
+                  just let a long list visually spill out past it (RN Views
+                  default to overflow:'visible') instead of scrolling. */}
+              <ScrollView style={styles.allowanceModalList}>
+                {(scheduleData?.allowanceDetail ?? []).map((entry, i) => (
+                  <View key={i} style={styles.allowanceModalRow}>
+                    <Text style={styles.allowanceModalRowLabel} numberOfLines={2}>{entry.label}</Text>
+                    <Text style={styles.allowanceModalRowAmount}>
+                      ฿{entry.amount.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                    </Text>
+                  </View>
+                ))}
+              </ScrollView>
+              <View style={styles.allowanceModalTotalRow}>
+                <Text style={styles.allowanceModalTotalLabel}>Total / รวม</Text>
+                <Text style={styles.allowanceModalTotalAmount}>
+                  ฿{(scheduleData?.allowanceTotal ?? 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                </Text>
+              </View>
+              <Pressable style={styles.allowanceModalCloseButton} onPress={() => setShowAllowanceDetail(false)}>
+                <Text style={styles.buttonText}>Close / ปิด</Text>
+              </Pressable>
+            </Pressable>
+          </Pressable>
+        </Modal>
 
         <Pressable
           style={styles.doneButton}
@@ -3318,6 +3416,71 @@ const styles = StyleSheet.create({
   // just OT -- "same size as OT" was the explicit ask when Late/Over
   // Break/Allowance were added alongside it (2026-10-20).
   otSummaryValue: { color: SCHEDULE_ACCENT_DARK, fontSize: 30, fontFamily: FONT_DISPLAY_EXTRABOLD, marginTop: 2 },
+  // Rendered on all 4 stat boxes (renderMyScheduleStatBox), but only ever
+  // has real text on the Allowance box once it has itemized detail to tap
+  // into -- small/muted like otSummaryLabel so it doesn't compete with the
+  // big number above it. Explicit height (not just marginTop), kept even
+  // when empty, is what keeps every box the same total height regardless
+  // of which one(s) happen to have a hint this time.
+  statsGridTapHint: { color: SCHEDULE_ACCENT_DARK, fontSize: 10, fontFamily: FONT_BODY_SEMIBOLD, marginTop: 4, height: 13 },
+  allowanceModalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(80, 58, 46, 0.5)', // TEXT at 50% -- a warm dark overlay rather than plain black, consistent with this app's warm palette elsewhere
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 24
+  },
+  allowanceModalCard: {
+    width: '100%',
+    maxWidth: 420,
+    maxHeight: '80%',
+    backgroundColor: SCHEDULE_CARD,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: SCHEDULE_BORDER,
+    padding: 24,
+    alignItems: 'center'
+  },
+  allowanceModalTitle: { color: TEXT, fontSize: 18, fontFamily: FONT_DISPLAY_BOLD },
+  allowanceModalSubtitle: { color: TEXT_MUTED, fontSize: 13, fontFamily: FONT_BODY_SEMIBOLD, marginTop: 2 },
+  // Explicit maxHeight (not just relying on the card's own maxHeight:'80%'
+  // further up the tree, which a plain View child wouldn't respect anyway --
+  // RN Views default to overflow:'visible') -- bounds this ScrollView so a
+  // long itemized list scrolls within the card instead of spilling past it
+  // and overlapping the Total row/Close button below.
+  allowanceModalList: { width: '100%', marginTop: 18, maxHeight: 320 },
+  allowanceModalRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 12,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: SCHEDULE_BORDER
+  },
+  allowanceModalRowLabel: { flex: 1, color: TEXT, fontSize: 14, fontFamily: FONT_BODY_SEMIBOLD },
+  allowanceModalRowAmount: { color: TEXT, fontSize: 14, fontFamily: FONT_BODY_BOLD },
+  allowanceModalTotalRow: {
+    width: '100%',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 4,
+    paddingTop: 12
+  },
+  allowanceModalTotalLabel: { color: TEXT_MUTED, fontSize: 13, fontFamily: FONT_BODY_SEMIBOLD },
+  // Same accent/size pairing otSummaryValue uses for a month total -- this
+  // modal's own total should read with the same weight as the number on
+  // the box that opened it.
+  allowanceModalTotalAmount: { color: SCHEDULE_ACCENT_DARK, fontSize: 20, fontFamily: FONT_DISPLAY_EXTRABOLD },
+  allowanceModalCloseButton: {
+    marginTop: 20,
+    backgroundColor: SCHEDULE_ACCENT_DARK,
+    borderRadius: 999,
+    paddingVertical: 12,
+    paddingHorizontal: 36,
+    alignItems: 'center'
+  },
   doneButton: {
     marginTop: 24,
     backgroundColor: TEXT,

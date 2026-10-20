@@ -1513,6 +1513,18 @@ function handleKioskMyAttendance_(params) {
   var otUnit = otUnitForDepartment_(found.row.Department);
   var daysInMonth = new Date(year, month, 0).getDate();
   var monthTotals = sumMonthTotals_(dayLogs, scheduledShiftsForMonth, daysInMonth);
+  // getAllowancesForEmployeeMonth_ (Allowances.gs) reads the whole
+  // Allowances sheet once per call -- unlike handleKioskMyAttendanceBulk_/
+  // handleKioskScheduleSyncAll_ below (which each read it exactly once no
+  // matter how many months/employees they cover), THIS handler pays that
+  // same full-sheet read on every single live fetch: every My Schedule PIN
+  // entry AND every Prev/Next month tap (goToScheduleMonth calls this
+  // directly, one request per tap). Accepted for now -- Allowances only
+  // grows from deliberate admin entries (not auto-generated), so it stays
+  // small for a long time -- but if it ever becomes large enough to slow
+  // down rapid Prev/Next paging, this is the place a per-request cache
+  // (same idea as getCachedEmployees_, Utils.gs) would need to go.
+  var allowanceEntries = getAllowancesForEmployeeMonth_(found.row.EmployeeID, year, month);
   return ok_({
     name: found.row.Name,
     year: year,
@@ -1523,18 +1535,16 @@ function handleKioskMyAttendance_(params) {
     otQuartersTotal: monthTotals.otQuartersTotal,
     lateCount: monthTotals.lateCount,
     overCount: monthTotals.overCount,
-    // getAllowancesForEmployeeMonth_ (Allowances.gs) reads the whole
-    // Allowances sheet once per call -- unlike handleKioskMyAttendanceBulk_/
-    // handleKioskScheduleSyncAll_ below (which each read it exactly once no
-    // matter how many months/employees they cover), THIS handler pays that
-    // same full-sheet read on every single live fetch: every My Schedule PIN
-    // entry AND every Prev/Next month tap (goToScheduleMonth calls this
-    // directly, one request per tap). Accepted for now -- Allowances only
-    // grows from deliberate admin entries (not auto-generated), so it stays
-    // small for a long time -- but if it ever becomes large enough to slow
-    // down rapid Prev/Next paging, this is the place a per-request cache
-    // (same idea as getCachedEmployees_, Utils.gs) would need to go.
-    allowanceTotal: sumRoundedAllowances_(getAllowancesForEmployeeMonth_(found.row.EmployeeID, year, month))
+    // One source list (allowanceEntries, above) feeds both the total and
+    // its itemized breakdown -- same "can never drift apart" reasoning
+    // getDashboardSummaryData_'s specialAllowance/specialAllowanceDetail
+    // pair documents (Report.gs). allowanceDetail backs the tap-to-expand
+    // breakdown on the Kiosk's Allowance box (KioskScreen.tsx) -- each
+    // entry rounded the same way sumRoundedAllowances_ rounds it before
+    // summing, so the itemized lines always add up to exactly the total
+    // above them.
+    allowanceTotal: sumRoundedAllowances_(allowanceEntries),
+    allowanceDetail: roundedAllowanceDetail_(allowanceEntries)
   });
 }
 
@@ -1611,7 +1621,8 @@ function handleKioskMyAttendanceBulk_(params) {
       otQuartersTotal: monthTotals.otQuartersTotal,
       lateCount: monthTotals.lateCount,
       overCount: monthTotals.overCount,
-      allowanceTotal: sumRoundedAllowances_(monthAllowanceEntries)
+      allowanceTotal: sumRoundedAllowances_(monthAllowanceEntries),
+      allowanceDetail: roundedAllowanceDetail_(monthAllowanceEntries)
     });
   }
 
@@ -1718,7 +1729,8 @@ function handleKioskScheduleSyncAll_(params) {
         otQuartersTotal: monthTotals.otQuartersTotal,
         lateCount: monthTotals.lateCount,
         overCount: monthTotals.overCount,
-        allowanceTotal: sumRoundedAllowances_(allowancesByEmployee[employeeId])
+        allowanceTotal: sumRoundedAllowances_(allowancesByEmployee[employeeId]),
+        allowanceDetail: roundedAllowanceDetail_(allowancesByEmployee[employeeId])
       });
     } catch (e) {
       Logger.log('handleKioskScheduleSyncAll_: skipped ' + employeeId + ' (' + name + '): ' + e.message);

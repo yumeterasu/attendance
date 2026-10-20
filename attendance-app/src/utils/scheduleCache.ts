@@ -1,5 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { ScheduleDay, OtUnit, ScheduleSyncEmployee } from '../api/client';
+import { ScheduleDay, OtUnit, ScheduleSyncEmployee, AllowanceDetailEntry } from '../api/client';
 
 // Keyed by PIN + year + month -- past months only (the current month is
 // never read from here, see KioskScreen's goToScheduleMonth: it changes
@@ -34,8 +34,12 @@ const KEY_PREFIX = 'kiosk_schedule_cache_v3';
 // ScheduleDay/kioskMyAttendance's own comments in client.ts for why otUnit
 // specifically can't just be re-derived from the cached days themselves.
 // lateCount/overCount/allowanceTotal (added 2026-10-20) follow the same
-// reasoning, for the summary grid's 3 new stats.
-export type CachedMonth = { name: string; year: number; month: number; days: ScheduleDay[]; otUnit: OtUnit; otMinutesTotal: number; otQuartersTotal: number; lateCount: number; overCount: number; allowanceTotal: number };
+// reasoning, for the summary grid's 3 new stats. allowanceDetail (also
+// 2026-10-20) is intentionally OPTIONAL -- not part of the v2->v3 bump's
+// required-fields reasoning above, since the tap-to-expand breakdown it
+// backs degrades gracefully (just not tappable) rather than needing yet
+// another cache wipe for a nice-to-have.
+export type CachedMonth = { name: string; year: number; month: number; days: ScheduleDay[]; otUnit: OtUnit; otMinutesTotal: number; otQuartersTotal: number; lateCount: number; overCount: number; allowanceTotal: number; allowanceDetail?: AllowanceDetailEntry[] };
 
 function keyFor(pin: string, year: number, month: number): string {
   return `${KEY_PREFIX}_${pin}_${year}_${month}`;
@@ -68,7 +72,7 @@ export async function getCachedScheduleMonth(pin: string, year: number, month: n
 // Bumped v1 -> v2 alongside KEY_PREFIX above, same reason and same day.
 // Bumped v2 -> v3 alongside KEY_PREFIX above too, same reason and same day.
 const CURRENT_KEY_PREFIX = 'kiosk_schedule_current_v3';
-export type CurrentSnapshot = { name: string; year: number; month: number; days: ScheduleDay[]; otUnit: OtUnit; otMinutesTotal: number; otQuartersTotal: number; lateCount: number; overCount: number; allowanceTotal: number; fetchedAt: number };
+export type CurrentSnapshot = { name: string; year: number; month: number; days: ScheduleDay[]; otUnit: OtUnit; otMinutesTotal: number; otQuartersTotal: number; lateCount: number; overCount: number; allowanceTotal: number; allowanceDetail?: AllowanceDetailEntry[]; fetchedAt: number };
 
 function currentKeyFor(pin: string): string {
   return `${CURRENT_KEY_PREFIX}_${pin}`;
@@ -118,7 +122,11 @@ export async function cacheCurrentScheduleSnapshots(
     const fetchedAt = Date.now();
     const pairs: [string, string][] = employees.map((e) => [
       currentKeyFor(e.pin),
-      JSON.stringify({ name: e.name, year, month, days: e.days, otUnit: e.otUnit, otMinutesTotal: e.otMinutesTotal, otQuartersTotal: e.otQuartersTotal, lateCount: e.lateCount, overCount: e.overCount, allowanceTotal: e.allowanceTotal, fetchedAt })
+      // Spread (not a 9-field-and-growing manual list) so a future field
+      // added to ScheduleSyncEmployee is carried over here automatically --
+      // `pin` rides along harmlessly (CurrentSnapshot doesn't declare it,
+      // but nothing reads it back off this cache entry either).
+      JSON.stringify({ ...e, year, month, fetchedAt })
     ]);
     await AsyncStorage.multiSet(pairs);
     return true;

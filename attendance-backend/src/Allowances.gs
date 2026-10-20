@@ -165,6 +165,20 @@ function sumRoundedAllowances_(entries) {
 }
 
 /**
+ * Same {label, amount} entries as sumRoundedAllowances_ above, rounded the
+ * SAME way (round2_ per entry, before anything else), but kept as an
+ * itemized list instead of summed into one number -- backs every itemized
+ * Allowance breakdown in this codebase (the Dashboard's Allowance column
+ * hover tooltip and the Kiosk My Schedule's tap-to-expand modal), so an
+ * itemized line and the pill/box total shown next to it can never disagree
+ * by a cent, for the same reason sumRoundedAllowances_ itself exists as one
+ * shared function instead of several copies of the same reduce/map.
+ */
+function roundedAllowanceDetail_(entries) {
+  return (entries || []).map(function (a) { return { label: a.label, amount: round2_(a.amount) }; });
+}
+
+/**
  * Every Special Allowance entry for ONE employee in ONE calendar Year/Month
  * -- backs the Print Employee Report PDF's itemized lines
  * (writeMonthlyReportData_, Report.gs), which only ever needs a single
