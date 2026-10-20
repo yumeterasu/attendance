@@ -690,17 +690,26 @@
     padding: 8px 6px;
     border: 1px solid var(--calendar-border);
     text-align: center;
+    vertical-align: middle;
     white-space: nowrap;
+    /* Explicit line-height, not just the table's own font-size -- an
+       empty cell and a cell holding text can otherwise end up with
+       subtly different natural content heights depending on the
+       browser/renderer, which is exactly the kind of per-row drift the
+       explicit height right below is meant to rule out entirely; setting
+       both removes any ambiguity for the layout engine to resolve two
+       different ways on different rows. */
+    line-height: 16px;
     /* Explicit height, same reasoning as the day columns' explicit width
-       below -- without it, a row holding an OT/SP pill is taller than a
-       row of otherwise-blank cells (the pill's own padding+border adds
-       height a bare cell doesn't have), so every row's height would
-       otherwise depend on whether that employee has any marks that
-       month. box-sizing:border-box (set globally) means this is the
-       row's total height, padding included -- td/th default to
-       vertical-align:middle, so a pill still centers inside it. */
+       below -- without it, a row's height depends on its tallest cell's
+       natural content, so a row with more going on could render taller
+       than a plain row. box-sizing:border-box (set globally) means this
+       is the row's total height, padding included. Set on tbody tr too,
+       not just th/td -- belt-and-suspenders against print renderers that
+       resolve "auto" row height from the row rather than its cells. */
     height: 32px;
   }
+  #calendarTable tbody tr { height: 32px; }
   /* Every day column (all but the employee-name first column) gets the
      same fixed width, so a cell holding "OT"/"SP" text (or an OT/SP
      colored background -- see td.ot/td.sp below) and a blank cell both
@@ -896,11 +905,14 @@
        still fits on one page width instead of the trailing days being cut
        off. 90 + 28*31 = ~958px, comfortably inside that budget. */
     #calendarTable { font-size: 9px; }
-    /* height overrides the 32px screen value -- the shrunk print padding
-       below needs its own smaller fixed row height, same reasoning as
-       that 32px rule (a row with a mark vs. an all-blank row must still
-       come out the same height). */
-    #calendarTable th, #calendarTable td { padding: 3px 1px; height: 18px; }
+    /* height/line-height override the 32px/16px screen values -- the
+       shrunk print padding below needs its own smaller fixed row height,
+       same reasoning as the screen rule (every row the same height,
+       regardless of content, right down to a printed renderer's own
+       sub-pixel rounding -- see that rule's comment). Set on tbody tr
+       too, matching the screen rule. */
+    #calendarTable th, #calendarTable td { padding: 3px 1px; line-height: 10px; height: 18px; }
+    #calendarTable tbody tr { height: 18px; }
     #calendarTable th:first-child, #calendarTable td:first-child { width: 90px; }
     #calendarTable th:not(:first-child), #calendarTable td:not(:first-child) { width: 28px; }
   }
