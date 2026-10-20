@@ -149,6 +149,25 @@ const WEEKDAY_HEADERS = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
 // Shown instead of the (blank) time-in/time-out for that day.
 type CalendarCell = { day: number; entry?: ScheduleDay } | null;
 
+// Total px budget for the calendar grid's BODY (every week row combined,
+// not counting the S/M/T/W/T/F/S header row above it, which stays a fixed
+// small height outside this) on the 800x1340-portrait Kiosk device
+// (CLAUDE.md) -- every month's grid renders at this SAME total height
+// regardless of whether it has 4, 5, or 6 weeks (see cellHeight below),
+// rather than each week row having a fixed height and the whole grid
+// growing/shrinking with the week count. That's what guarantees a 6-week
+// month (the 1st falls on Saturday and the month has 31 days -- the real
+// case that used to need scrolling to see the last row) fits in the same
+// one-screen layout as every other month, AND keeps the legend/stats
+// grid/Done button below it from shifting position month to month, which
+// a simple "shrink 6-week months only" fix would not have. 780 is an
+// estimate from the surrounding layout's own fixed-height elements (title,
+// month nav, header row, legend, stats grid, Done button, container
+// padding), not something measured on the physical device -- if it turns
+// out to leave too much/little room once actually tested there, this is
+// the one number to retune; nothing else needs to change.
+const CALENDAR_GRID_HEIGHT = 780;
+
 // Lays the month out as a real calendar grid (leading/trailing blanks so day 1
 // lands under its real weekday), instead of a flat list of only the days that
 // have a record -- makes it easy to spot missed days at a glance.
@@ -475,12 +494,12 @@ function HourMinuteSliders({
 // rendered (even as '') rather than only when non-empty -- statsGridTapHint
 // reserves a fixed height either way, so every box comes out the same total
 // height regardless of which one(s) happen to have a hint this time.
-function renderMyScheduleStatBox(label: string, value: string, hint: string = '', onPress?: () => void) {
+function renderMyScheduleStatBox(label: string, value: string, color: string, hint: string = '', onPress?: () => void) {
   const Wrapper = onPress ? Pressable : View;
   return (
     <Wrapper style={styles.statsGridItem} {...(onPress ? { onPress } : {})}>
       <Text style={styles.otSummaryLabel}>{label}</Text>
-      <Text style={styles.otSummaryValue} numberOfLines={1}>{value}</Text>
+      <Text style={[styles.otSummaryValue, { color }]} numberOfLines={1}>{value}</Text>
       <Text style={styles.statsGridTapHint}>{hint}</Text>
     </Wrapper>
   );
@@ -2077,6 +2096,11 @@ export default function KioskScreen({ navigation }: Props) {
 
   if (mode === 'scheduleResult' && scheduleData) {
     const weeks = buildCalendarWeeks(scheduleData.year, scheduleData.month, scheduleData.days);
+    // See CALENDAR_GRID_HEIGHT's own comment -- dividing the same fixed
+    // budget by however many weeks THIS month actually has (4, 5, or 6) is
+    // what keeps the grid's total rendered height constant across every
+    // month instead of growing with the week count.
+    const cellHeight = CALENDAR_GRID_HEIGHT / weeks.length;
     const hasAllowanceDetail = (scheduleData.allowanceDetail?.length ?? 0) > 0;
 
     return (
@@ -2089,6 +2113,28 @@ export default function KioskScreen({ navigation }: Props) {
         onTouchStart={resetScheduleIdleTimer}
         onTouchMove={resetScheduleIdleTimer}
       >
+        {/* Whole screen now scrolls (added 2026-10-20), not just the
+            calendar grid on its own -- CALENDAR_GRID_HEIGHT is an estimate,
+            not something measured on the physical device (see its own
+            comment), so if it ever turns out too generous for a given
+            month/translation/stale-banner combination, this is what keeps
+            the Done button (and everything else below the calendar)
+            reachable by scrolling down to it instead of silently pushed off
+            the fixed-height, non-scrolling container that used to hold
+            everything directly. Same pattern the "Hi, {name}" check-in
+            branch already uses (checkinScroll/checkinScrollContent) for the
+            identical reason. The calendar's own grid is a plain View now,
+            not a nested ScrollView -- two vertical scrollers nested inside
+            each other fight over drag gestures in RN, so this outer one is
+            the screen's only scroller. */}
+        <ScrollView
+          style={styles.scheduleResultScroll}
+          contentContainerStyle={styles.scheduleResultScrollContent}
+          showsVerticalScrollIndicator={false}
+          onScrollBeginDrag={resetScheduleIdleTimer}
+          onScroll={resetScheduleIdleTimer}
+          scrollEventThrottle={32}
+        >
         <Text style={[styles.title, styles.titleDark]}>{scheduleData.name}</Text>
         <View style={styles.monthNavRow}>
           <Pressable
@@ -2141,20 +2187,15 @@ export default function KioskScreen({ navigation }: Props) {
             <Text key={i} style={styles.calendarHeaderCell}>{h}</Text>
           ))}
         </View>
-        <ScrollView
-          style={styles.calendarWrap}
-          contentContainerStyle={{ paddingBottom: 12 }}
-          // Same reasoning as the WheelColumn FlatList's own onScrollBeginDrag/
-          // onScroll above: a scrollable's own touch/pan handling isn't
-          // guaranteed to bubble a touch up to the outer LinearGradient's
-          // onTouchStart/onTouchMove, so someone scrolling through a long
-          // month here for the whole SCHEDULE_IDLE_TIMEOUT_MS window must
-          // still keep resetting the idle timer directly, not just on the
-          // initial touch-down.
-          onScrollBeginDrag={resetScheduleIdleTimer}
-          onScroll={resetScheduleIdleTimer}
-          scrollEventThrottle={32}
-        >
+        {/* Plain View, not its own ScrollView (changed 2026-10-20 alongside
+            the new outer scheduleResultScroll above) -- nesting two
+            vertical scrollers meant this one and the outer screen fought
+            over drag gestures; the outer ScrollView is now the screen's
+            only scroller, and cellHeight (CALENDAR_GRID_HEIGHT /
+            weeks.length) is what keeps this grid's total height constant
+            and small enough that it was never the thing needing its own
+            scroll in the first place. */}
+        <View style={styles.calendarWrap}>
           {weeks.map((week, wi) => (
             <View key={wi} style={styles.calendarWeekRow}>
               {week.map((cell, ci) => {
@@ -2172,6 +2213,7 @@ export default function KioskScreen({ navigation }: Props) {
                   key={ci}
                   style={[
                     styles.calendarCell,
+                    { height: cellHeight },
                     !cell && styles.calendarCellBlank,
                     cell && cell.entry && styles.calendarCellWorked,
                     isHoliday && styles.calendarCellHoliday,
@@ -2234,7 +2276,7 @@ export default function KioskScreen({ navigation }: Props) {
               })}
             </View>
           ))}
-        </ScrollView>
+        </View>
 
         <View style={styles.calendarLegend}>
           <View style={styles.legendItem}>
@@ -2278,18 +2320,21 @@ export default function KioskScreen({ navigation }: Props) {
             keeps the footer's height increase to 1 extra row instead of 3. */}
         <View style={styles.statsGrid}>
           {renderMyScheduleStatBox(
-            'Total OT this month / OT รวมเดือนนี้',
+            'Total OT / OT รวม',
             scheduleData.otUnit === 'minutes'
               ? `${scheduleData.otMinutesTotal} min`
-              : `${scheduleData.otQuartersTotal} quarter${scheduleData.otQuartersTotal === 1 ? '' : 's'}`
+              : `${scheduleData.otQuartersTotal} quarter${scheduleData.otQuartersTotal === 1 ? '' : 's'}`,
+            SAGE
           )}
           {renderMyScheduleStatBox(
-            'Late days this month / วันมาสายเดือนนี้',
-            `${scheduleData.lateCount} day${scheduleData.lateCount === 1 ? '' : 's'}`
+            'Late days / วันมาสาย',
+            `${scheduleData.lateCount} day${scheduleData.lateCount === 1 ? '' : 's'}`,
+            LATE_RED
           )}
           {renderMyScheduleStatBox(
-            'Over Break days this month / วันพักเกินเดือนนี้',
-            `${scheduleData.overCount} day${scheduleData.overCount === 1 ? '' : 's'}`
+            'Over Break days / วันพักเกิน',
+            `${scheduleData.overCount} day${scheduleData.overCount === 1 ? '' : 's'}`,
+            SAGE
           )}
           {/* Pressable only when there's itemized detail to actually show --
               allowanceDetail is optional (older cached data, or a brief
@@ -2298,8 +2343,9 @@ export default function KioskScreen({ navigation }: Props) {
               expand into either way, so this falls back to the same plain,
               non-interactive box the other 3 stats use. */}
           {renderMyScheduleStatBox(
-            'Special Allowance this month / เงินพิเศษเดือนนี้',
+            'Special Allowance / เงินพิเศษ',
             `฿${scheduleData.allowanceTotal.toLocaleString(undefined, { maximumFractionDigits: 2 })}`,
+            SCHEDULE_ACCENT_DARK,
             hasAllowanceDetail ? 'Tap for details / แตะเพื่อดูรายละเอียด' : '',
             hasAllowanceDetail ? () => setShowAllowanceDetail(true) : undefined
           )}
@@ -2372,6 +2418,7 @@ export default function KioskScreen({ navigation }: Props) {
         >
           <Text style={styles.buttonText}>Done / เสร็จสิ้น</Text>
         </Pressable>
+        </ScrollView>
       </LinearGradient>
     );
   }
@@ -2882,6 +2929,11 @@ const ACCENT = '#85C2EE';
 const ACCENT_DARK = '#2C74AD';
 const ACCENT_BG = '#D9EDFB';
 const SAGE = '#6E9C69';
+// Same red calendarDotLate already used for the per-day Late dot -- named
+// here (rather than a second hardcoded '#c0392b') so the My Schedule
+// summary grid's Late number can reuse the exact same color without a
+// duplicate literal that could drift from it later.
+const LATE_RED = '#c0392b';
 // Deliberately more saturated (and darker) than SAGE above (that one's the
 // soft IN-button fill) -- Confirm needs to read as "the one button to
 // press" at a glance, not blend in with the rest of the pastel palette.
@@ -2945,6 +2997,14 @@ const styles = StyleSheet.create({
   // original "centered when short" look for the common case.
   checkinScroll: { flex: 1, width: '100%' },
   checkinScrollContent: { flexGrow: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: 12 },
+  // My Schedule's scheduleResult screen -- same flex:1-is-load-bearing
+  // reasoning as checkinScroll above (without it this never actually
+  // scrolls, just grows past the screen). No flexGrow:1/justifyContent:
+  // 'center' here unlike checkinScrollContent -- this content should start
+  // at the top and flow down (a calendar grid, not a short confirmation
+  // message), never float vertically centered when it happens to be short.
+  scheduleResultScroll: { flex: 1, width: '100%' },
+  scheduleResultScrollContent: { alignItems: 'center', paddingBottom: 12 },
   // Thai sub-line tiers -- English stays primary (the existing styles below,
   // now all a notch larger per the owner's sizing request), Thai rides along
   // underneath as a nested <Text>{'\n'}<Text style={thaiXxx}> so it inherits
@@ -3326,14 +3386,19 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     textAlign: 'center'
   },
-  // Enlarged 2026-10-07 (500/62% -> 720/72%) to make room for each day's OT
-  // amount text alongside the existing time-in/time-out -- on the real
-  // Kiosk device (Xiaomi Redmi Pad SE 8.7, portrait 800x1340) the container's
-  // own 24px padding leaves ~752px of width, so 720 still fits with a small
-  // margin either side; the extra scroll height comes out of the same
-  // screen that already had room to spare above (title/month-nav) and below
-  // (legend/summary/Done button) this grid.
-  calendarWrap: { width: '100%', maxWidth: 720, maxHeight: '72%' },
+  // Enlarged 2026-10-07 (500 -> 720) to make room for each day's OT amount
+  // text alongside the existing time-in/time-out -- on the real Kiosk
+  // device (Xiaomi Redmi Pad SE 8.7, portrait 800x1340) the container's own
+  // 24px padding leaves ~752px of width, so 720 still fits with a small
+  // margin either side. No maxHeight here anymore (dropped 2026-10-20,
+  // alongside CALENDAR_GRID_HEIGHT/cellHeight -- see their own comments):
+  // that 72%-of-container cap was what used to make a 6-week month's last
+  // row need scrolling to reach, since every week rendered at the same
+  // height and 6 of them could exceed it. This is a plain View now, not
+  // its own ScrollView (see the JSX render comment where it's used) -- the
+  // new outer scheduleResultScroll is the screen's one safety net if
+  // CALENDAR_GRID_HEIGHT's estimate ever turns out too generous, not this.
+  calendarWrap: { width: '100%', maxWidth: 720 },
   calendarWeekRow: { flexDirection: 'row', width: '100%', maxWidth: 720 },
   calendarHeaderCell: {
     flex: 1,
@@ -3343,9 +3408,13 @@ const styles = StyleSheet.create({
     fontFamily: FONT_DISPLAY_BOLD,
     paddingBottom: 6
   },
+  // No aspectRatio anymore (dropped 2026-10-20) -- height is set per-cell
+  // at render time instead (CALENDAR_GRID_HEIGHT / weeks.length, see that
+  // constant's own comment), since a fixed ratio can't adapt to how many
+  // weeks THIS month actually has. flex:1 still does the WIDTH sizing here
+  // (splits calendarWeekRow's width evenly across 7 cells), unaffected.
   calendarCell: {
     flex: 1,
-    aspectRatio: 0.75, // taller than before (was 0.92 -- aspectRatio is width/height, so this is the smaller-is-taller direction) -- 0.92 left the Late/OT dots (and the Holiday/Leave note) too cramped to read comfortably; the calendar area already scrolls (see calendarWrap), so a taller grid costs a bit more scrolling, not clipped content
     alignItems: 'center',
     justifyContent: 'flex-start',
     paddingTop: 7,
@@ -3366,10 +3435,10 @@ const styles = StyleSheet.create({
   calendarTime: { color: SCHEDULE_ACCENT_DARK, fontSize: 13, fontFamily: FONT_BODY_BOLD, marginTop: 2 },
   calendarNote: { color: TEXT_MUTED, fontSize: 10, fontFamily: FONT_BODY_BOLD, marginTop: 3, textAlign: 'center', paddingHorizontal: 2 },
   calendarNoteHoliday: { color: '#B8631A' },
-  calendarNoteLeave: { color: '#C0392B' },
+  calendarNoteLeave: { color: LATE_RED },
   calendarDotsRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 3 },
   calendarDot: { width: 7, height: 7, borderRadius: 3.5 },
-  calendarDotLate: { backgroundColor: '#c0392b' },
+  calendarDotLate: { backgroundColor: LATE_RED },
   // Over-break flag (added 2026-10-08) -- a plain dot in BOTH the cell and
   // the legend (unlike OT, which only shows a dot in the legend and real
   // text in the cell) since the employee explicitly asked for just a flag
@@ -3399,23 +3468,31 @@ const styles = StyleSheet.create({
   statsGridItem: { width: '48%', alignItems: 'center', marginTop: 10 },
   // Label stays small/muted, same visual weight as legendText -- the big
   // number below is the whole point of this callout, not the sentence.
-  // textAlign + minHeight added with the 2x2 grid (2026-10-20): squeezed
-  // into a 48%-wide box, the longer bilingual labels ("Special Allowance
-  // this month / เงินพิเศษเดือนนี้") can wrap to 2 lines while a shorter
-  // row-mate ("Total OT this month / OT รวมเดือนนี้") stays on 1 -- minHeight
-  // reserves room for 2 lines unconditionally so otSummaryValue still lines
-  // up at the same vertical position across every box regardless of which
-  // labels happen to wrap that day's data, and textAlign keeps a wrapped
-  // 2nd line centered instead of left-ragged under alignItems:'center'
-  // (which only centers the text block as a whole, not each line inside it).
-  otSummaryLabel: { color: TEXT_MUTED, fontSize: 12, fontFamily: FONT_BODY_SEMIBOLD, textAlign: 'center', minHeight: 32 },
+  // textAlign + minHeight added with the 2x2 grid (2026-10-20). minHeight
+  // trimmed 32->16 the same day the "this month"/"เดือนนี้" wording was
+  // dropped from all 4 labels (real feedback -- redundant on a screen
+  // that's already showing one specific month, and dropping it also
+  // shortened every label enough that none of them realistically wrap to
+  // 2 lines in a 48%-wide box anymore) -- 16 still reserves a touch more
+  // than one line's worth as a safety margin, not a bare minimum, so a
+  // label that DOES wrap for some reason (a long device font, a future
+  // longer translation) still lines up close to its row-mate instead of
+  // the old bug this guarded against reappearing. textAlign keeps a
+  // wrapped 2nd line centered instead of left-ragged under
+  // alignItems:'center' (which only centers the text block as a whole,
+  // not each line inside it).
+  otSummaryLabel: { color: TEXT_MUTED, fontSize: 12, fontFamily: FONT_BODY_SEMIBOLD, textAlign: 'center', minHeight: 16 },
   // Enlarged 2026-10-08 (was one plain 14px sentence, real feedback -- it
   // read as ordinary body text, not a highlight) -- big, bold, and in the
   // screen's own accent color so this actually draws the eye the way a
-  // month-end total should. Shared as-is by all 4 statsGridItem boxes, not
-  // just OT -- "same size as OT" was the explicit ask when Late/Over
-  // Break/Allowance were added alongside it (2026-10-20).
-  otSummaryValue: { color: SCHEDULE_ACCENT_DARK, fontSize: 30, fontFamily: FONT_DISPLAY_EXTRABOLD, marginTop: 2 },
+  // month-end total should. Shared as-is by all 4 statsGridItem boxes
+  // (each call site passes its own `color` now -- see
+  // renderMyScheduleStatBox -- OT/Over Break green, Late red, Allowance
+  // purple, 2026-10-20) -- "same size as OT" was the explicit ask when
+  // Late/Over Break/Allowance were added alongside it. marginTop trimmed
+  // 2->0 the same day as minHeight above, same "sit closer to its label"
+  // ask.
+  otSummaryValue: { fontSize: 30, fontFamily: FONT_DISPLAY_EXTRABOLD, marginTop: 0 },
   // Rendered on all 4 stat boxes (renderMyScheduleStatBox), but only ever
   // has real text on the Allowance box once it has itemized detail to tap
   // into -- small/muted like otSummaryLabel so it doesn't compete with the
