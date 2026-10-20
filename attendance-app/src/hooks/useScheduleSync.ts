@@ -91,7 +91,13 @@ export function useScheduleSync(isConnected: boolean) {
       // either way (both writers agree on the same shape, and the next
       // live fetch or the next day's sync corrects it), just a longer
       // staleness window than a quick glance at this comment used to imply.
-      const wrote = await cacheCurrentScheduleSnapshots(res.year, res.month, res.employees);
+      // Same deploy-skew coalescing as KioskScreen's safeResult (see its
+      // comment) -- this batch can run unattended against a backend that
+      // hasn't been redeployed yet, and a bad write here would poison every
+      // employee's offline-fallback snapshot in one shot, not just one
+      // person's.
+      const safeEmployees = res.employees.map((e) => ({ ...e, lateCount: e.lateCount ?? 0, overCount: e.overCount ?? 0, allowanceTotal: e.allowanceTotal ?? 0 }));
+      const wrote = await cacheCurrentScheduleSnapshots(res.year, res.month, safeEmployees);
       // Marked done only if every employee's snapshot actually landed --
       // cacheCurrentScheduleSnapshots reports false (rather than silently
       // swallowing, unlike the single-employee fallback cache) on a storage

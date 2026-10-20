@@ -1520,7 +1520,21 @@ function handleKioskMyAttendance_(params) {
     days: days,
     otUnit: otUnit,
     otMinutesTotal: monthTotals.otMinutesTotal,
-    otQuartersTotal: monthTotals.otQuartersTotal
+    otQuartersTotal: monthTotals.otQuartersTotal,
+    lateCount: monthTotals.lateCount,
+    overCount: monthTotals.overCount,
+    // getAllowancesForEmployeeMonth_ (Allowances.gs) reads the whole
+    // Allowances sheet once per call -- unlike handleKioskMyAttendanceBulk_/
+    // handleKioskScheduleSyncAll_ below (which each read it exactly once no
+    // matter how many months/employees they cover), THIS handler pays that
+    // same full-sheet read on every single live fetch: every My Schedule PIN
+    // entry AND every Prev/Next month tap (goToScheduleMonth calls this
+    // directly, one request per tap). Accepted for now -- Allowances only
+    // grows from deliberate admin entries (not auto-generated), so it stays
+    // small for a long time -- but if it ever becomes large enough to slow
+    // down rapid Prev/Next paging, this is the place a per-request cache
+    // (same idea as getCachedEmployees_, Utils.gs) would need to go.
+    allowanceTotal: sumRoundedAllowances_(getAllowancesForEmployeeMonth_(found.row.EmployeeID, year, month))
   });
 }
 
@@ -1558,6 +1572,22 @@ function handleKioskMyAttendanceBulk_(params) {
   // comment for why this travels alongside every month's totals instead of
   // being inferred from them.
   var otUnit = otUnitForDepartment_(found.row.Department);
+  // Read once, filtered down to this one employee immediately -- unlike
+  // getScheduledShiftsForMonth_ (a separate "Schedule YYYY-MM" sheet per
+  // month, so reading it per-month-in-the-loop is already the minimum
+  // possible work), Allowances is ONE sheet covering every employee/month,
+  // so calling getAllowancesForEmployeeMonth_/getAllowancesForMonth_ inside
+  // the loop below would re-read that same whole sheet
+  // MY_ATTENDANCE_BULK_MONTHS times over for nothing, and filtering by year/
+  // month alone (without this employeeId narrowing too) would mean every
+  // one of those MY_ATTENDANCE_BULK_MONTHS passes re-scans every OTHER
+  // employee's rows as well. String(employeeId) matches readAllowanceRows_'s
+  // own String(row[idCol]) (Allowances.gs) and handleKioskScheduleSyncAll_'s
+  // identical cast below -- employeeId here is the raw, uncast Employees-
+  // sheet cell (unlike those two), so comparing it with === against an
+  // already-string value without this cast would silently never match if
+  // Sheets ever hands this cell back as a Number instead of a String.
+  var employeeAllowanceRows = readAllowanceRows_().filter(function (a) { return a.employeeId === String(employeeId); });
 
   var months = [];
   for (var i = 0; i < MY_ATTENDANCE_BULK_MONTHS; i++) {
@@ -1569,13 +1599,19 @@ function handleKioskMyAttendanceBulk_(params) {
     var scheduledShiftsForMonth = (getScheduledShiftsForMonth_(year, month))[employeeId] || {};
     var daysInMonth = new Date(year, month, 0).getDate();
     var monthTotals = sumMonthTotals_(dayLogs, scheduledShiftsForMonth, daysInMonth);
+    var monthAllowanceEntries = employeeAllowanceRows.filter(function (a) {
+      return a.year === year && a.month === month;
+    });
     months.push({
       year: year,
       month: month,
       days: buildMyAttendanceDays_(year, month, dayLogs, scheduledShiftsForMonth, tz),
       otUnit: otUnit,
       otMinutesTotal: monthTotals.otMinutesTotal,
-      otQuartersTotal: monthTotals.otQuartersTotal
+      otQuartersTotal: monthTotals.otQuartersTotal,
+      lateCount: monthTotals.lateCount,
+      overCount: monthTotals.overCount,
+      allowanceTotal: sumRoundedAllowances_(monthAllowanceEntries)
     });
   }
 
@@ -1615,6 +1651,11 @@ function handleKioskScheduleSyncAll_(params) {
 
   var logsByEmployee = getRecentMonthLogsByEmployee_(year, month);
   var scheduledShiftsByEmployee = getScheduledShiftsForMonth_(year, month);
+  // One read for the whole batch, same reasoning as logsByEmployee/
+  // scheduledShiftsByEmployee above -- getAllowancesForMonth_ already
+  // returns a per-employeeId map, so this is a direct fit for the
+  // per-employee loop below with no further reshaping needed.
+  var allowancesByEmployee = getAllowancesForMonth_(year, month);
 
   // getCachedEmployees_ (Utils.gs) rather than a fresh sheet.getDataRange()
   // read or getAllEmployees_() -- same raw row order findEmployeeByKioskPin_
@@ -1674,7 +1715,10 @@ function handleKioskScheduleSyncAll_(params) {
         days: buildMyAttendanceDays_(year, month, dayLogs, scheduledShiftsForMonth, tz),
         otUnit: otUnit,
         otMinutesTotal: monthTotals.otMinutesTotal,
-        otQuartersTotal: monthTotals.otQuartersTotal
+        otQuartersTotal: monthTotals.otQuartersTotal,
+        lateCount: monthTotals.lateCount,
+        overCount: monthTotals.overCount,
+        allowanceTotal: sumRoundedAllowances_(allowancesByEmployee[employeeId])
       });
     } catch (e) {
       Logger.log('handleKioskScheduleSyncAll_: skipped ' + employeeId + ' (' + name + '): ' + e.message);

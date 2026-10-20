@@ -1,5 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { ScheduleDay, OtUnit } from '../api/client';
+import { ScheduleDay, OtUnit, ScheduleSyncEmployee } from '../api/client';
 
 // Keyed by PIN + year + month -- past months only (the current month is
 // never read from here, see KioskScreen's goToScheduleMonth: it changes
@@ -21,14 +21,21 @@ import { ScheduleDay, OtUnit } from '../api/client';
 // display cache that self-heals from the next live fetch/background sync,
 // so simply starting clean under a new key is simpler and safer than
 // writing a migration for data that's cheap to just re-fetch.
-const KEY_PREFIX = 'kiosk_schedule_cache_v2';
+// Bumped v2 -> v3, 2026-10-20: lateCount/overCount/allowanceTotal (added
+// below) are now REQUIRED fields too -- identical reasoning, a v2 tablet
+// cache has none of them, so this starts clean again rather than risking
+// "undefined day(s)"/"฿undefined" in the My Schedule summary grid's new
+// Late/Over Break/Allowance cells when reading an old entry back offline.
+const KEY_PREFIX = 'kiosk_schedule_cache_v3';
 
 // otUnit/otMinutesTotal/otQuartersTotal cached alongside days (added
 // 2026-10-07) so the month-total summary shown below the calendar is
 // correct from a cached read too, not just a live one -- see
 // ScheduleDay/kioskMyAttendance's own comments in client.ts for why otUnit
 // specifically can't just be re-derived from the cached days themselves.
-export type CachedMonth = { name: string; year: number; month: number; days: ScheduleDay[]; otUnit: OtUnit; otMinutesTotal: number; otQuartersTotal: number };
+// lateCount/overCount/allowanceTotal (added 2026-10-20) follow the same
+// reasoning, for the summary grid's 3 new stats.
+export type CachedMonth = { name: string; year: number; month: number; days: ScheduleDay[]; otUnit: OtUnit; otMinutesTotal: number; otQuartersTotal: number; lateCount: number; overCount: number; allowanceTotal: number };
 
 function keyFor(pin: string, year: number, month: number): string {
   return `${KEY_PREFIX}_${pin}_${year}_${month}`;
@@ -59,8 +66,9 @@ export async function getCachedScheduleMonth(pin: string, year: number, month: n
 // passes, so it's only ever shown labeled as such (see KioskScreen's stale
 // banner) after a live fetch has failed -- never silently in place of one.
 // Bumped v1 -> v2 alongside KEY_PREFIX above, same reason and same day.
-const CURRENT_KEY_PREFIX = 'kiosk_schedule_current_v2';
-export type CurrentSnapshot = { name: string; year: number; month: number; days: ScheduleDay[]; otUnit: OtUnit; otMinutesTotal: number; otQuartersTotal: number; fetchedAt: number };
+// Bumped v2 -> v3 alongside KEY_PREFIX above too, same reason and same day.
+const CURRENT_KEY_PREFIX = 'kiosk_schedule_current_v3';
+export type CurrentSnapshot = { name: string; year: number; month: number; days: ScheduleDay[]; otUnit: OtUnit; otMinutesTotal: number; otQuartersTotal: number; lateCount: number; overCount: number; allowanceTotal: number; fetchedAt: number };
 
 function currentKeyFor(pin: string): string {
   return `${CURRENT_KEY_PREFIX}_${pin}`;
@@ -103,14 +111,14 @@ export async function getCurrentScheduleSnapshot(pin: string): Promise<CurrentSn
 export async function cacheCurrentScheduleSnapshots(
   year: number,
   month: number,
-  employees: { pin: string; name: string; days: ScheduleDay[]; otUnit: OtUnit; otMinutesTotal: number; otQuartersTotal: number }[]
+  employees: ScheduleSyncEmployee[]
 ): Promise<boolean> {
   if (employees.length === 0) return true;
   try {
     const fetchedAt = Date.now();
     const pairs: [string, string][] = employees.map((e) => [
       currentKeyFor(e.pin),
-      JSON.stringify({ name: e.name, year, month, days: e.days, otUnit: e.otUnit, otMinutesTotal: e.otMinutesTotal, otQuartersTotal: e.otQuartersTotal, fetchedAt })
+      JSON.stringify({ name: e.name, year, month, days: e.days, otUnit: e.otUnit, otMinutesTotal: e.otMinutesTotal, otQuartersTotal: e.otQuartersTotal, lateCount: e.lateCount, overCount: e.overCount, allowanceTotal: e.allowanceTotal, fetchedAt })
     ]);
     await AsyncStorage.multiSet(pairs);
     return true;

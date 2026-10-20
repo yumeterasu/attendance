@@ -35,7 +35,7 @@ const PIN_LENGTH = 4;
 const FEEDBACK_DURATION_MS = 4000; // was 2500 -- too short to read (e.g. break minutes remaining) before it auto-dismissed
 const ERROR_FLASH_DURATION_MS = 1200;
 const CONFIRM_TIMEOUT_MS = 20000; // auto-cancel back to the PIN screen if nobody confirms -- shared kiosk, don't leave someone else's name up
-const SCHEDULE_IDLE_TIMEOUT_MS = 30000; // auto-return to IN/OUT from the Schedule screens if nobody touches the screen -- longer than CONFIRM_TIMEOUT_MS above since reading a whole month's calendar legitimately takes longer than confirming a single IN/OUT tap
+const SCHEDULE_IDLE_TIMEOUT_MS = 60000; // auto-return to IN/OUT from the Schedule screens if nobody touches the screen -- longer than CONFIRM_TIMEOUT_MS above since reading a whole month's calendar legitimately takes longer than confirming a single IN/OUT tap (bumped 30s -> 60s, 2026-10-20, more to read now that the summary grid below the calendar covers Late/Over Break/Allowance too, not just OT)
 const AUTO_IN_START_HOUR = 5; // morning arrival window -- pre-select IN from this hour...
 const AUTO_IN_END_HOUR = 9; // ...up to (not including) this hour
 
@@ -1703,7 +1703,20 @@ export default function KioskScreen({ navigation }: Props) {
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       if (scheduleRequestIdRef.current !== requestId) return; // re-check -- resetSchedule could have fired during the Haptics await just above
       setScheduleAuthPin(value);
-      setScheduleData({ name: res.name, year: res.year, month: res.month, days: res.days, otUnit: res.otUnit, otMinutesTotal: res.otMinutesTotal, otQuartersTotal: res.otQuartersTotal });
+      // lateCount/overCount/allowanceTotal defensively coalesced to 0 here --
+      // same reasoning as kioskLookupPin's totalMinutesUsedToday?: number
+      // above: the app/backend deploy independently (CLAUDE.md), so a
+      // freshly-released APK can briefly talk to a backend that hasn't been
+      // redeployed with these fields yet, and these 3 are NOT optional in
+      // CachedMonth (unlike that field) -- without this, a `res` missing
+      // them during that window would crash later on
+      // scheduleData.allowanceTotal.toLocaleString() rather than just
+      // rendering "0 day(s)"/"฿0" until the backend catches up. Spreading
+      // `res` (not re-listing every field by hand) is what setScheduleData(cached)
+      // below already does for the exact same reason -- one place that could
+      // silently miss a field instead of several copies that could drift.
+      const safeResult = { ...res, lateCount: res.lateCount ?? 0, overCount: res.overCount ?? 0, allowanceTotal: res.allowanceTotal ?? 0 };
+      setScheduleData(safeResult);
       setScheduleIsStale(false);
       setScheduleStaleAt(null);
       // A fresh live fetch landing here (first entry, or the stale banner's
@@ -1722,7 +1735,7 @@ export default function KioskScreen({ navigation }: Props) {
       syncScheduleHistory(value);
       // Refreshes the fallback used below the next time a live fetch fails
       // for this PIN. Fire-and-forget, same reasoning as syncScheduleHistory.
-      cacheCurrentScheduleSnapshot(value, { name: res.name, year: res.year, month: res.month, days: res.days, otUnit: res.otUnit, otMinutesTotal: res.otMinutesTotal, otQuartersTotal: res.otQuartersTotal });
+      cacheCurrentScheduleSnapshot(value, safeResult);
     } else if (res.error === 'timeout' || res.error === 'network_error') {
       // Connection dropped, or the backend was just slow/cold this moment --
       // rather than leaving the employee stuck on a bare error screen, fall
@@ -1752,7 +1765,7 @@ export default function KioskScreen({ navigation }: Props) {
         await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
         if (scheduleRequestIdRef.current !== requestId) return; // re-check -- resetSchedule could have fired during the Haptics await just above
         setScheduleAuthPin(value);
-        setScheduleData({ name: cached.name, year: cached.year, month: cached.month, days: cached.days, otUnit: cached.otUnit, otMinutesTotal: cached.otMinutesTotal, otQuartersTotal: cached.otQuartersTotal });
+        setScheduleData(cached);
         setScheduleIsStale(true);
         setScheduleStaleAt(cached.fetchedAt);
         setMode('scheduleResult');
@@ -1790,9 +1803,13 @@ export default function KioskScreen({ navigation }: Props) {
     const res = await kioskMyAttendanceBulk(pin);
     if (!res.success) return;
     const now = new Date();
+    // Same deploy-skew coalescing as submitSchedulePin/goToScheduleMonth's
+    // safeResult -- `name` still has to be injected from the outer `res`
+    // (each month entry in the bulk response doesn't carry its own name),
+    // so this can't just spread `res` the way those two do.
     const writes = res.months
       .filter((m) => !(m.year === now.getFullYear() && m.month === now.getMonth() + 1))
-      .map((m) => cacheScheduleMonth(pin, { name: res.name, year: m.year, month: m.month, days: m.days, otUnit: m.otUnit, otMinutesTotal: m.otMinutesTotal, otQuartersTotal: m.otQuartersTotal }));
+      .map((m) => cacheScheduleMonth(pin, { ...m, name: res.name, lateCount: m.lateCount ?? 0, overCount: m.overCount ?? 0, allowanceTotal: m.allowanceTotal ?? 0 }));
     await Promise.all(writes);
   };
 
@@ -1873,14 +1890,18 @@ export default function KioskScreen({ navigation }: Props) {
     setIsChangingScheduleMonth(false);
 
     if (res.success) {
-      setScheduleData({ name: res.name, year: res.year, month: res.month, days: res.days, otUnit: res.otUnit, otMinutesTotal: res.otMinutesTotal, otQuartersTotal: res.otQuartersTotal });
+      // See submitSchedulePin's identical safeResult comment -- same
+      // deploy-skew guard, same reason to spread `res` once here instead of
+      // re-listing every field twice below.
+      const safeResult = { ...res, lateCount: res.lateCount ?? 0, overCount: res.overCount ?? 0, allowanceTotal: res.allowanceTotal ?? 0 };
+      setScheduleData(safeResult);
       // Any successful live fetch here -- past month or current -- proves
       // the server is reachable right now, so whatever stale-fallback
       // banner might still be up from an earlier failed load no longer applies.
       setScheduleIsStale(false);
       setScheduleStaleAt(null);
       if (isCurrentMonth) {
-        cacheCurrentScheduleSnapshot(scheduleAuthPin, { name: res.name, year: res.year, month: res.month, days: res.days, otUnit: res.otUnit, otMinutesTotal: res.otMinutesTotal, otQuartersTotal: res.otQuartersTotal });
+        cacheCurrentScheduleSnapshot(scheduleAuthPin, safeResult);
       }
     } else {
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
@@ -2201,21 +2222,50 @@ export default function KioskScreen({ navigation }: Props) {
           </View>
         </View>
 
-        {/* Month total, always labeled with the same otUnit as every day's
-            own amount above -- shown even when both totals are 0 (see
-            ScheduleDay/kioskMyAttendance's own comments in client.ts for why
-            this can't just be inferred from whichever total is nonzero).
-            Split into a small label + a big, prominent number (2026-10-08,
-            real feedback -- the single-line 14px version read as plain body
-            text, not a highlight) rather than just enlarging the whole
-            sentence, which would look oversized for a label this long. */}
-        <View style={styles.otSummaryRow}>
-          <Text style={styles.otSummaryLabel}>Total OT this month / OT รวมเดือนนี้</Text>
-          <Text style={styles.otSummaryValue}>
-            {scheduleData.otUnit === 'minutes'
-              ? `${scheduleData.otMinutesTotal} min`
-              : `${scheduleData.otQuartersTotal} quarter${scheduleData.otQuartersTotal === 1 ? '' : 's'}`}
-          </Text>
+        {/* Month totals, always labeled the same way regardless of value --
+            shown even when 0 (see ScheduleDay/kioskMyAttendance's own
+            comments in client.ts for why OT specifically can't just be
+            inferred from whichever total is nonzero; Late/Over
+            Break/Allowance are plain counts with no such ambiguity, but
+            kept unconditionally visible too, for the same "always the same
+            4 boxes" consistency). Split into a small label + a big,
+            prominent number per box (2026-10-08, real feedback on the
+            original single OT line -- a plain-sized sentence read as body
+            text, not a highlight) rather than enlarging a whole sentence,
+            which would look oversized for a label this long. 2x2 grid
+            (2026-10-20, added Late/Over Break/Allowance alongside OT) --
+            this area sits BELOW the calendar's own ScrollView, a fixed
+            footer that's never itself scrollable, so 4 full-width stacked
+            rows would push doneButton a lot further down / leave a lot
+            less of the calendar visible without scrolling; a 2x2 grid
+            keeps the footer's height increase to 1 extra row instead of 3. */}
+        <View style={styles.statsGrid}>
+          <View style={styles.statsGridItem}>
+            <Text style={styles.otSummaryLabel}>Total OT this month / OT รวมเดือนนี้</Text>
+            <Text style={styles.otSummaryValue} numberOfLines={1}>
+              {scheduleData.otUnit === 'minutes'
+                ? `${scheduleData.otMinutesTotal} min`
+                : `${scheduleData.otQuartersTotal} quarter${scheduleData.otQuartersTotal === 1 ? '' : 's'}`}
+            </Text>
+          </View>
+          <View style={styles.statsGridItem}>
+            <Text style={styles.otSummaryLabel}>Late days this month / วันมาสายเดือนนี้</Text>
+            <Text style={styles.otSummaryValue} numberOfLines={1}>
+              {scheduleData.lateCount} day{scheduleData.lateCount === 1 ? '' : 's'}
+            </Text>
+          </View>
+          <View style={styles.statsGridItem}>
+            <Text style={styles.otSummaryLabel}>Over Break days this month / วันพักเกินเดือนนี้</Text>
+            <Text style={styles.otSummaryValue} numberOfLines={1}>
+              {scheduleData.overCount} day{scheduleData.overCount === 1 ? '' : 's'}
+            </Text>
+          </View>
+          <View style={styles.statsGridItem}>
+            <Text style={styles.otSummaryLabel}>Special Allowance this month / เงินพิเศษเดือนนี้</Text>
+            <Text style={styles.otSummaryValue} numberOfLines={1}>
+              ฿{scheduleData.allowanceTotal.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+            </Text>
+          </View>
         </View>
 
         <Pressable
@@ -3245,14 +3295,28 @@ const styles = StyleSheet.create({
   calendarLegend: { flexDirection: 'row', gap: 20, marginTop: 12 },
   legendItem: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   legendText: { color: TEXT_MUTED, fontSize: 12, fontFamily: FONT_BODY_SEMIBOLD },
-  otSummaryRow: { marginTop: 10, alignItems: 'center' },
+  // 2x2 grid of the 4 month-stat boxes (OT/Late/Over Break/Allowance) --
+  // see the render comment above for why a grid rather than 4 stacked rows.
+  statsGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', marginTop: 10 },
+  statsGridItem: { width: '48%', alignItems: 'center', marginTop: 10 },
   // Label stays small/muted, same visual weight as legendText -- the big
   // number below is the whole point of this callout, not the sentence.
-  otSummaryLabel: { color: TEXT_MUTED, fontSize: 12, fontFamily: FONT_BODY_SEMIBOLD },
+  // textAlign + minHeight added with the 2x2 grid (2026-10-20): squeezed
+  // into a 48%-wide box, the longer bilingual labels ("Special Allowance
+  // this month / เงินพิเศษเดือนนี้") can wrap to 2 lines while a shorter
+  // row-mate ("Total OT this month / OT รวมเดือนนี้") stays on 1 -- minHeight
+  // reserves room for 2 lines unconditionally so otSummaryValue still lines
+  // up at the same vertical position across every box regardless of which
+  // labels happen to wrap that day's data, and textAlign keeps a wrapped
+  // 2nd line centered instead of left-ragged under alignItems:'center'
+  // (which only centers the text block as a whole, not each line inside it).
+  otSummaryLabel: { color: TEXT_MUTED, fontSize: 12, fontFamily: FONT_BODY_SEMIBOLD, textAlign: 'center', minHeight: 32 },
   // Enlarged 2026-10-08 (was one plain 14px sentence, real feedback -- it
   // read as ordinary body text, not a highlight) -- big, bold, and in the
   // screen's own accent color so this actually draws the eye the way a
-  // month-end OT total should.
+  // month-end total should. Shared as-is by all 4 statsGridItem boxes, not
+  // just OT -- "same size as OT" was the explicit ask when Late/Over
+  // Break/Allowance were added alongside it (2026-10-20).
   otSummaryValue: { color: SCHEDULE_ACCENT_DARK, fontSize: 30, fontFamily: FONT_DISPLAY_EXTRABOLD, marginTop: 2 },
   doneButton: {
     marginTop: 24,

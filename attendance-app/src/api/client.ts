@@ -194,6 +194,9 @@ export function kioskMyAttendance(pin: string, year?: number, month?: number) {
     otUnit: OtUnit;
     otMinutesTotal: number;
     otQuartersTotal: number;
+    lateCount: number;
+    overCount: number;
+    allowanceTotal: number;
   }>('kioskMyAttendance', { pin, year, month }, isCurrentMonth ? SCHEDULE_TIMEOUT_MS : SCHEDULE_MONTH_NAV_TIMEOUT_MS);
 }
 
@@ -208,7 +211,7 @@ const SCHEDULE_BULK_SYNC_TIMEOUT_MS = 45000;
 export function kioskMyAttendanceBulk(pin: string) {
   return postAction<{
     name: string;
-    months: { year: number; month: number; days: ScheduleDay[]; otUnit: OtUnit; otMinutesTotal: number; otQuartersTotal: number }[];
+    months: { year: number; month: number; days: ScheduleDay[]; otUnit: OtUnit; otMinutesTotal: number; otQuartersTotal: number; lateCount: number; overCount: number; allowanceTotal: number }[];
   }>('kioskMyAttendanceBulk', { pin }, SCHEDULE_BULK_SYNC_TIMEOUT_MS);
 }
 
@@ -249,6 +252,13 @@ export function kioskDirectory() {
   }>('kioskDirectory', {});
 }
 
+// Exported (not just inlined into kioskScheduleSyncAll's return type below)
+// so scheduleCache.ts's cacheCurrentScheduleSnapshots can import this same
+// shape for its own `employees` parameter, rather than a second inline
+// copy of these 9 fields that could silently drift out of sync with this
+// one the next time a field is added here and forgotten there.
+export type ScheduleSyncEmployee = { pin: string; name: string; days: ScheduleDay[]; otUnit: OtUnit; otMinutesTotal: number; otQuartersTotal: number; lateCount: number; overCount: number; allowanceTotal: number };
+
 // Device-wide daily background sync (see useScheduleSync) -- every active
 // employee's current month in one call, no PIN. Same budget as
 // SCHEDULE_BULK_SYNC_TIMEOUT_MS above and the same reasoning: a background,
@@ -259,7 +269,7 @@ export function kioskScheduleSyncAll() {
   return postAction<{
     year: number;
     month: number;
-    employees: { pin: string; name: string; days: ScheduleDay[]; otUnit: OtUnit; otMinutesTotal: number; otQuartersTotal: number }[];
+    employees: ScheduleSyncEmployee[];
   }>('kioskScheduleSyncAll', {}, SCHEDULE_BULK_SYNC_TIMEOUT_MS);
 }
 
