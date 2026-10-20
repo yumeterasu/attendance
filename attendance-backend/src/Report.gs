@@ -363,13 +363,14 @@ function writeMonthlyReportData_(sheet, startRow, year, month, precomputedLogsBy
       sheet.getRange(block.startRow, 1, 1, 2).merge().setWrap(true);
     });
   }
-  // autoResizeColumnsWithPadding_ (not plain autoResizeColumns) -- same
-  // helper the Summary sheet's writers already use, so every column gets a
-  // bit of breathing room beyond its tightest-fit content width instead of
-  // being sized to the exact pixel, which otherwise tends to look cramped
-  // once the PDF export's fitw=true scales the whole table up to fill the
-  // page width.
-  autoResizeColumnsWithPadding_(sheet, COLS);
+  // Plain autoResizeColumns, not autoResizeColumnsWithPadding_ -- the extra
+  // +16px/column padding that helper adds was tried here to give the table
+  // "more room to breathe" per earlier feedback, but on the live Report
+  // sheet it just made every column visibly looser/less compact than
+  // before, which a later look at the real result asked to undo. The
+  // column-width caps below (Date/Shift) still apply on top of this, so
+  // those two specific columns stay safely bounded either way.
+  sheet.autoResizeColumns(1, COLS);
   // Cap Date's (column 1) width directly rather than continuing to guess at
   // what's inflating autoResizeColumns' measurement there -- the
   // Name/Department merge above did NOT fix this in practice (a real
