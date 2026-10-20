@@ -370,16 +370,6 @@ function writeMonthlyReportData_(sheet, startRow, year, month, precomputedLogsBy
   // once the PDF export's fitw=true scales the whole table up to fill the
   // page width.
   autoResizeColumnsWithPadding_(sheet, COLS);
-  // Date/Day get an explicit, deterministic width instead of trusting
-  // auto-size for these two specifically -- auto-size already got fooled
-  // twice this session (by the title row, then by this row's own
-  // Name/Department text) into sizing column A off something other than an
-  // actual date, so pin it directly: "dd/MM/yyyy" is always exactly 10
-  // characters, and the longest weekday name ("Wednesday") is 9. These are
-  // deliberately tight, not generous -- if a real exported PDF ever shows
-  // either clipped, raise the matching number a bit.
-  sheet.setColumnWidth(1, 95); // Date
-  sheet.setColumnWidth(2, 90); // Day
   return rows.length; // lets writeYearlyReportData_ know where the next month's block should start
 }
 
