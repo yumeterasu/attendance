@@ -468,6 +468,23 @@ function generateAllEmployeesReportPdf_(year, month, precomputedLogsByEmployee) 
     var employees = getSortedReportEmployees_(logsByEmployee, undefined);
     var daysInMonth = new Date(year, month, 0).getDate();
 
+    // A freshly inserted sheet only gets Sheets' standard default size
+    // (1000 rows) -- with every employee padded out to a whole
+    // ALL_EMPLOYEES_REPORT_PAGE_ROWS-row page, a roster past ~1000/70 ≈ 14
+    // active employees already needs more than that, and Apps Script does
+    // NOT auto-grow a sheet just because a Range is requested past its
+    // current size (unlike typing beyond the edge in the UI) -- it throws
+    // "coordinates of the range are outside the dimensions of the sheet"
+    // instead. This is a worst-case upper bound (every employee consuming a
+    // full page), so it's always enough regardless of how many actually
+    // need a second page, and it's based on the real current roster count
+    // rather than a guess, so it keeps working automatically as the roster
+    // grows further.
+    var neededRows = employees.length * ALL_EMPLOYEES_REPORT_PAGE_ROWS;
+    if (sheet.getMaxRows() < neededRows) {
+      sheet.insertRowsAfter(sheet.getMaxRows(), neededRows - sheet.getMaxRows());
+    }
+
     var row = 1;
     employees.forEach(function (emp) {
       var blockStartRow = row;
