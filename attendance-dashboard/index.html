@@ -691,6 +691,15 @@
     border: 1px solid var(--calendar-border);
     text-align: center;
     white-space: nowrap;
+    /* Explicit height, same reasoning as the day columns' explicit width
+       below -- without it, a row holding an OT/SP pill is taller than a
+       row of otherwise-blank cells (the pill's own padding+border adds
+       height a bare cell doesn't have), so every row's height would
+       otherwise depend on whether that employee has any marks that
+       month. box-sizing:border-box (set globally) means this is the
+       row's total height, padding included -- td/th default to
+       vertical-align:middle, so a pill still centers inside it. */
+    height: 32px;
   }
   /* Every day column (all but the employee-name first column) gets the
      same fixed width, so a cell holding an "OT"/"SP" pill and a blank
@@ -880,7 +889,11 @@
        still fits on one page width instead of the trailing days being cut
        off. 90 + 24*31 = ~834px, comfortably inside that budget. */
     #calendarTable { font-size: 9px; }
-    #calendarTable th, #calendarTable td { padding: 3px 1px; }
+    /* height overrides the 32px screen value -- the shrunk print padding/
+       font/pill sizing below needs its own smaller fixed row height, same
+       reasoning as that 32px rule (a row with a pill vs. an all-blank row
+       must still come out the same height). */
+    #calendarTable th, #calendarTable td { padding: 3px 1px; height: 18px; }
     #calendarTable th:first-child, #calendarTable td:first-child { width: 90px; }
     #calendarTable th:not(:first-child), #calendarTable td:not(:first-child) { width: 24px; }
     .cal-pill { font-size: 8px; padding: 1px 3px; }
