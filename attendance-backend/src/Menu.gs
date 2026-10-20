@@ -11,7 +11,6 @@ function onOpen() {
     .createMenu('Attendance Admin')
     .addItem('Health Check', 'menuHealthCheck_')
     .addItem('Fill Missed Punches (One at a Time)', 'menuFillMissedPunches_')
-    .addItem('Who Hasn\'t Checked In Today', 'menuWhoIsAbsentToday_')
     .addItem('Fix Mis-tapped IN After 16:00 (→ OUT)', 'menuFixLateInAsOut_')
     .addItem('Add New Employee', 'menuAddNewEmployee_')
     .addItem('Deactivate Employee (Resignation)', 'menuDeactivateEmployee_')
@@ -26,60 +25,6 @@ function onOpen() {
     .addItem('Issue New Setup Code', 'menuIssueSetupCode_')
     .addItem('Set Kiosk Exit PIN', 'menuSetKioskExitPin_')
     .addToUi();
-}
-
-/**
- * Quick read-only check: everyone Active who's expected in today (i.e. not
- * on an admin-marked day off) and doesn't have an IN recorded yet. Uses
- * today's actual date, not a prompt -- this is meant to be a one-click
- * glance, not a lookup for other days (use the Report sheet for past days).
- * Reads the Schedule and AttendanceLog sheets once each (not once per
- * employee) -- see getScheduledShiftsForMonth_ and
- * getEmployeeIdsWithInOnDate_.
- *
- * A blank Schedule cell counts as "expected in" now, same as a real shift
- * value -- admins no longer pre-fill normal work shifts ahead of time
- * (employees pick their own shift at the Kiosk when they check in), so
- * blank just means "an ordinary work day, nothing marked off" rather than
- * "not scheduled yet". Only a real FULL_DAY_OFF_SHIFTS value or an Event
- * shift excludes someone from this list.
- */
-function menuWhoIsAbsentToday_() {
-  var ui = SpreadsheetApp.getUi();
-  var date = new Date();
-  var today = date.getDate();
-  var scheduledShiftsForMonth = getScheduledShiftsForMonth_(date.getFullYear(), date.getMonth() + 1);
-
-  var expectedIn = getAllEmployees_()
-    .filter(function (emp) { return isTrue_(emp.Active); })
-    .map(function (emp) {
-      var shift = (scheduledShiftsForMonth[emp.EmployeeID] && scheduledShiftsForMonth[emp.EmployeeID][today]) || '';
-      return { employee: emp, shift: shift };
-    })
-    .filter(function (s) { return FULL_DAY_OFF_SHIFTS.indexOf(s.shift) === -1; }) // Leave/Holiday mean intentionally off -- exclude from this list ("Half Day Annual/Sick Leave" stays in -- still expected in for half the day). Blank passes through (never a FULL_DAY_OFF_SHIFTS value), same as a real shift.
-    .filter(function (s) { return !isEventShift_(s.shift); }); // an Event day is designed to count as a full day worked with no real punch needed -- see isEventShift_/eventShiftOverrideTimestamp_ in Attendance.gs
-
-  if (expectedIn.length === 0) {
-    ui.alert('No active employees to check today (everyone is on a day off or an Event shift).');
-    return;
-  }
-
-  var checkedInIds = getEmployeeIdsWithInOnDate_(date);
-  var missing = expectedIn.filter(function (s) {
-    return !checkedInIds[String(s.employee.EmployeeID)];
-  });
-
-  if (missing.length === 0) {
-    ui.alert('Everyone expected in today (' + expectedIn.length + ') has checked in.');
-    return;
-  }
-
-  var lines = missing.map(function (s) { return s.employee.Name + ' (' + (s.shift || 'no shift') + ')'; });
-  ui.alert(
-    'Not checked in yet today',
-    missing.length + ' of ' + expectedIn.length + ' expected in:\n\n' + lines.join('\n'),
-    ui.ButtonSet.OK
-  );
 }
 
 /**

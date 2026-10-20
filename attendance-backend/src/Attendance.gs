@@ -2565,7 +2565,7 @@ function findStintStartInLog_(employeeId, now, log) {
  * findLogEntryForDate_ inside a loop over many employees -- that helper
  * re-reads the whole AttendanceLog sheet on every single call, which is
  * fine for a one-off lookup but not for checking dozens of employees at
- * once (see menuWhoIsAbsentToday_, menuBulkMarkAttendance_).
+ * once (see menuBulkMarkAttendance_).
  */
 function getEmployeeIdsWithInOnDate_(date) {
   var sheet = getSheet_('AttendanceLog');

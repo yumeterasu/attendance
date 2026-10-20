@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { View, Text, StyleSheet, Pressable, ScrollView, ActivityIndicator, FlatList, NativeSyntheticEvent, NativeScrollEvent, Modal } from 'react-native';
+import { View, Text, StyleSheet, Pressable, ScrollView, ActivityIndicator, FlatList, NativeSyntheticEvent, NativeScrollEvent, Modal, useWindowDimensions, LayoutChangeEvent } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
 import Constants from 'expo-constants';
@@ -7,6 +7,7 @@ import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../navigation/types';
 import { kioskCheckin, kioskBreak, kioskLookupPin, kioskMyAttendance, kioskMyAttendanceBulk, verifyKioskExitPin, ScheduleDay } from '../api/client';
 import { useNetworkStatus } from '../hooks/useNetworkStatus';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useOfflineSync } from '../hooks/useOfflineSync';
 import { useScheduleSync } from '../hooks/useScheduleSync';
 import { useSession } from '../context/SessionContext';
@@ -151,24 +152,38 @@ const WEEKDAY_HEADERS = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
 // Shown instead of the (blank) time-in/time-out for that day.
 type CalendarCell = { day: number; entry?: ScheduleDay } | null;
 
-// Total px budget for the calendar grid's BODY (every week row combined,
-// not counting the S/M/T/W/T/F/S header row above it, which stays a fixed
-// small height outside this) on the 800x1340-portrait Kiosk device
-// (CLAUDE.md) -- every month's grid renders at this SAME total height
-// regardless of whether it has 4, 5, or 6 weeks (see cellHeight below),
-// rather than each week row having a fixed height and the whole grid
-// growing/shrinking with the week count. That's what guarantees a 6-week
-// month (the 1st falls on Saturday and the month has 31 days -- the real
-// case that used to need scrolling to see the last row) fits in the same
-// one-screen layout as every other month, AND keeps the legend/stats
-// grid/Done button below it from shifting position month to month, which
-// a simple "shrink 6-week months only" fix would not have. 780 is an
-// estimate from the surrounding layout's own fixed-height elements (title,
-// month nav, header row, legend, stats grid, Done button, container
-// padding), not something measured on the physical device -- if it turns
-// out to leave too much/little room once actually tested there, this is
-// the one number to retune; nothing else needs to change.
-const CALENDAR_GRID_HEIGHT = 780;
+// A hand-estimated total-height budget for the calendar grid (divide by
+// week count, same height every month) was tried first (2026-10-20) and
+// missed badly on the real device -- rows rendered visibly taller than
+// intended and the screen still needed scrolling to reach the Done
+// button, on a MONTH THIS DEVICE HAD ALREADY SHOWN FITTING BEFORE (5
+// weeks). Since there's no reliable way to predict the real device's
+// status bar height, font metrics, or exactly how much room the
+// surrounding chrome (title/nav/legend/stats grid/Done button) actually
+// takes from inside this file, the fix is to stop guessing and MEASURE
+// it at runtime instead -- see aboveGridHeight/belowGridHeight and
+// useWindowDimensions() below, where cellHeight is computed.
+// Hard floor on cellHeight -- if the measured remaining space divided by
+// the week count would come out shorter than this, a 6-week month's
+// content (day number + 2 time lines, plus a dots row on a day with
+// Late/OT/Over Break flags) would start clipping/overlapping inside each
+// cell. Below this floor the grid is left at this minimum and the outer
+// scheduleResultScroll (not a 6-week edge case rendering unreadably
+// small) is what absorbs the overflow instead. Set with real margin
+// above the ~78px nominal-font-size sum of that worst-case content
+// (padding + day number + 2 time lines + dots row), not right at it --
+// a custom font's actual line-height commonly exceeds its nominal
+// fontSize, and this is the one place that difference would show up as
+// clipped text instead of just a slightly taller box.
+const MIN_CELL_HEIGHT = 96;
+// Seed values for aboveGridHeight/belowGridHeight (useState calls below,
+// and resetSchedule's cross-employee reset of them) -- named here so
+// both places read the exact same starting guess instead of two literals
+// that could silently drift apart. Rough estimates only, close enough
+// that the very first paint (before onLayout's real measurement lands a
+// frame later) isn't wildly oversized -- not meant to be accurate.
+const INITIAL_ABOVE_GRID_HEIGHT = 140;
+const INITIAL_BELOW_GRID_HEIGHT = 360;
 
 // Lays the month out as a real calendar grid (leading/trailing blanks so day 1
 // lands under its real weekday), instead of a flat list of only the days that
@@ -689,6 +704,25 @@ export default function KioskScreen({ navigation }: Props) {
   // paging never leaves last month's itemized list on screen under this
   // month's total).
   const [showAllowanceDetail, setShowAllowanceDetail] = useState(false);
+  // Real on-device measurements (onLayout below) of everything around the
+  // calendar grid on the scheduleResult screen, used to compute cellHeight
+  // -- see MIN_CELL_HEIGHT's own comment for why a hand-estimated budget
+  // was dropped in favor of this. Seeded with rough guesses (not 0) so the
+  // very first paint isn't wildly oversized before onLayout's first real
+  // measurement lands a frame later -- close enough to avoid a visible
+  // jump, not meant to be the number actually used for long.
+  const [aboveGridHeight, setAboveGridHeight] = useState(INITIAL_ABOVE_GRID_HEIGHT);
+  const [belowGridHeight, setBelowGridHeight] = useState(INITIAL_BELOW_GRID_HEIGHT);
+  const { height: windowHeight } = useWindowDimensions();
+  // This Expo SDK defaults to edge-to-edge on Android, so the window
+  // height above can include real area the status/navigation bar
+  // physically occupies -- insets.top/bottom is what the content area
+  // actually has left after that, which cellHeight's calculation below
+  // needs subtracted too or it overestimates the space actually available
+  // and renders the grid taller than fits (the exact symptom reported
+  // after CALENDAR_GRID_HEIGHT's original hand-estimate, and plausibly
+  // this same gap's fault even with a real measurement feeding it).
+  const safeAreaInsets = useSafeAreaInsets();
   // Set only for a lookup that fails for a retriable reason (timeout/no
   // connection) -- pin stays put so "Try Again" can resubmit it as-is,
   // same pattern as lookupIssue on the main check-in screen.
@@ -779,6 +813,16 @@ export default function KioskScreen({ navigation }: Props) {
     // employee could still be showing by the time the NEXT employee's
     // schedule loads on this same shared kiosk.
     setScheduleMonthNavError(null);
+    // Same cross-employee leak, for the calendar height measurements --
+    // without this, an employee whose month happened to show the stale
+    // banner (inflating aboveGridHeight) leaves that inflated value
+    // sitting in state, so the NEXT employee's first scheduleResult render
+    // computes cellHeight from stale numbers until onLayout corrects it a
+    // frame later. Reset to the same seed values the useState calls start
+    // from, not 0 -- 0 would itself be a wrong, if differently wrong,
+    // number for that one frame.
+    setAboveGridHeight(INITIAL_ABOVE_GRID_HEIGHT);
+    setBelowGridHeight(INITIAL_BELOW_GRID_HEIGHT);
   };
 
   // Shared by both lookup paths (local-cache and live) below, so the
@@ -2103,11 +2147,21 @@ export default function KioskScreen({ navigation }: Props) {
 
   if (mode === 'scheduleResult' && scheduleData) {
     const weeks = buildCalendarWeeks(scheduleData.year, scheduleData.month, scheduleData.days);
-    // See CALENDAR_GRID_HEIGHT's own comment -- dividing the same fixed
-    // budget by however many weeks THIS month actually has (4, 5, or 6) is
-    // what keeps the grid's total rendered height constant across every
-    // month instead of growing with the week count.
-    const cellHeight = CALENDAR_GRID_HEIGHT / weeks.length;
+    // Real remaining space (measured window height, minus what the status/
+    // nav bar insets and the container's own padding actually take, minus
+    // the two onLayout-measured chrome blocks below), divided by however
+    // many weeks THIS month actually has (4, 5, or 6) -- see
+    // MIN_CELL_HEIGHT's own comment for why this replaced a hand-estimated
+    // fixed budget. (styles.container.padding as number) * 2, not a second
+    // hardcoded "48" -- reads container's own real padding instead of a
+    // copy that could drift from it if that style ever changes. Floor at
+    // MIN_CELL_HEIGHT rather than letting a bad measurement (or a
+    // genuinely very tall stale-banner/legend/translation combination)
+    // produce an unreadably short cell.
+    const containerVerticalPadding = (styles.container.padding as number) * 2;
+    const availableForGrid =
+      windowHeight - safeAreaInsets.top - safeAreaInsets.bottom - containerVerticalPadding - aboveGridHeight - belowGridHeight;
+    const cellHeight = Math.max(MIN_CELL_HEIGHT, availableForGrid / weeks.length);
     const hasAllowanceDetail = (scheduleData.allowanceDetail?.length ?? 0) > 0;
 
     return (
@@ -2120,20 +2174,20 @@ export default function KioskScreen({ navigation }: Props) {
         onTouchStart={resetScheduleIdleTimer}
         onTouchMove={resetScheduleIdleTimer}
       >
-        {/* Whole screen now scrolls (added 2026-10-20), not just the
-            calendar grid on its own -- CALENDAR_GRID_HEIGHT is an estimate,
-            not something measured on the physical device (see its own
-            comment), so if it ever turns out too generous for a given
-            month/translation/stale-banner combination, this is what keeps
-            the Done button (and everything else below the calendar)
-            reachable by scrolling down to it instead of silently pushed off
-            the fixed-height, non-scrolling container that used to hold
-            everything directly. Same pattern the "Hi, {name}" check-in
-            branch already uses (checkinScroll/checkinScrollContent) for the
-            identical reason. The calendar's own grid is a plain View now,
-            not a nested ScrollView -- two vertical scrollers nested inside
-            each other fight over drag gestures in RN, so this outer one is
-            the screen's only scroller. */}
+        {/* Whole screen scrolls (added 2026-10-20), not just the calendar
+            grid on its own -- cellHeight is computed from a REAL on-device
+            measurement (aboveGridHeight/belowGridHeight, via onLayout
+            below), but this stays as the safety net regardless: if that
+            measurement is ever off (a translation/stale-banner combination
+            this exact device hasn't been tested with), this is what keeps
+            the Done button reachable by scrolling down to it instead of
+            silently pushed off a fixed, non-scrolling screen. Same pattern
+            the "Hi, {name}" check-in branch already uses (checkinScroll/
+            checkinScrollContent) for the identical reason. The calendar's
+            own grid is a plain View, not a nested ScrollView -- two
+            vertical scrollers nested inside each other fight over drag
+            gestures in RN, so this outer one is the screen's only
+            scroller. */}
         <ScrollView
           style={styles.scheduleResultScroll}
           contentContainerStyle={styles.scheduleResultScrollContent}
@@ -2142,6 +2196,16 @@ export default function KioskScreen({ navigation }: Props) {
           onScroll={resetScheduleIdleTimer}
           scrollEventThrottle={32}
         >
+        {/* Measures everything above the calendar grid (title through the
+            weekday header row, error/stale banner included when shown) so
+            cellHeight above can subtract this real height instead of a
+            guess -- see MIN_CELL_HEIGHT's own comment. width:'100%' so
+            this wrapper doesn't itself affect the horizontal layout of
+            what's inside it (a plain View defaults to shrink-to-content
+            width, which these children -- several full-width rows --
+            already override individually, but setting it here too avoids
+            depending on that). */}
+        <View style={{ width: '100%' }} onLayout={(e: LayoutChangeEvent) => setAboveGridHeight(e.nativeEvent.layout.height)}>
         <Text style={[styles.title, styles.titleDark]}>{scheduleData.name}</Text>
         <View style={styles.monthNavRow}>
           <Pressable
@@ -2194,13 +2258,15 @@ export default function KioskScreen({ navigation }: Props) {
             <Text key={i} style={styles.calendarHeaderCell}>{h}</Text>
           ))}
         </View>
+        </View>
         {/* Plain View, not its own ScrollView (changed 2026-10-20 alongside
             the new outer scheduleResultScroll above) -- nesting two
             vertical scrollers meant this one and the outer screen fought
             over drag gestures; the outer ScrollView is now the screen's
-            only scroller, and cellHeight (CALENDAR_GRID_HEIGHT /
-            weeks.length) is what keeps this grid's total height constant
-            and small enough that it was never the thing needing its own
+            only scroller, and cellHeight (measured remaining space /
+            weeks.length, see its own comment above) is what keeps this
+            grid's total height constant and small enough that it was
+            never the thing needing its own
             scroll in the first place. */}
         <View style={styles.calendarWrap}>
           {weeks.map((week, wi) => (
@@ -2285,6 +2351,14 @@ export default function KioskScreen({ navigation }: Props) {
           ))}
         </View>
 
+        {/* Measures everything below the calendar grid (legend through
+            Done button) -- same reasoning as the aboveGridHeight wrapper
+            above. The Allowance detail Modal sits inside this wrapper's
+            JSX too (between the stats grid and Done button), but
+            harmlessly -- a Modal renders in its own native layer
+            regardless of where it's declared in the tree, so it never
+            contributes to this View's measured layout height either way. */}
+        <View style={{ width: '100%' }} onLayout={(e: LayoutChangeEvent) => setBelowGridHeight(e.nativeEvent.layout.height)}>
         <View style={styles.calendarLegend}>
           <View style={styles.legendItem}>
             <View style={[styles.calendarDot, styles.calendarDotLate]} />
@@ -2320,11 +2394,10 @@ export default function KioskScreen({ navigation }: Props) {
             text, not a highlight) rather than enlarging a whole sentence,
             which would look oversized for a label this long. 2x2 grid
             (2026-10-20, added Late/Over Break/Allowance alongside OT) --
-            this area sits BELOW the calendar's own ScrollView, a fixed
-            footer that's never itself scrollable, so 4 full-width stacked
-            rows would push doneButton a lot further down / leave a lot
-            less of the calendar visible without scrolling; a 2x2 grid
-            keeps the footer's height increase to 1 extra row instead of 3. */}
+            4 full-width stacked rows instead would add 3 extra rows'
+            worth of height here, which (being inside the belowGridHeight
+            measurement above) directly shrinks cellHeight for every month;
+            a 2x2 grid keeps that cost to 1 extra row instead of 3. */}
         <View style={styles.statsGrid}>
           {renderMyScheduleStatBox(
             'Total OT / OT รวม',
@@ -2425,6 +2498,7 @@ export default function KioskScreen({ navigation }: Props) {
         >
           <Text style={styles.buttonText}>Done / เสร็จสิ้น</Text>
         </Pressable>
+        </View>
         </ScrollView>
       </LinearGradient>
     );
@@ -3398,13 +3472,14 @@ const styles = StyleSheet.create({
   // device (Xiaomi Redmi Pad SE 8.7, portrait 800x1340) the container's own
   // 24px padding leaves ~752px of width, so 720 still fits with a small
   // margin either side. No maxHeight here anymore (dropped 2026-10-20,
-  // alongside CALENDAR_GRID_HEIGHT/cellHeight -- see their own comments):
-  // that 72%-of-container cap was what used to make a 6-week month's last
-  // row need scrolling to reach, since every week rendered at the same
-  // height and 6 of them could exceed it. This is a plain View now, not
-  // its own ScrollView (see the JSX render comment where it's used) -- the
-  // new outer scheduleResultScroll is the screen's one safety net if
-  // CALENDAR_GRID_HEIGHT's estimate ever turns out too generous, not this.
+  // alongside the switch to a measured cellHeight -- see MIN_CELL_HEIGHT's
+  // own comment): that 72%-of-container cap was what used to make a
+  // 6-week month's last row need scrolling to reach, since every week
+  // rendered at the same height and 6 of them could exceed it. This is a
+  // plain View now, not its own ScrollView (see the JSX render comment
+  // where it's used) -- the outer scheduleResultScroll is the screen's
+  // one safety net if the real measurement + cellHeight calculation ever
+  // still comes out too generous, not this.
   calendarWrap: { width: '100%', maxWidth: 720 },
   calendarWeekRow: { flexDirection: 'row', width: '100%', maxWidth: 720 },
   calendarHeaderCell: {
@@ -3416,9 +3491,9 @@ const styles = StyleSheet.create({
     paddingBottom: 6
   },
   // No aspectRatio anymore (dropped 2026-10-20) -- height is set per-cell
-  // at render time instead (CALENDAR_GRID_HEIGHT / weeks.length, see that
-  // constant's own comment), since a fixed ratio can't adapt to how many
-  // weeks THIS month actually has. flex:1 still does the WIDTH sizing here
+  // at render time instead (measured remaining space / weeks.length, see
+  // MIN_CELL_HEIGHT's own comment), since a fixed ratio can't adapt to
+  // how many weeks THIS month actually has. flex:1 still does the WIDTH sizing here
   // (splits calendarWeekRow's width evenly across 7 cells), unaffected.
   calendarCell: {
     flex: 1,
