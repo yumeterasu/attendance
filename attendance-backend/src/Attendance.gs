@@ -2202,6 +2202,41 @@ function getScheduledShiftsForMonth_(year, month) {
 }
 
 /**
+ * Reads a whole "Salary YYYY-MM" sheet once and returns
+ * { [employeeId]: salaryNumber }, or {} if that month's Salary sheet
+ * doesn't exist -- same "no sheet for this month = no data" contract as
+ * getScheduledShiftsForMonth_ just above. An employee with no row, a blank
+ * cell, or a non-numeric/zero/negative value simply has no key in the
+ * returned map -- computeOtPay_ (Report.gs) treats a missing salaryForMonth
+ * as "not eligible for OT pay this month" (returns '', not 0), which is the
+ * deliberate, correct behavior here, not a bug to guard against: a month
+ * nobody ever filled in a salary for genuinely has no rate to price OT at.
+ */
+function getSalaryForMonth_(year, month) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheetName = 'Salary ' + year + '-' + (month < 10 ? '0' + month : String(month));
+  var sheet = ss.getSheetByName(sheetName);
+  if (!sheet) return {};
+
+  var values = sheet.getDataRange().getValues();
+  var headers = values[0];
+  var idCol = headers.indexOf('EmployeeID');
+  var salaryCol = headers.indexOf('Salary');
+  if (idCol === -1 || salaryCol === -1) return {};
+
+  var result = {};
+  for (var i = 1; i < values.length; i++) {
+    var employeeId = String(values[i][idCol]);
+    // Tolerates a comma-formatted value ("20,000") even though
+    // buildSalarySheet_ (Report.gs) formats the column as a plain number --
+    // an admin could still paste/type it in with commas by hand.
+    var salary = Number(String(values[i][salaryCol] == null ? '' : values[i][salaryCol]).replace(/,/g, '').trim());
+    if (salary > 0) result[employeeId] = salary;
+  }
+  return result;
+}
+
+/**
  * Recomputes the whole month shown on whichever "Schedule YYYY-MM" tab is
  * currently open in the spreadsheet (open that tab first). Select this
  * function in the editor's toolbar dropdown and click Run. Check View > Logs

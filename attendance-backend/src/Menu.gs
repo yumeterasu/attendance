@@ -18,6 +18,7 @@ function onOpen() {
     .addItem('Bulk Mark Attendance for a Day', 'menuBulkMarkAttendance_')
     .addItem('Allowancer', 'menuAddSpecialAllowance_')
     .addItem('Create / Update Schedule Sheet', 'menuCreateScheduleSheet_')
+    .addItem('Create / Update Salary Sheet', 'menuCreateSalarySheet_')
     .addItem('Highlight Shift Mismatches', 'menuHighlightShiftMismatches_')
     .addItem('Recompute Late/OT for One Month', 'menuRecomputeLateOtOneMonth_')
     .addItem('Print Employee Report (Choose Person/Month/Year)', 'menuPrintEmployeeReport_')
@@ -208,8 +209,9 @@ function menuFixLateInAsOut_() {
  * away, instead of the admin typing the row by hand and running "Generate
  * Kiosk Codes for Everyone" separately afterward. New employee starts
  * Active, with no Schedule/Salary/OT cap set -- fill those in afterward
- * ("Create / Update Schedule Sheet..." for Schedule, or edit the Employees
- * row directly for Salary/OTMaxMinutes).
+ * ("Create / Update Schedule Sheet..." for Schedule, "Create / Update
+ * Salary Sheet..." for Thai OT pay eligibility starting this month, or
+ * edit the Employees row directly for OTMaxMinutes).
  */
 function menuAddNewEmployee_() {
   var ui = SpreadsheetApp.getUi();
@@ -444,6 +446,35 @@ function menuCreateScheduleSheet_() {
 
   var sheetName = buildScheduleSheet_(year, month);
   ui.alert('Done', '"' + sheetName + '" is ready. Fill in each day\'s shift from the dropdown.', ui.ButtonSet.OK);
+}
+
+/**
+ * Same Year/Month-picked create-or-update flow as "Create / Update Schedule
+ * Sheet" just above, for the Salary sheet instead (see buildSalarySheet_'s
+ * own doc comment, Report.gs, for what it does and why it exists -- OT Pay
+ * for a given month needs to stay fixed to what that month's actual salary
+ * was, even after a later raise).
+ */
+function menuCreateSalarySheet_() {
+  var ui = SpreadsheetApp.getUi();
+  var title = 'Create / Update Salary Sheet';
+  var now = new Date();
+
+  var yearResp = ui.prompt(title, 'Year (e.g. ' + now.getFullYear() + '):', ui.ButtonSet.OK_CANCEL);
+  if (yearResp.getSelectedButton() !== ui.Button.OK) return;
+  var year = Number(yearResp.getResponseText().trim());
+
+  var monthResp = ui.prompt(title, 'Month (1-12):', ui.ButtonSet.OK_CANCEL);
+  if (monthResp.getSelectedButton() !== ui.Button.OK) return;
+  var month = Number(monthResp.getResponseText().trim());
+
+  if (!year || !month || month < 1 || month > 12) {
+    ui.alert('Enter a valid year and a month between 1 and 12.');
+    return;
+  }
+
+  var sheetName = buildSalarySheet_(year, month);
+  ui.alert('Done', '"' + sheetName + '" is ready. Each new row is seeded from last month\'s salary (or the Employees sheet, if this is the first month) -- only edit a cell when that person\'s salary actually changed.', ui.ButtonSet.OK);
 }
 
 /**

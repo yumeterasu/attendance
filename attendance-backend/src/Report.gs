@@ -731,8 +731,12 @@ var JP_OT_BAHT_PER_MIN = 8.33; // Japanese: flat baht per OT minute, salary-inde
 // Thai: baht per OT quarter (15 min) = Salary / 640, i.e.
 //   Salary /30 days /8 work-hours /4 quarters-per-hour, then x1.5 OT multiplier
 //   = Salary / (30*8*4) * 1.5 = Salary / 640.
-// So a Thai employee needs a Salary in the Employees sheet to earn OT pay; blank
-// Salary leaves their OT Pay blank (not eligible).
+// So a Thai employee needs a salary on file for the month being priced to earn
+// OT pay that month; "Salary" here means that month's own "Salary YYYY-MM"
+// sheet entry (getSalaryForMonth_, Attendance.gs), NOT the Employees sheet's
+// Salary column -- a raise must never retroactively change a past month's OT
+// Pay. No entry for that employee that month leaves their OT Pay blank (not
+// eligible), same as a blank Salary always has.
 var THAI_OT_QUARTER_DIVISOR = 640;
 
 /**
@@ -1001,6 +1005,11 @@ function writeMonthlySummaryData_(sheet, startRow, year, month) {
   // month, not one read per employee (see getAllowancesForMonth_'s doc
   // comment, Allowances.gs).
   var allowancesByEmployee = getAllowancesForMonth_(year, month);
+  // Same "read once, not per employee" reasoning -- this month's Salary
+  // sheet (getSalaryForMonth_, Attendance.gs), used below by computeOtPay_
+  // instead of each employee's (possibly stale, possibly since-changed)
+  // Employees.Salary value.
+  var salaryByEmployee = getSalaryForMonth_(year, month);
 
   // Same rule as the Report sheet: Active, or has data this month -- PLUS a
   // Special Allowance entry this month, so a deactivated employee given one
@@ -1042,7 +1051,7 @@ function writeMonthlySummaryData_(sheet, startRow, year, month) {
     // completely independent reads/calculations -- allowance totals never
     // feed into or adjust OT pay, by design, so that column keeps meaning
     // exactly what it always has.
-    var otPay = computeOtPay_(emp, otMinutesTotal, otQuartersTotal);
+    var otPay = computeOtPay_(emp, otMinutesTotal, otQuartersTotal, salaryByEmployee[emp.EmployeeID]);
     // sumRoundedAllowances_ (Allowances.gs) owns the "round each entry,
     // then sum" rule in exactly one place -- see its own doc comment for
     // why that matters (keeps this figure, the PDF's, and the Dashboard's
@@ -1094,6 +1103,14 @@ function writeYearlySummaryData_(sheet, startRow, year) {
   var logSheet = getSheet_('AttendanceLog');
   var totalsByEmployee = aggregateYearSummary_(logSheet.getDataRange().getValues(), year);
   var leaveCountsByEmployee = countLeavesForYear_(year);
+  // One Salary-sheet read per fiscal month (12 total), not per employee --
+  // see computeYearlyOtPay_'s own doc comment for why this has to be priced
+  // month-by-month rather than against one whole-year salary.
+  var fiscalMonths = getFiscalMonths_(year);
+  var salaryCache = {};
+  fiscalMonths.forEach(function (fm) {
+    salaryCache[fm.calYear + '-' + fm.calMonth] = getSalaryForMonth_(fm.calYear, fm.calMonth);
+  });
   // One read of the whole Allowances sheet for every employee's yearly
   // total, not one per employee -- see aggregateSpecialAllowancesForYear_'s
   // doc comment (Allowances.gs), same "read once" reasoning as
@@ -1135,8 +1152,8 @@ function writeYearlySummaryData_(sheet, startRow, year) {
   LEAVE_COUNT_TYPES.forEach(function (t) { zeroLeaveCounts[t] = 0; });
 
   employees.forEach(function (emp) {
-    var totals = totalsByEmployee[emp.EmployeeID] || { daysWorked: 0, lateCount: 0, overCount: 0, otMinutesTotal: 0, otQuartersTotal: 0 };
-    var otPay = computeOtPay_(emp, totals.otMinutesTotal, totals.otQuartersTotal);
+    var totals = totalsByEmployee[emp.EmployeeID] || { daysWorked: 0, lateCount: 0, overCount: 0, otMinutesTotal: 0, otQuartersTotal: 0, otByMonth: {} };
+    var otPay = computeYearlyOtPay_(emp, fiscalMonths, totals.otByMonth, salaryCache);
     var specialAllowance = allowanceTotalsByEmployee[emp.EmployeeID] || 0;
     var leaveCounts = leaveCountsByEmployee[emp.EmployeeID] || zeroLeaveCounts;
     var leaveCountValues = LEAVE_COUNT_TYPES.map(function (t) { return leaveCounts[t]; });
@@ -1179,17 +1196,48 @@ function reportSortGroupFromTotal_(emp, totals) {
 
 /**
  * Fiscal-year version of aggregateMonthLogs_ -- returns pre-summed totals
- * per employee ({ daysWorked, lateCount, otMinutesTotal, otQuartersTotal })
- * instead of a day-keyed structure, since that's all writeYearlySummaryData_
- * needs and it lets one pass over AttendanceLog cover the whole fiscal
- * year. "Year" here means the fiscal year starting in it: `year` = 2026
- * covers April 1, 2026 through March 31, 2027 (not the calendar year), to
- * match the school's actual year boundary. Same IN/OUT reconciliation
- * rules as aggregateMonthLogs_ (earliest IN of the day wins for the late
- * flag, latest OUT wins for OT), just keyed by exact date instead of
+ * per employee ({ daysWorked, lateCount, otMinutesTotal, otQuartersTotal,
+ * otByMonth }) instead of a day-keyed structure, since that's all
+ * writeYearlySummaryData_/getDashboardSummaryData_'s "All" path need and it
+ * lets one pass over AttendanceLog cover the whole fiscal year. "Year" here
+ * means the fiscal year starting in it: `year` = 2026 covers April 1, 2026
+ * through March 31, 2027 (not the calendar year), to match the school's
+ * actual year boundary. Same IN/OUT reconciliation rules as
+ * aggregateMonthLogs_ (earliest IN of the day wins for the late flag,
+ * latest OUT wins for OT), just keyed by exact date instead of
  * day-of-month so different months don't collide on day number.
+ *
+ * otByMonth: { '<calYear>-<calMonth>': { otMinutes, otQuarters } }, one
+ * entry per fiscal month that had any OT -- exposed alongside the plain
+ * yearly otMinutesTotal/otQuartersTotal sums specifically so a caller that
+ * needs OT PAY (which can depend on a salary that changed partway through
+ * the fiscal year -- see getSalaryForMonth_) can price each month at that
+ * month's own rate and sum the results, instead of pricing one whole
+ * year's worth of OT quarters at a single salary. This function stays
+ * Department/Salary-agnostic itself (same as always) -- it only exposes
+ * the raw per-month numbers; computeOtPay_ remains the one place the
+ * actual Japanese/Thai pay formula lives.
  */
 var FISCAL_YEAR_START_MONTH = 3; // April -- 0-indexed like Date.getMonth()
+
+/**
+ * This fiscal year's 12 calendar (year, month) pairs in order, 1-indexed
+ * calMonth (matching getScheduledShiftsForMonth_/getSalaryForMonth_'s own
+ * expectation) -- shared by aggregateYearSummary_ (Schedule-cache
+ * population, OT-by-month bucketing) and by writeYearlySummaryData_/
+ * getDashboardSummaryData_'s "All" path (building a matching Salary cache),
+ * so the fiscal-to-calendar month math (Date construction, month-overflow
+ * handling) lives in exactly one place instead of being re-derived
+ * independently everywhere it's needed.
+ */
+function getFiscalMonths_(year) {
+  var months = [];
+  for (var m = 0; m < 12; m++) {
+    var monthDate = new Date(year, FISCAL_YEAR_START_MONTH + m, 1);
+    months.push({ calYear: monthDate.getFullYear(), calMonth: monthDate.getMonth() + 1 });
+  }
+  return months;
+}
 
 function aggregateYearSummary_(values, year) {
   var headers = values[0];
@@ -1291,11 +1339,7 @@ function aggregateYearSummary_(values, year) {
   // second pass further down -- avoids deriving the same fiscal-to-calendar
   // month math (Date construction, month-overflow handling) in two places
   // that could otherwise drift apart.
-  var fiscalMonths = [];
-  for (var m = 0; m < 12; m++) {
-    var monthDate = new Date(year, FISCAL_YEAR_START_MONTH + m, 1);
-    fiscalMonths.push({ calYear: monthDate.getFullYear(), calMonth: monthDate.getMonth() + 1 });
-  }
+  var fiscalMonths = getFiscalMonths_(year);
 
   // Fetches each fiscal month's "Schedule YYYY-MM" sheet exactly once,
   // cached by scheduleCacheKey_ -- shared by the tally loop below (to apply
@@ -1311,7 +1355,7 @@ function aggregateYearSummary_(values, year) {
   var result = {};
   for (var key in byDate) {
     var entry = byDate[key];
-    if (!result[entry.employeeId]) result[entry.employeeId] = { daysWorked: 0, lateCount: 0, overCount: 0, otMinutesTotal: 0, otQuartersTotal: 0 };
+    if (!result[entry.employeeId]) result[entry.employeeId] = { daysWorked: 0, lateCount: 0, overCount: 0, otMinutesTotal: 0, otQuartersTotal: 0, otByMonth: {} };
     var totals = result[entry.employeeId];
     if (entry.timeIn) totals.daysWorked++;
     if (entry.breakMinutes > DAILY_BREAK_BUDGET_MINUTES) totals.overCount++;
@@ -1333,6 +1377,15 @@ function aggregateYearSummary_(values, year) {
     if (!isNoLateOtDay) {
       totals.otMinutesTotal += entry.otMinutes;
       totals.otQuartersTotal += entry.otQuarters;
+      // Same numbers, also bucketed by the calendar month they actually
+      // happened in -- see otByMonth's own doc comment above (this
+      // function's doc block) for why: OT PAY needs to price each month's
+      // quarters at that month's own salary, not the whole year's quarters
+      // at one salary.
+      var monthKey = entry.year + '-' + (entry.month0 + 1);
+      if (!totals.otByMonth[monthKey]) totals.otByMonth[monthKey] = { otMinutes: 0, otQuarters: 0 };
+      totals.otByMonth[monthKey].otMinutes += entry.otMinutes;
+      totals.otByMonth[monthKey].otQuarters += entry.otQuarters;
     }
   }
 
@@ -1360,7 +1413,7 @@ function aggregateYearSummary_(values, year) {
         if (!isEventShift_(byDay[d])) continue;
         var dateKey = emp.EmployeeID + '|' + (calMonth - 1) + '|' + d; // 0-indexed month, matching the `key` format above
         if (byDate[dateKey] && byDate[dateKey].timeIn) continue;
-        if (!result[emp.EmployeeID]) result[emp.EmployeeID] = { daysWorked: 0, lateCount: 0, overCount: 0, otMinutesTotal: 0, otQuartersTotal: 0 };
+        if (!result[emp.EmployeeID]) result[emp.EmployeeID] = { daysWorked: 0, lateCount: 0, overCount: 0, otMinutesTotal: 0, otQuartersTotal: 0, otByMonth: {} };
         result[emp.EmployeeID].daysWorked++;
       }
     });
@@ -1372,19 +1425,83 @@ function aggregateYearSummary_(values, year) {
 /**
  * OT pay in baht for one employee's month (Summary sheet's "OT Pay (Baht)").
  * - Japanese: OT minutes x JP_OT_BAHT_PER_MIN -- flat rate, no Salary needed,
- *   so always a number (0 when they had no OT).
- * - Everyone else (Thai): OT quarters x (Salary / THAI_OT_QUARTER_DIVISOR).
- *   Requires a Salary in the Employees sheet; a blank Salary returns '' so the
- *   cell stays empty (not eligible) rather than showing 0.
- * Salary tolerates a comma-formatted value like "20,000".
+ *   so always a number (0 when they had no OT), and salaryForMonth is never
+ *   even looked at for this branch.
+ * - Everyone else (Thai): OT quarters x (salaryForMonth / THAI_OT_QUARTER_DIVISOR).
+ *   salaryForMonth is THAT MONTH's salary (getSalaryForMonth_, Attendance.gs
+ *   -- the "Salary YYYY-MM" sheet), not a live read off the Employees sheet:
+ *   a Thai employee's salary changes over time (raises), and every OT Pay
+ *   figure for a past month has to stay fixed to what that month's actual
+ *   salary was, even after a later raise. A missing/blank/zero
+ *   salaryForMonth returns '' so the cell stays empty (not eligible --
+ *   deliberately not 0) rather than silently showing a wrong number --
+ *   this is also the correct, intended behavior for "nobody ever filled in
+ *   a salary for this employee this month", not just an edge case to guard.
  */
-function computeOtPay_(emp, otMinutesTotal, otQuartersTotal) {
+function computeOtPay_(emp, otMinutesTotal, otQuartersTotal, salaryForMonth) {
   if (emp.Department === 'Japanese') {
     return round2_(otMinutesTotal * JP_OT_BAHT_PER_MIN);
   }
-  var salary = Number(String(emp.Salary == null ? '' : emp.Salary).replace(/,/g, '').trim());
-  if (!(salary > 0)) return ''; // no Salary on file -> not eligible for OT pay
+  var salary = Number(salaryForMonth);
+  if (!(salary > 0)) return ''; // no salary on file for this month -> not eligible for OT pay
   return round2_(otQuartersTotal * (salary / THAI_OT_QUARTER_DIVISOR));
+}
+
+/**
+ * Whole-fiscal-year OT pay for one employee, used by writeYearlySummaryData_
+ * and getDashboardSummaryData_'s "All" path instead of pricing a whole
+ * year's summed OT quarters at a single salary (wrong the moment a Thai
+ * employee's salary changes partway through the fiscal year). Prices each
+ * fiscal month's own OT at that month's own salary (computeOtPay_ again,
+ * just called once per month instead of once for the whole year) and sums
+ * the results.
+ *
+ * otByMonth: aggregateYearSummary_'s per-employee `otByMonth` map (its own
+ * doc comment explains the key format). salaryCache: { '<calYear>-<calMonth>':
+ * { [employeeId]: salaryNumber } }, one entry per fiscalMonths entry --
+ * build it once per call (not per employee) via getSalaryForMonth_, same
+ * "read each month's sheet exactly once" reasoning aggregateYearSummary_'s
+ * own scheduleCache already follows.
+ *
+ * Returns '' (not 0) when the employee was never eligible in ANY fiscal
+ * month -- e.g. a Thai employee who never had a salary on file all year --
+ * matching computeOtPay_'s own "blank means not eligible" convention
+ * instead of showing a misleading 0. A partial year (eligible for some
+ * months, not others -- salary only entered starting partway through)
+ * sums just the eligible months' pay, which is the correct total.
+ *
+ * Japanese OT pay is handled as a special case, bypassing the per-month
+ * loop entirely: it never depends on Salary (flat per-minute rate, same
+ * every month), so splitting it into 12 pieces and summing them would just
+ * mean 12 independent round2_ calls instead of one -- rounding error can
+ * accumulate across months and drift the final total by a fraction of a
+ * baht from what a single whole-year computeOtPay_ call would have given
+ * (caught in review). Only Thai OT pay actually needs month-by-month
+ * pricing, since only Thai depends on a salary that can change mid-year.
+ */
+function computeYearlyOtPay_(emp, fiscalMonths, otByMonth, salaryCache) {
+  if (emp.Department === 'Japanese') {
+    var yearlyOtMinutes = 0;
+    fiscalMonths.forEach(function (fm) {
+      var monthOt = otByMonth[fm.calYear + '-' + fm.calMonth];
+      if (monthOt) yearlyOtMinutes += monthOt.otMinutes;
+    });
+    return computeOtPay_(emp, yearlyOtMinutes, 0, undefined);
+  }
+
+  var sum = 0;
+  var anyEligible = false;
+  fiscalMonths.forEach(function (fm) {
+    var key = fm.calYear + '-' + fm.calMonth;
+    var monthOt = otByMonth[key] || { otMinutes: 0, otQuarters: 0 };
+    var salaryForMonth = (salaryCache[key] || {})[emp.EmployeeID];
+    var monthPay = computeOtPay_(emp, monthOt.otMinutes, monthOt.otQuarters, salaryForMonth);
+    if (monthPay !== '') {
+      sum += monthPay;
+      anyEligible = true;
+    }
+  });
+  return anyEligible ? round2_(sum) : '';
 }
 
 function round2_(n) {
@@ -1557,6 +1674,129 @@ function buildScheduleSheet_(year, month) {
   }
 
   sheet.autoResizeColumns(1, 2);
+  return sheetName;
+}
+
+/**
+ * Monthly Salary sheet: EmployeeID | Name | Salary, one row per Active
+ * employee -- same Year/Month-picked, create-or-append contract as
+ * buildScheduleSheet_ just above (never overwrites a value an admin already
+ * entered, only adds rows for employees not already on this month's
+ * sheet), but far simpler since Salary is one value per employee per
+ * month, not one column per day. Exists so OT Pay for a given month can be
+ * priced at THAT month's salary (getSalaryForMonth_, Attendance.gs)
+ * instead of always reading today's Employees.Salary, which would
+ * otherwise retroactively change every past month's OT Pay the moment a
+ * Thai employee's salary changes.
+ *
+ * Every newly-added row (new sheet, or a newly-added employee on an
+ * existing sheet) is seeded rather than left blank: the employee's own
+ * entry on the immediately-preceding calendar month's Salary sheet if one
+ * exists, else -- ONLY when `year`/`month` is the CURRENT real calendar
+ * month -- their current Employees.Salary (the one-time migration path for
+ * whoever already had a salary on file before this feature existed), else
+ * blank. A month where nobody got a raise then needs zero manual data
+ * entry -- an admin only ever has to type something when a salary actually
+ * changes.
+ *
+ * The Employees.Salary fallback is deliberately NOT used for a past (or
+ * future) month that has no prior Salary-sheet entry at all -- a real bug
+ * caught in review: Employees.Salary only ever holds "whatever the salary
+ * is right now," so backfilling/reprinting an OLD month (e.g. January) at
+ * any point AFTER a later raise would otherwise silently seed that old
+ * month with the NEW, post-raise salary -- exactly the retroactive-change
+ * problem this whole feature exists to eliminate. For the current month,
+ * "right now" IS correct by definition, so the fallback is safe there and
+ * nowhere else; an old month with no data simply stays blank (no OT pay)
+ * until someone enters the real historical figure.
+ */
+function buildSalarySheet_(year, month) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheetName = 'Salary ' + year + '-' + (month < 10 ? '0' + month : String(month));
+  var employees = getAllEmployees_().filter(function (emp) { return isTrue_(emp.Active); });
+
+  // Same Branch/Department/EmployeeID ordering as the Schedule sheet
+  // (scheduleSortKey_ above) -- one consistent admin experience across
+  // both, rather than a second, independent sort rule.
+  employees = employees.slice().sort(function (a, b) {
+    var keyA = scheduleSortKey_(a), keyB = scheduleSortKey_(b);
+    if (keyA[0] !== keyB[0]) return keyA[0] - keyB[0];
+    if (keyA[1] !== keyB[1]) return keyA[1] - keyB[1];
+    return String(a.EmployeeID).localeCompare(String(b.EmployeeID));
+  });
+
+  var prevYear = month === 1 ? year - 1 : year;
+  var prevMonth = month === 1 ? 12 : month - 1;
+  var prevSalaryByEmployee = getSalaryForMonth_(prevYear, prevMonth);
+  var now = new Date();
+  var isCurrentCalendarMonth = year === now.getFullYear() && month === now.getMonth() + 1;
+  function seedSalary_(emp) {
+    if (prevSalaryByEmployee[emp.EmployeeID] > 0) return prevSalaryByEmployee[emp.EmployeeID];
+    if (!isCurrentCalendarMonth) return ''; // see this function's own doc comment above -- never seed an old/future month from "today's" Employees.Salary
+    var legacy = Number(String(emp.Salary == null ? '' : emp.Salary).replace(/,/g, '').trim());
+    return legacy > 0 ? legacy : '';
+  }
+
+  var existing = ss.getSheetByName(sheetName);
+  if (existing) {
+    var values = existing.getDataRange().getValues();
+    var headers = values[0];
+    var idCol = headers.indexOf('EmployeeID');
+    var existingIds = {};
+    for (var i = 1; i < values.length; i++) existingIds[String(values[i][idCol])] = true;
+
+    var newRows = employees
+      .filter(function (emp) { return !existingIds[emp.EmployeeID]; })
+      .map(function (emp) { return [emp.EmployeeID, emp.Name, seedSalary_(emp)]; });
+    if (newRows.length > 0) {
+      var startRow = existing.getLastRow() + 1;
+      // A sheet that's had unused rows trimmed off (normal spreadsheet
+      // tidying) can have a max row count smaller than startRow + however
+      // many new rows are about to be appended -- getRange then throws
+      // "coordinates outside the dimensions of the sheet" (the same bug
+      // class the All-Employees PDF generator hit earlier this session)
+      // instead of Apps Script auto-growing the sheet the way typing
+      // beyond the edge in the UI does.
+      var neededRows = startRow + newRows.length - 1;
+      if (existing.getMaxRows() < neededRows) {
+        existing.insertRowsAfter(existing.getMaxRows(), neededRows - existing.getMaxRows());
+      }
+      existing.getRange(startRow, 1, newRows.length, 3).setValues(newRows);
+      existing.getRange(startRow, 3, newRows.length, 1).setNumberFormat('#,##0');
+    }
+
+    // Re-sort the whole sheet (existing rows + whatever just got appended)
+    // every time this runs -- same reasoning as buildScheduleSheet_'s
+    // identical re-sort pass.
+    var employeesById = {};
+    getAllEmployees_().forEach(function (emp) { employeesById[String(emp.EmployeeID)] = emp; });
+    var freshValues = existing.getDataRange().getValues();
+    var dataRows = freshValues.slice(1);
+    if (dataRows.length > 0) {
+      dataRows.sort(function (rowA, rowB) {
+        var keyA = scheduleSortKey_(employeesById[String(rowA[idCol])]);
+        var keyB = scheduleSortKey_(employeesById[String(rowB[idCol])]);
+        if (keyA[0] !== keyB[0]) return keyA[0] - keyB[0];
+        if (keyA[1] !== keyB[1]) return keyA[1] - keyB[1];
+        return String(rowA[idCol]).localeCompare(String(rowB[idCol]));
+      });
+      existing.getRange(2, 1, dataRows.length, headers.length).setValues(dataRows);
+    }
+    return sheetName;
+  }
+
+  var header = ['EmployeeID', 'Name', 'Salary'];
+  var rows = [header];
+  employees.forEach(function (emp) { rows.push([emp.EmployeeID, emp.Name, seedSalary_(emp)]); });
+
+  var sheet = ss.insertSheet(sheetName);
+  sheet.getRange(1, 1, rows.length, 3).setValues(rows);
+  sheet.getRange(1, 1, 1, 3).setFontWeight('bold');
+  sheet.setFrozenRows(1);
+  if (rows.length > 1) {
+    sheet.getRange(2, 3, rows.length - 1, 1).setNumberFormat('#,##0');
+  }
+  sheet.autoResizeColumns(1, 3);
   return sheetName;
 }
 
@@ -2055,6 +2295,13 @@ function getDashboardSummaryData_(year, month) {
   // writeMonthlySummaryData_, both above) -- one read of the whole
   // Allowances sheet covers every employee, not a per-employee lookup.
   var allowancesByEmployee, allowanceEntriesByEmployee;
+  // Salary lookups for OT Pay below -- see computeOtPay_/computeYearlyOtPay_'s
+  // own doc comments (Report.gs) for why this reads the month-specific
+  // "Salary YYYY-MM" sheet(s) instead of the Employees sheet's Salary
+  // column. fiscalMonths/salaryCache are only used in the isAllMonths
+  // branch (one Salary-sheet read per fiscal month, not per employee);
+  // salaryByEmployee is only used in the single-month branch.
+  var fiscalMonths, salaryCache, salaryByEmployee;
   if (isAllMonths) {
     var logSheet = getSheet_('AttendanceLog');
     totalsByEmployee = aggregateYearSummary_(logSheet.getDataRange().getValues(), year);
@@ -2067,10 +2314,16 @@ function getDashboardSummaryData_(year, month) {
     // map to keep in sync with this one.
     allowanceEntriesByEmployee = getAllowanceEntriesForYear_(year);
     sortGroupFor = function (emp) { return reportSortGroupFromTotal_(emp, totalsByEmployee[emp.EmployeeID]); };
+    fiscalMonths = getFiscalMonths_(year);
+    salaryCache = {};
+    fiscalMonths.forEach(function (fm) {
+      salaryCache[fm.calYear + '-' + fm.calMonth] = getSalaryForMonth_(fm.calYear, fm.calMonth);
+    });
   } else {
     var logsByEmployee = getMonthLogsByEmployee_(year, month);
     var scheduledShiftsForMonth = getScheduledShiftsForMonth_(year, month);
     var daysInMonth = new Date(year, month, 0).getDate();
+    salaryByEmployee = getSalaryForMonth_(year, month);
     totalsByEmployee = {};
     // Every employee, not just Object.keys(logsByEmployee) -- someone whose
     // only activity this month was an Event day nobody happened to clock
@@ -2125,12 +2378,14 @@ function getDashboardSummaryData_(year, month) {
 
   var zeroLeaveCounts = {};
   LEAVE_COUNT_TYPES.forEach(function (t) { zeroLeaveCounts[t] = 0; });
-  var zeroTotals = { daysWorked: 0, lateCount: 0, overCount: 0, otMinutesTotal: 0, otQuartersTotal: 0 };
+  var zeroTotals = { daysWorked: 0, lateCount: 0, overCount: 0, otMinutesTotal: 0, otQuartersTotal: 0, otByMonth: {} };
 
   return employees.map(function (emp) {
     var totals = totalsByEmployee[emp.EmployeeID] || zeroTotals;
     var leaveCounts = leaveCountsByEmployee[emp.EmployeeID] || zeroLeaveCounts;
-    var otPay = computeOtPay_(emp, totals.otMinutesTotal, totals.otQuartersTotal);
+    var otPay = isAllMonths
+      ? computeYearlyOtPay_(emp, fiscalMonths, totals.otByMonth || {}, salaryCache)
+      : computeOtPay_(emp, totals.otMinutesTotal, totals.otQuartersTotal, salaryByEmployee[emp.EmployeeID]);
     // One source list feeds both the total and its itemized breakdown below
     // -- so they can never read from two different maps and drift apart
     // (a prior version picked the total from a separately-summed map and

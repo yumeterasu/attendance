@@ -50,6 +50,7 @@ function runHealthCheck_() {
   // scan runs against a working sheet instead of the whole thing crashing.
   checkAndFixCriticalSheets_(findings);
   checkAndFixScheduleHeaders_(findings);
+  checkAndFixSalaryHeaders_(findings);
 
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var employeesOk = !!ss.getSheetByName('Employees');
@@ -245,6 +246,41 @@ function checkAndFixScheduleHeaders_(findings) {
 
     if (row[0] !== 'EmployeeID') { row[0] = 'EmployeeID'; fixed.push('EmployeeID'); }
     if (row[1] !== 'Name') { row[1] = 'Name'; fixed.push('Name'); }
+
+    if (fixed.length > 0) {
+      headerRange.setValues([row]);
+      findings.push({
+        sheetName: sheet.getName(),
+        a1: null,
+        message: sheet.getName() + ' header row auto-repaired: ' + fixed.join(', ') + ' restored.'
+      });
+    }
+  });
+}
+
+/**
+ * Same idea as checkAndFixScheduleHeaders_ just above, for columns A
+ * ("EmployeeID"), B ("Name") and C ("Salary") of every "Salary YYYY-MM"
+ * tab -- added the same day a corrupted Employees sheet header (A1 showing
+ * "10" instead of "EmployeeID") silently broke OT Pay everywhere with no
+ * visible error. getSalaryForMonth_ (Attendance.gs) finds the Salary
+ * column by header NAME, not position, so a typo'd/overwritten header
+ * cell here would otherwise make every Thai employee's OT Pay for that
+ * month silently go blank with nothing pointing at the cause.
+ */
+function checkAndFixSalaryHeaders_(findings) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var salarySheets = ss.getSheets().filter(function (s) { return /^Salary \d{4}-\d{2}$/.test(s.getName()); });
+
+  salarySheets.forEach(function (sheet) {
+    if (sheet.getLastColumn() < 3) return;
+    var headerRange = sheet.getRange(1, 1, 1, 3);
+    var row = headerRange.getValues()[0];
+    var fixed = [];
+
+    if (row[0] !== 'EmployeeID') { row[0] = 'EmployeeID'; fixed.push('EmployeeID'); }
+    if (row[1] !== 'Name') { row[1] = 'Name'; fixed.push('Name'); }
+    if (row[2] !== 'Salary') { row[2] = 'Salary'; fixed.push('Salary'); }
 
     if (fixed.length > 0) {
       headerRange.setValues([row]);
