@@ -388,6 +388,21 @@ function writeMonthlyReportData_(sheet, startRow, year, month, precomputedLogsBy
   // factor once the total width shrank a lot, pushing content past page 1)
   // -- this is a single, much smaller, one-column change to reduce that risk.
   if (sheet.getColumnWidth(1) > 150) sheet.setColumnWidth(1, 150);
+  // Same reasoning, column 5 (Shift) -- this is the column most likely to
+  // make the single-employee PDF and the all-employees PDF render at
+  // visibly different sizes: the all-employees temp sheet's Shift column
+  // has to fit the LONGEST real shift string anywhere in the whole roster
+  // ("Special 10:00-19:00" is 20 characters), while a single employee being
+  // printed alone might only ever have short shifts like "8:00-17:00" --
+  // and since the export scales the whole table to fill the page width
+  // (fitw=true), a wider natural table changes that scale factor, making
+  // the two PDFs look like different sizes even though nothing else
+  // differs. The all-employees sheet's natural width here can only be >=
+  // any one employee's own requirement (the roster is a superset), never
+  // narrower, so capping it down (shrink-only, same safe direction as the
+  // Date cap above) brings it closer to what a single-employee print would
+  // produce instead of always being the wider of the two.
+  if (sheet.getColumnWidth(5) > 180) sheet.setColumnWidth(5, 180);
   return rows.length; // lets writeYearlyReportData_ know where the next month's block should start
 }
 
