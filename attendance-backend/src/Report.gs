@@ -1535,8 +1535,8 @@ function round2_(n) {
  * Safe to call anytime -- never wipes cells the admin already filled in, only
  * adds rows for employees who are Active and not already on the sheet. So an
  * employee who joins (or is reactivated) mid-month just needs Create/Update
- * Schedule Sheet run again for that month -- their row gets added at that
- * point, with earlier days blank since there's nothing to schedule for them
+ * Schedule + Salary Sheet run again for that month -- their row gets added at
+ * that point, with earlier days blank since there's nothing to schedule for them
  * before they existed. Employees who go inactive mid-month keep whatever row
  * they already have -- rows are never removed, only skipped when adding new
  * ones for a future run.
@@ -1852,7 +1852,7 @@ function applyWeekendColors_(sheet, startRow, numRows, year, month, daysInMonth)
  * Live conditional-format rule for the day-columns, not a one-time paint
  * like applyWeekendColors_ -- so a cell picks up the light-orange treatment
  * the moment someone picks a Leave/Holiday shift from the dropdown, without
- * needing to re-run Create/Refresh Schedule Sheet afterward. Matches the
+ * needing to re-run Create/Update Schedule + Salary Sheet afterward. Matches the
  * same "Leave" substring / "Holiday" exact-match rule the Kiosk app's My
  * Schedule calendar uses, so a new option (e.g. a future "Bereavement
  * Leave") is covered automatically the moment it's added to SHIFTS --
@@ -1864,7 +1864,7 @@ function applyLeaveHolidayConditionalFormat_(sheet, startRow, numRows, daysInMon
   var anchor = range.getCell(1, 1).getA1Notation(); // top-left cell -- the formula below is relative to this, same as typing it directly into that cell
 
   // Drop any earlier rule scoped to this exact range first, so re-running
-  // Create/Refresh Schedule Sheet doesn't pile up duplicate rules.
+  // Create/Update Schedule + Salary Sheet doesn't pile up duplicate rules.
   var rangeA1 = range.getA1Notation();
   var rules = sheet.getConditionalFormatRules().filter(function (rule) {
     return !rule.getRanges().some(function (r) { return r.getA1Notation() === rangeA1; });

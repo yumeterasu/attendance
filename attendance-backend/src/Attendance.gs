@@ -164,9 +164,9 @@ function normalizeShiftChoice_(emp, shift) {
 // No locking here, deliberately, same as the read side (getScheduledShift_/
 // findScheduleCell_ have never taken one either). A LockService lock would
 // only serialize this function against ITSELF -- it wouldn't protect
-// against the one real structural race (an admin's "Create/Update Schedule
-// Sheet", which re-sorts every row and doesn't take this lock either), so
-// it would add latency on this tight check-in-timeout path for
+// against the one real structural race (an admin's "Create/Update Schedule +
+// Salary Sheet", which re-sorts every row and doesn't take this lock
+// either), so it would add latency on this tight check-in-timeout path for
 // near-zero actual protection. What DOES make this safe in practice: two
 // concurrent check-ins are two different employees' rows almost always
 // (the same employee re-checking in within a short window is already
@@ -2341,8 +2341,8 @@ function recomputeLateAndOtForMonth_(year, month, sheetNameForLog, protectExisti
  * runRecomputeLateAndOt, which leaves it off) -- see
  * previewRecomputeLateAndOt_'s own doc comment on that parameter for the
  * full reasoning: an admin running the interactive menu item always
- * implicitly runs it AFTER "Create/Update Schedule Sheet" for that month,
- * an ordering this unattended trigger has no way to guarantee. With the
+ * implicitly runs it AFTER "Create/Update Schedule + Salary Sheet" for that
+ * month, an ordering this unattended trigger has no way to guarantee. With the
  * flag on, getScheduledShiftsForMonth_ returning {} (Schedule sheet
  * missing entirely) or a day's cell simply not filled in yet both resolve
  * the same safe way -- any row that already holds a real Shift value is

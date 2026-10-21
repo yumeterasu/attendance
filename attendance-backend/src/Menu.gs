@@ -17,8 +17,7 @@ function onOpen() {
     .addItem('Add Backdated Check-in/Check-out', 'menuAddBackdatedAttendance_')
     .addItem('Bulk Mark Attendance for a Day', 'menuBulkMarkAttendance_')
     .addItem('Allowancer', 'menuAddSpecialAllowance_')
-    .addItem('Create / Update Schedule Sheet', 'menuCreateScheduleSheet_')
-    .addItem('Create / Update Salary Sheet', 'menuCreateSalarySheet_')
+    .addItem('Create / Update Schedule + Salary Sheet', 'menuCreateScheduleAndSalarySheets_')
     .addItem('Highlight Shift Mismatches', 'menuHighlightShiftMismatches_')
     .addItem('Recompute Late/OT for One Month', 'menuRecomputeLateOtOneMonth_')
     .addItem('Print Employee Report (Choose Person/Month/Year)', 'menuPrintEmployeeReport_')
@@ -227,9 +226,9 @@ function menuFixLateInAsOut_() {
  * away, instead of the admin typing the row by hand and running "Generate
  * Kiosk Codes for Everyone" separately afterward. New employee starts
  * Active, with no Schedule/Salary/OT cap set -- fill those in afterward
- * ("Create / Update Schedule Sheet..." for Schedule, "Create / Update
- * Salary Sheet..." for Thai OT pay eligibility starting this month, or
- * edit the Employees row directly for OTMaxMinutes).
+ * ("Create / Update Schedule + Salary Sheet..." adds them to both this
+ * month's Schedule and Salary sheets in one pass, or edit the Employees
+ * row directly for OTMaxMinutes).
  */
 function menuAddNewEmployee_() {
   var ui = SpreadsheetApp.getUi();
@@ -326,7 +325,7 @@ function menuAddNewEmployee_() {
   ui.alert(
     'Done',
     name + ' added.\n\nEmployeeID: ' + newId + '\nKiosk PIN: ' + newPin + '\n\n' +
-    'Give them the Kiosk PIN to check in/out. Add them to this month\'s Schedule via "Create / Update Schedule Sheet..." to set their shifts.',
+    'Give them the Kiosk PIN to check in/out. Add them to this month\'s Schedule and Salary sheets via "Create / Update Schedule + Salary Sheet..." to set their shifts.',
     ui.ButtonSet.OK
   );
 }
@@ -445,41 +444,25 @@ function menuUndoDeactivation_(ui, title, employee) {
     : employee.Name + ' is Active again.', ui.ButtonSet.OK);
 }
 
-function menuCreateScheduleSheet_() {
-  var ui = SpreadsheetApp.getUi();
-  var now = new Date();
-
-  var yearResp = ui.prompt('Create / Update Schedule Sheet', 'Year (e.g. ' + now.getFullYear() + '):', ui.ButtonSet.OK_CANCEL);
-  if (yearResp.getSelectedButton() !== ui.Button.OK) return;
-  var year = Number(yearResp.getResponseText().trim());
-
-  var monthResp = ui.prompt('Create / Update Schedule Sheet', 'Month (1-12):', ui.ButtonSet.OK_CANCEL);
-  if (monthResp.getSelectedButton() !== ui.Button.OK) return;
-  var month = Number(monthResp.getResponseText().trim());
-
-  if (!year || !month || month < 1 || month > 12) {
-    ui.alert('Enter a valid year and a month between 1 and 12.');
-    return;
-  }
-
-  var sheetName = buildScheduleSheet_(year, month);
-  ui.alert('Done', '"' + sheetName + '" is ready. Fill in each day\'s shift from the dropdown.', ui.ButtonSet.OK);
-}
-
 /**
- * Same Year/Month-picked create-or-update flow as "Create / Update Schedule
- * Sheet" just above, for the Salary sheet instead (see buildSalarySheet_'s
- * own doc comment, Report.gs, for what it does and why it exists -- OT Pay
- * for a given month needs to stay fixed to what that month's actual salary
- * was, even after a later raise). Month also accepts "All" -- same word
- * the Summary/Report sheets' own Month dropdowns already use for "the whole
- * fiscal year" -- to create/update all 12 months in one go
- * (getFiscalMonths_, Report.gs: Year 2026 = April 2026 through March 2027)
- * instead of running this 12 times by hand.
+ * Combines what used to be two separate menu items ("Create / Update
+ * Schedule Sheet" and "Create / Update Salary Sheet") into one -- merged
+ * 2026-10-21 per request, since an admin needing one for a given month
+ * always needs the other too (a new employee needs a row in both; a new
+ * month needs both sheets built before Report/Summary/Print can price it).
+ * Builds Schedule then Salary for the same resolved month(s); each builder
+ * is independently idempotent (never overwrites a cell an admin already
+ * filled in), so re-running this for an already-built month just tops up
+ * whatever's missing in either sheet. See buildScheduleSheet_ and
+ * buildSalarySheet_'s own doc comments (Report.gs) for what each sheet is
+ * for. Month also accepts "All" (via a blank Month field, since Apps
+ * Script's native prompt has no pre-filled default) -- same "whole fiscal
+ * year in one go" behavior the old Salary-only menu item already had
+ * (getFiscalMonths_, Report.gs: Year 2026 = April 2026 through March 2027).
  */
-function menuCreateSalarySheet_() {
+function menuCreateScheduleAndSalarySheets_() {
   var ui = SpreadsheetApp.getUi();
-  var title = 'Create / Update Salary Sheet';
+  var title = 'Create / Update Schedule + Salary Sheet';
   var now = new Date();
 
   var yearResp = ui.prompt(title, 'Year (e.g. ' + now.getFullYear() + '):', ui.ButtonSet.OK_CANCEL);
@@ -490,17 +473,17 @@ function menuCreateSalarySheet_() {
     return;
   }
 
-  // Apps Script's native prompt has no pre-filled/default text box, so
-  // "defaults to All" is implemented as "leave it blank and press OK" --
-  // the closest equivalent this dialog type can offer. Typing a specific
-  // month still overrides it, same as before.
   var monthResp = ui.prompt(title, 'Month (1-12) -- leave blank and press OK for the whole fiscal year (April ' + year + ' - March ' + (year + 1) + '):', ui.ButtonSet.OK_CANCEL);
   if (monthResp.getSelectedButton() !== ui.Button.OK) return;
   var monthText = monthResp.getResponseText().trim();
 
   if (monthText === '' || monthText.toLowerCase() === 'all') {
-    var sheetNames = getFiscalMonths_(year).map(function (fm) { return buildSalarySheet_(fm.calYear, fm.calMonth); });
-    ui.alert('Done', 'Fiscal year ' + year + ' ready: ' + sheetNames.join(', ') + '. Each new row is seeded from the previous month\'s salary (or the Employees sheet, for the current calendar month only) -- only edit a cell when that person\'s salary actually changed.', ui.ButtonSet.OK);
+    var sheetNames = [];
+    getFiscalMonths_(year).forEach(function (fm) {
+      sheetNames.push(buildScheduleSheet_(fm.calYear, fm.calMonth));
+      sheetNames.push(buildSalarySheet_(fm.calYear, fm.calMonth));
+    });
+    ui.alert('Done', 'Fiscal year ' + year + ' ready: ' + sheetNames.join(', ') + '. Fill in each day\'s shift from the dropdown; each Salary row is seeded from the previous month (or the Employees sheet, for the current calendar month only) -- only edit a cell when something actually changed.', ui.ButtonSet.OK);
     return;
   }
 
@@ -510,8 +493,9 @@ function menuCreateSalarySheet_() {
     return;
   }
 
-  var sheetName = buildSalarySheet_(year, month);
-  ui.alert('Done', '"' + sheetName + '" is ready. Each new row is seeded from last month\'s salary (or the Employees sheet, if this is the current month) -- only edit a cell when that person\'s salary actually changed.', ui.ButtonSet.OK);
+  var scheduleSheetName = buildScheduleSheet_(year, month);
+  var salarySheetName = buildSalarySheet_(year, month);
+  ui.alert('Done', '"' + scheduleSheetName + '" and "' + salarySheetName + '" are ready. Fill in each day\'s shift from the dropdown; each Salary row is seeded from last month (or the Employees sheet, if this is the current month) -- only edit a cell when something actually changed.', ui.ButtonSet.OK);
 }
 
 /**

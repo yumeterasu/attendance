@@ -492,7 +492,7 @@ function checkCurrentSchedule_(findings, activeEmployees) {
       findings.push({
         sheetName: sheetName,
         a1: null,
-        message: emp.Name + ' is Active but missing from ' + sheetName + ' -- run "Create / Update Schedule Sheet..." to add them.'
+        message: emp.Name + ' is Active but missing from ' + sheetName + ' -- run "Create / Update Schedule + Salary Sheet..." to add them.'
       });
     }
   });
