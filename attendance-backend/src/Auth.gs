@@ -23,9 +23,33 @@ function checkApiKey_(apiKey) {
  * account. Set/changed via Script Properties (DASHBOARD_VIEWER_PASSWORD) or
  * the setDashboardViewerPassword() helper below. Unset/blank property means
  * this path is never satisfied -- viewer access is off until an admin sets one.
+ * Grants access to every Dashboard endpoint (Daily, Monthly, OT/Special
+ * Calendar) -- this is the "full" password, meant for office/admin staff,
+ * not the one handed to employees (see checkDailyViewerPassword_ below).
  */
 function checkViewerPassword_(candidate) {
   var expected = getProp_('DASHBOARD_VIEWER_PASSWORD');
+  return !!(expected && candidate && candidate === expected);
+}
+
+/**
+ * Second, narrower shared password for attendance-dashboard/daily.html (the
+ * employee-facing page) -- separate from DASHBOARD_VIEWER_PASSWORD so an
+ * employee who has this password can only ever reach handleDashboardDaily_,
+ * never Monthly/OT-Special (requireDashboardAccess_'s allowDailyOnly flag is
+ * what actually enforces that boundary server-side; this function only
+ * checks the password string itself). Added 2026-10-21: before this, both
+ * pages shared one password, so an employee could strip "daily.html" off
+ * the URL, land on the full admin Dashboard, and log in with the same
+ * password they already had -- this makes that impossible even if someone
+ * tries it directly against the API, not just hidden in the UI. Set/changed
+ * via Script Properties (DASHBOARD_VIEWER_PASSWORD_DAILY) or the
+ * setDashboardDailyViewerPassword() helper below. Unset/blank means
+ * daily.html simply has no working password until an admin sets one --
+ * it does NOT fall back to the full password.
+ */
+function checkDailyViewerPassword_(candidate) {
+  var expected = getProp_('DASHBOARD_VIEWER_PASSWORD_DAILY');
   return !!(expected && candidate && candidate === expected);
 }
 

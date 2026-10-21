@@ -52,6 +52,7 @@ function runHealthCheck_() {
   checkAndFixScheduleHeaders_(findings);
   checkAndFixSalaryHeaders_(findings);
   checkAndFixAllowancesHeaders_(findings);
+  checkDashboardPasswordCollision_(findings);
 
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var employeesOk = !!ss.getSheetByName('Employees');
@@ -327,6 +328,33 @@ function checkAndFixAllowancesHeaders_(findings) {
       sheetName: sheet.getName(),
       a1: null,
       message: sheet.getName() + ' header row auto-repaired: ' + fixed.join(', ') + ' restored.'
+    });
+  }
+}
+
+/**
+ * The whole point of DASHBOARD_VIEWER_PASSWORD_DAILY (see
+ * checkDailyViewerPassword_/requireDashboardAccess_, Auth.gs/Report.gs) is
+ * that it grants LESS access than DASHBOARD_VIEWER_PASSWORD -- Daily only,
+ * never Monthly/OT-Special. Nothing stops an admin from setting both Script
+ * Properties to the same value by mistake (copy-paste, or setting the daily
+ * one before remembering one already exists), which would silently restore
+ * full access to anyone holding the "employee" password with no error or
+ * warning anywhere -- can't be caught by either setter function in
+ * isolation (each only ever sees the one property it's writing), so Health
+ * Check is the one place positioned to compare both at once. Flags it as a
+ * finding but never auto-fixes it (there's no safe "correct" value to pick
+ * -- only the admin knows which of the two passwords should actually
+ * change).
+ */
+function checkDashboardPasswordCollision_(findings) {
+  var full = getProp_('DASHBOARD_VIEWER_PASSWORD');
+  var daily = getProp_('DASHBOARD_VIEWER_PASSWORD_DAILY');
+  if (full && daily && full === daily) {
+    findings.push({
+      sheetName: 'Script Properties',
+      a1: null,
+      message: 'DASHBOARD_VIEWER_PASSWORD and DASHBOARD_VIEWER_PASSWORD_DAILY are set to the same value -- the daily.html-only password currently also unlocks Monthly/OT-Special data. Set them to two different passwords (Apps Script editor > setDashboardDailyViewerPassword(), or Project Settings > Script Properties).'
     });
   }
 }

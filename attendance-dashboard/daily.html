@@ -804,7 +804,15 @@
   var API_URL = 'https://script.google.com/macros/s/AKfycbyfAUriIwgQlRjUv6cC1UKSazFW-KOrFd8a251bodchsBIa4On5ZZhji72Cjwsb-rYq/exec';
   var API_KEY = 'UgeFNcfax1LES5RhzPQ9XqG7OiHZwoYJ';
 
-  var SESSION_KEY = 'attendance_dashboard_session_v1';
+  // Deliberately a DIFFERENT key from index.html's 'attendance_dashboard_session_v1'
+  // (same localStorage origin, since both pages are served from the same Vercel
+  // site) -- added 2026-10-21 alongside the separate daily-only viewer password
+  // (DASHBOARD_VIEWER_PASSWORD_DAILY). Sharing one key meant an admin's full-access
+  // session and an employee's daily-only session would silently overwrite each
+  // other on a shared browser profile; a saved daily-only password would then get
+  // auto-submitted against index.html's Monthly/Calendar endpoints (correctly
+  // rejected server-side, but a confusing failed auto-login) and vice versa.
+  var SESSION_KEY = 'attendance_dashboard_daily_session_v1';
 
   function loadSession() {
     try { return JSON.parse(localStorage.getItem(SESSION_KEY) || 'null'); }

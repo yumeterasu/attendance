@@ -2495,24 +2495,25 @@ function getDashboardSummaryData_(year, month) {
 }
 
 /**
- * Shared by every Web Dashboard data endpoint. Two ways in: a real admin
+ * Shared by every Web Dashboard data endpoint. Three ways in: a real admin
  * sessionToken (existing "Admin Sign In" flow -- same pairing system the
- * app uses), or a shared viewer password for people who just need to look
- * at the numbers without an admin account. The password lives only in
- * Script Properties (Project Settings > Script Properties >
- * DASHBOARD_VIEWER_PASSWORD) -- the admin sets/changes it there directly,
- * no code change or redeploy needed, and it's never visible in this
- * source. Blank/unset property means the viewer-password path is simply
- * never satisfied (checkViewerPassword_ requires a non-empty value on both
- * sides), so leaving it unset is the same as disabling viewer access
- * entirely -- Admin Sign In still works either way. Returns { ok: true }
- * or { ok: false, response: <fail_() result to return as-is> }.
+ * app uses), the full shared viewer password (DASHBOARD_VIEWER_PASSWORD,
+ * always accepted, every endpoint), or -- only when the caller explicitly
+ * opts in via opts.allowDailyOnly -- the narrower daily.html-only password
+ * (DASHBOARD_VIEWER_PASSWORD_DAILY, see checkDailyViewerPassword_). Both
+ * passwords live only in Script Properties (Project Settings > Script
+ * Properties) -- the admin sets/changes them there directly, no code change
+ * or redeploy needed, and neither is ever visible in this source. Blank/
+ * unset means that path is simply never satisfied, so leaving one unset is
+ * the same as disabling it entirely -- Admin Sign In still works either
+ * way. Returns { ok: true } or { ok: false, response: <fail_() result to
+ * return as-is> }.
  */
-function requireDashboardAccess_(params) {
+function requireDashboardAccess_(params, opts) {
   if (!checkApiKey_(params.apiKey)) return { ok: false, response: fail_('unauthorized', 'Invalid API key') };
 
-  var isViewer = checkViewerPassword_(params.viewerPassword);
-  if (isViewer) return { ok: true };
+  if (checkViewerPassword_(params.viewerPassword)) return { ok: true };
+  if (opts && opts.allowDailyOnly && checkDailyViewerPassword_(params.viewerPassword)) return { ok: true };
 
   var admin = requireAdmin_(params.sessionToken);
   if (!admin.ok) return { ok: false, response: admin.response };
@@ -2693,7 +2694,12 @@ function handleDashboardCalendar_(params) {
 /**
  * Web Dashboard's daily data endpoint (doGet -> dashboardDaily) -- who
  * showed up and who didn't on one specific day, for the executive-facing
- * "today at a glance" view. Same auth as handleDashboardSummary_.
+ * "today at a glance" view. Same auth as handleDashboardSummary_, PLUS the
+ * narrower daily-only viewer password (allowDailyOnly: true) -- this is the
+ * one endpoint attendance-dashboard/daily.html (the employee-facing page)
+ * is allowed to reach with that password; Summary/Calendar deliberately
+ * don't opt in, so that password can never unlock Monthly/OT-Special data
+ * even if someone takes it straight to the full Dashboard's login form.
  *
  * Splits every active employee into (at most) one of four buckets, so an
  * admin can tell apart, at a glance: didn't come at all vs. came late vs.
@@ -2734,7 +2740,7 @@ function handleDashboardCalendar_(params) {
  * about the same employee/day.
  */
 function handleDashboardDaily_(params) {
-  var access = requireDashboardAccess_(params);
+  var access = requireDashboardAccess_(params, { allowDailyOnly: true });
   if (!access.ok) return access.response;
 
   var year = Number(params.year);
