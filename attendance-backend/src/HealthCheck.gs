@@ -51,6 +51,7 @@ function runHealthCheck_() {
   checkAndFixCriticalSheets_(findings);
   checkAndFixScheduleHeaders_(findings);
   checkAndFixSalaryHeaders_(findings);
+  checkAndFixAllowancesHeaders_(findings);
 
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var employeesOk = !!ss.getSheetByName('Employees');
@@ -291,6 +292,43 @@ function checkAndFixSalaryHeaders_(findings) {
       });
     }
   });
+}
+
+/**
+ * Same idea as checkAndFixScheduleHeaders_/checkAndFixSalaryHeaders_ above,
+ * for the single "Allowances" tab -- reuses ALLOWANCES_HEADERS (Allowances.gs,
+ * the same constant getOrCreateAllowancesSheet_ writes when first creating
+ * this sheet) rather than a second, independent copy of the column list, so
+ * the two can never drift apart. Every reader (readAllowanceRows_ and
+ * everything built on it -- Summary's Special Allowance column, the
+ * Dashboard's Allowance tooltip, the Print Employee Report's itemized
+ * lines) finds its columns by header NAME, not position, so a typo'd/
+ * overwritten header cell here would otherwise silently zero out every
+ * employee's Special Allowance everywhere, with nothing pointing at the
+ * cause -- the exact failure class the Employees!A1 incident this same day
+ * already demonstrated.
+ */
+function checkAndFixAllowancesHeaders_(findings) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName(ALLOWANCES_SHEET_NAME);
+  if (!sheet || sheet.getLastColumn() < ALLOWANCES_HEADERS.length) return; // not created yet (no Allowance ever added) -- nothing to check
+
+  var headerRange = sheet.getRange(1, 1, 1, ALLOWANCES_HEADERS.length);
+  var row = headerRange.getValues()[0];
+  var fixed = [];
+
+  ALLOWANCES_HEADERS.forEach(function (canonical, i) {
+    if (row[i] !== canonical) { row[i] = canonical; fixed.push(canonical); }
+  });
+
+  if (fixed.length > 0) {
+    headerRange.setValues([row]);
+    findings.push({
+      sheetName: sheet.getName(),
+      a1: null,
+      message: sheet.getName() + ' header row auto-repaired: ' + fixed.join(', ') + ' restored.'
+    });
+  }
 }
 
 /** Department spelling, missing Kiosk PIN, an Active column value that isn't cleanly TRUE/FALSE, and an ExtraShift that isn't a valid SHIFTS entry. */
