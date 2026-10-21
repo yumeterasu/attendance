@@ -10,23 +10,47 @@ function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('Attendance Admin')
     .addItem('Health Check', 'menuHealthCheck_')
-    .addItem('Fill Missed Punches (One at a Time)', 'menuFillMissedPunches_')
-    .addItem('Fix Mis-tapped IN After 16:00 (→ OUT)', 'menuFixLateInAsOut_')
-    .addItem('Add New Employee', 'menuAddNewEmployee_')
-    .addItem('Deactivate Employee (Resignation)', 'menuDeactivateEmployee_')
-    .addItem('Add Backdated Check-in/Check-out', 'menuAddBackdatedAttendance_')
-    .addItem('Bulk Mark Attendance for a Day', 'menuBulkMarkAttendance_')
-    .addItem('Allowancer', 'menuAddSpecialAllowance_')
-    .addItem('Create / Update Schedule + Salary Sheet', 'menuCreateScheduleAndSalarySheets_')
-    .addItem('Highlight Shift Mismatches', 'menuHighlightShiftMismatches_')
-    .addItem('Recompute Late/OT for One Month', 'menuRecomputeLateOtOneMonth_')
-    .addItem('Print Employee Report (Choose Person/Month/Year)', 'menuPrintEmployeeReport_')
-    .addItem('Print Employee Report - All Employees', 'menuPrintAllEmployeeReports_')
+    .addItem('Fill Missed Punches (One at a Time)', 'guardedMenuFillMissedPunches_')
+    .addItem('Fix Mis-tapped IN After 16:00 (→ OUT)', 'guardedMenuFixLateInAsOut_')
+    .addItem('Add New Employee', 'guardedMenuAddNewEmployee_')
+    .addItem('Deactivate Employee (Resignation)', 'guardedMenuDeactivateEmployee_')
+    .addItem('Add Backdated Check-in/Check-out', 'guardedMenuAddBackdatedAttendance_')
+    .addItem('Bulk Mark Attendance for a Day', 'guardedMenuBulkMarkAttendance_')
+    .addItem('Allowancer', 'guardedMenuAddSpecialAllowance_')
+    .addItem('Create / Update Schedule + Salary Sheet', 'guardedMenuCreateScheduleAndSalarySheets_')
+    .addItem('Highlight Shift Mismatches', 'guardedMenuHighlightShiftMismatches_')
+    .addItem('Recompute Late/OT for One Month', 'guardedMenuRecomputeLateOtOneMonth_')
+    .addItem('Print Employee Report (Choose Person/Month/Year)', 'guardedMenuPrintEmployeeReport_')
+    .addItem('Print Employee Report - All Employees', 'guardedMenuPrintAllEmployeeReports_')
     .addSeparator()
-    .addItem('Issue New Setup Code', 'menuIssueSetupCode_')
-    .addItem('Set Kiosk Exit PIN', 'menuSetKioskExitPin_')
+    .addItem('Issue New Setup Code', 'guardedMenuIssueSetupCode_')
+    .addItem('Set Kiosk Exit PIN', 'guardedMenuSetKioskExitPin_')
     .addToUi();
 }
+
+/**
+ * Every admin command below except Health Check itself goes through
+ * preflightHeaderCheck_ (HealthCheck.gs) first -- a cheap tab-name/header
+ * check that catches the "EmployeeID got accidentally cleared" class of
+ * mistake before whatever the admin actually clicked reads that same sheet.
+ * Health Check is excluded here because menuHealthCheck_ already runs the
+ * full, comprehensive scan on its own -- running the short version first
+ * would just show the same thing twice.
+ */
+function guardedMenuFillMissedPunches_() { if (preflightHeaderCheck_()) menuFillMissedPunches_(); }
+function guardedMenuFixLateInAsOut_() { if (preflightHeaderCheck_()) menuFixLateInAsOut_(); }
+function guardedMenuAddNewEmployee_() { if (preflightHeaderCheck_()) menuAddNewEmployee_(); }
+function guardedMenuDeactivateEmployee_() { if (preflightHeaderCheck_()) menuDeactivateEmployee_(); }
+function guardedMenuAddBackdatedAttendance_() { if (preflightHeaderCheck_()) menuAddBackdatedAttendance_(); }
+function guardedMenuBulkMarkAttendance_() { if (preflightHeaderCheck_()) menuBulkMarkAttendance_(); }
+function guardedMenuAddSpecialAllowance_() { if (preflightHeaderCheck_()) menuAddSpecialAllowance_(); }
+function guardedMenuCreateScheduleAndSalarySheets_() { if (preflightHeaderCheck_()) menuCreateScheduleAndSalarySheets_(); }
+function guardedMenuHighlightShiftMismatches_() { if (preflightHeaderCheck_()) menuHighlightShiftMismatches_(); }
+function guardedMenuRecomputeLateOtOneMonth_() { if (preflightHeaderCheck_()) menuRecomputeLateOtOneMonth_(); }
+function guardedMenuPrintEmployeeReport_() { if (preflightHeaderCheck_()) menuPrintEmployeeReport_(); }
+function guardedMenuPrintAllEmployeeReports_() { if (preflightHeaderCheck_()) menuPrintAllEmployeeReports_(); }
+function guardedMenuIssueSetupCode_() { if (preflightHeaderCheck_()) menuIssueSetupCode_(); }
+function guardedMenuSetKioskExitPin_() { if (preflightHeaderCheck_()) menuSetKioskExitPin_(); }
 
 /**
  * Finds IN rows tapped at/after LATE_IN_HOUR_THRESHOLD local time -- no shift

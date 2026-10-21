@@ -69,6 +69,64 @@ function runHealthCheck_() {
   return findings;
 }
 
+/**
+ * Runs before every other admin menu command (see the guardedMenuXxx_
+ * wrappers in Menu.gs) -- a cheap, header-only subset of Health Check: just
+ * the 4 tab-name/header-row checks above, never the full scan's per-row
+ * checks (those read the entire Employees/AttendanceLog/Schedule data and
+ * would make every single menu click noticeably slower). Catches exactly the
+ * class of mistake that bit us once already -- an EmployeeID header
+ * accidentally cleared -- before whatever command the admin actually meant
+ * to run reads that same sheet and silently misbehaves.
+ *
+ * Two-step by design, not detect-and-fix-in-one-pass like the full Health
+ * Check: a first dry-run pass finds problems without touching the sheet, so
+ * the admin can see exactly what's wrong and choose OK (fix now, then run
+ * the command) or Cancel (leave it alone, don't run the command) -- rather
+ * than the sheet already being changed by the time they see the alert.
+ *
+ * Returns true if the caller's command should proceed, false if it should
+ * not run at all (either the admin cancelled, or something was found that
+ * can't be auto-fixed at all -- e.g. a critical tab deleted outright, see
+ * the `fixable: false` findings in checkAndFixCriticalSheets_).
+ */
+function preflightHeaderCheck_() {
+  var ui = SpreadsheetApp.getUi();
+  var findings = [];
+  checkAndFixCriticalSheets_(findings, true);
+  checkAndFixScheduleHeaders_(findings, true);
+  checkAndFixSalaryHeaders_(findings, true);
+  checkAndFixAllowancesHeaders_(findings, true);
+
+  if (findings.length === 0) return true;
+
+  var lines = findings.map(function (f, i) { return (i + 1) + '. [' + f.sheetName + '] ' + f.message; });
+  var unfixable = findings.some(function (f) { return f.fixable === false; });
+
+  if (unfixable) {
+    ui.alert(
+      'Health Check -- command cancelled',
+      lines.join('\n\n') + '\n\nThis can\'t be auto-fixed. Run Attendance Admin > Health Check for details, fix it, then try this command again.',
+      ui.ButtonSet.OK
+    );
+    return false;
+  }
+
+  var response = ui.alert(
+    'Health Check found a problem',
+    lines.join('\n\n') + '\n\nClick OK to fix this now and continue, or Cancel to stop without changing anything.',
+    ui.ButtonSet.OK_CANCEL
+  );
+  if (response !== ui.Button.OK) return false;
+
+  var fixedFindings = [];
+  checkAndFixCriticalSheets_(fixedFindings);
+  checkAndFixScheduleHeaders_(fixedFindings);
+  checkAndFixSalaryHeaders_(fixedFindings);
+  checkAndFixAllowancesHeaders_(fixedFindings);
+  return true;
+}
+
 var HEALTH_CHECK_EMAIL = 'yumeterasu.computer@gmail.com';
 
 /**
@@ -167,7 +225,13 @@ var CANONICAL_HEADERS = {
  * fingerprint to match against, and losing the tab just means it stops
  * refreshing rather than losing any data).
  */
-function checkAndFixCriticalSheets_(findings) {
+// dryRun (optional, defaults falsy): when true, detects problems and
+// describes what WOULD be repaired without touching the sheet at all --
+// added for preflightHeaderCheck_, which needs to show an admin what it
+// found and let them click OK before anything is actually changed. Every
+// existing caller (runHealthCheck_, runHealthCheckAndEmail_) omits the
+// argument and keeps today's detect-and-repair-immediately behavior.
+function checkAndFixCriticalSheets_(findings, dryRun) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
 
   Object.keys(CANONICAL_HEADERS).forEach(function (sheetName) {
@@ -185,17 +249,19 @@ function checkAndFixCriticalSheets_(findings) {
 
       if (candidate) {
         var oldName = candidate.getName();
-        candidate.setName(sheetName);
+        if (!dryRun) candidate.setName(sheetName);
         sheet = candidate;
         findings.push({
           sheetName: sheetName,
           a1: null,
-          message: 'Tab "' + oldName + '" was renamed back to "' + sheetName + '" -- its name looked like it had been changed by accident (matched by its columns).'
+          fixable: true,
+          message: 'Tab "' + oldName + '" ' + (dryRun ? 'looks like it was renamed from' : 'was renamed back to') + ' "' + sheetName + '" by accident (matched by its columns).'
         });
       } else {
         findings.push({
           sheetName: sheetName,
           a1: null,
+          fixable: false,
           message: 'No "' + sheetName + '" tab found, and no other tab looks like it structurally. This is serious -- the whole system depends on this sheet. Check if it was deleted or renamed to something unrecognizable.'
         });
         return;
@@ -215,11 +281,12 @@ function checkAndFixCriticalSheets_(findings) {
     }
 
     if (fixed.length > 0) {
-      headerRange.setValues([row]);
+      if (!dryRun) headerRange.setValues([row]);
       findings.push({
         sheetName: sheetName,
         a1: null,
-        message: sheetName + ' header row auto-repaired: ' + fixed.join(', ') + ' restored.'
+        fixable: true,
+        message: sheetName + ' header row ' + (dryRun ? 'needs repair' : 'auto-repaired') + ': ' + fixed.join(', ') + (dryRun ? ' missing.' : ' restored.')
       });
     }
   });
@@ -229,14 +296,15 @@ function checkAndFixCriticalSheets_(findings) {
     findings.push({
       sheetName: sheetName,
       a1: null,
+      fixable: false,
       message: 'No "' + sheetName + '" tab found -- was it renamed or deleted? Needed for ' +
         (sheetName === 'Report' ? 'the daily report view.' : 'monthly totals and OT pay.')
     });
   });
 }
 
-/** Same idea as checkAndFixCriticalSheets_, scoped to columns A ("EmployeeID") and B ("Name") of every "Schedule YYYY-MM" tab -- those two never legitimately hold anything else. */
-function checkAndFixScheduleHeaders_(findings) {
+/** Same idea as checkAndFixCriticalSheets_, scoped to columns A ("EmployeeID") and B ("Name") of every "Schedule YYYY-MM" tab -- those two never legitimately hold anything else. dryRun: see checkAndFixCriticalSheets_. */
+function checkAndFixScheduleHeaders_(findings, dryRun) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var scheduleSheets = ss.getSheets().filter(function (s) { return /^Schedule \d{4}-\d{2}$/.test(s.getName()); });
 
@@ -250,11 +318,12 @@ function checkAndFixScheduleHeaders_(findings) {
     if (row[1] !== 'Name') { row[1] = 'Name'; fixed.push('Name'); }
 
     if (fixed.length > 0) {
-      headerRange.setValues([row]);
+      if (!dryRun) headerRange.setValues([row]);
       findings.push({
         sheetName: sheet.getName(),
         a1: null,
-        message: sheet.getName() + ' header row auto-repaired: ' + fixed.join(', ') + ' restored.'
+        fixable: true,
+        message: sheet.getName() + ' header row ' + (dryRun ? 'needs repair' : 'auto-repaired') + ': ' + fixed.join(', ') + (dryRun ? ' missing.' : ' restored.')
       });
     }
   });
@@ -269,8 +338,10 @@ function checkAndFixScheduleHeaders_(findings) {
  * column by header NAME, not position, so a typo'd/overwritten header
  * cell here would otherwise make every Thai employee's OT Pay for that
  * month silently go blank with nothing pointing at the cause.
+ *
+ * dryRun: see checkAndFixCriticalSheets_.
  */
-function checkAndFixSalaryHeaders_(findings) {
+function checkAndFixSalaryHeaders_(findings, dryRun) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var salarySheets = ss.getSheets().filter(function (s) { return /^Salary \d{4}-\d{2}$/.test(s.getName()); });
 
@@ -285,11 +356,12 @@ function checkAndFixSalaryHeaders_(findings) {
     if (row[2] !== 'Salary') { row[2] = 'Salary'; fixed.push('Salary'); }
 
     if (fixed.length > 0) {
-      headerRange.setValues([row]);
+      if (!dryRun) headerRange.setValues([row]);
       findings.push({
         sheetName: sheet.getName(),
         a1: null,
-        message: sheet.getName() + ' header row auto-repaired: ' + fixed.join(', ') + ' restored.'
+        fixable: true,
+        message: sheet.getName() + ' header row ' + (dryRun ? 'needs repair' : 'auto-repaired') + ': ' + fixed.join(', ') + (dryRun ? ' missing.' : ' restored.')
       });
     }
   });
@@ -308,8 +380,10 @@ function checkAndFixSalaryHeaders_(findings) {
  * employee's Special Allowance everywhere, with nothing pointing at the
  * cause -- the exact failure class the Employees!A1 incident this same day
  * already demonstrated.
+ *
+ * dryRun: see checkAndFixCriticalSheets_.
  */
-function checkAndFixAllowancesHeaders_(findings) {
+function checkAndFixAllowancesHeaders_(findings, dryRun) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var sheet = ss.getSheetByName(ALLOWANCES_SHEET_NAME);
   if (!sheet || sheet.getLastColumn() < ALLOWANCES_HEADERS.length) return; // not created yet (no Allowance ever added) -- nothing to check
@@ -323,11 +397,12 @@ function checkAndFixAllowancesHeaders_(findings) {
   });
 
   if (fixed.length > 0) {
-    headerRange.setValues([row]);
+    if (!dryRun) headerRange.setValues([row]);
     findings.push({
       sheetName: sheet.getName(),
       a1: null,
-      message: sheet.getName() + ' header row auto-repaired: ' + fixed.join(', ') + ' restored.'
+      fixable: true,
+      message: sheet.getName() + ' header row ' + (dryRun ? 'needs repair' : 'auto-repaired') + ': ' + fixed.join(', ') + (dryRun ? ' missing.' : ' restored.')
     });
   }
 }
