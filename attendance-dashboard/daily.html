@@ -1,0 +1,1225 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Yume Terasu — Today's Attendance</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<!-- Bump this string on every deploy to this file -- checkForUpdate() polls
+     the live page for this tag and shows a "new version available" banner
+     when it no longer matches what's running in memory. A tab left open for
+     days otherwise has no way to know a newer version was ever shipped.
+     Independent of index.html's own app-version tag -- each file's
+     checkForUpdate() only ever re-fetches itself (location.pathname). -->
+<meta name="app-version" content="2026-10-21.1" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap" rel="stylesheet" />
+
+<style>
+  /* Same design tokens as index.html (the admin Dashboard) -- kept as one
+     block, including a few this trimmed page doesn't itself use (e.g. the
+     calendar-tab tokens), rather than hand-picking a subset: a stray unused
+     CSS custom property costs nothing and this way the two files' palettes
+     can never quietly drift apart if one is edited later and not the other. */
+  :root {
+    --accent: #3E7BFA;
+    --accent-dark: #2E63D6;
+    --bg: #F7F9FC;
+    --card: #ffffff;
+    --border: #E4EBF9;
+    --text: #12151C;
+    --text-muted: #5C6B8A;
+    --danger-bg: #FDECEA;
+    --danger-border: #F1B3AB;
+    --danger-text: #C0392B;
+    --success-bg: #E4F6E9;
+    --success-border: #B7E2C3;
+    --success-text: #1E7B3A;
+    --warn-bg: #FFF3E0;
+    --warn-text: #B8631A;
+    --warn-border: #F0C892;
+    --late-bg: #FFE7D6;
+    --late-text: #C1470C;
+    --late-border: #F0B48A;
+    --branch-pp-bg: #EEF3FC;
+    --branch-pp-text: #2E63D6;
+    --branch-tl-bg: #F3EEFE;
+    --branch-tl-text: #7C3AED;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    min-height: 100%;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Plus Jakarta Sans", -apple-system, "Segoe UI", sans-serif;
+  }
+
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 20px 32px;
+    background: var(--card);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .brand-badge {
+    width: 40px;
+    height: 40px;
+    border-radius: 12px;
+    background: #EEF3FC;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 20px;
+  }
+
+  .brand-text h1 {
+    margin: 0;
+    font-size: 16px;
+    font-weight: 800;
+  }
+
+  .brand-text p {
+    margin: 2px 0 0;
+    font-size: 12px;
+    color: var(--text-muted);
+  }
+
+  .header-right {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+
+  .lang-toggle {
+    display: inline-flex;
+    gap: 2px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 3px;
+  }
+  .lang-btn {
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--text-muted);
+    background: transparent;
+    border: none;
+    border-radius: 7px;
+    padding: 6px 10px;
+    cursor: pointer;
+  }
+  .lang-btn.active {
+    background: var(--card);
+    color: var(--text);
+    box-shadow: 0 1px 2px rgba(20,20,20,0.06);
+  }
+
+  #whoami {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    font-size: 13px;
+    color: var(--text-muted);
+  }
+
+  #logoutBtn {
+    border: 1px solid var(--border);
+    background: var(--card);
+    color: var(--text-muted);
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    padding: 8px 14px;
+    border-radius: 10px;
+    cursor: pointer;
+  }
+  #logoutBtn:hover { background: #F4F7FD; }
+
+  main {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 40px 24px 80px;
+  }
+
+  /* ---------- Login ---------- */
+
+  #loginView {
+    display: flex;
+    justify-content: center;
+    padding-top: 60px;
+  }
+
+  .login-card {
+    width: 100%;
+    max-width: 380px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    padding: 36px 32px;
+    box-shadow: 0 1px 2px rgba(20,20,20,0.04), 0 16px 40px -20px rgba(62,123,250,0.25);
+    text-align: center;
+  }
+
+  .login-card .brand-badge {
+    margin: 0 auto 16px;
+    width: 52px;
+    height: 52px;
+    font-size: 26px;
+  }
+
+  .login-card h2 {
+    margin: 0 0 6px;
+    font-size: 20px;
+    font-weight: 800;
+  }
+
+  .login-card p.hint {
+    margin: 0 0 24px;
+    font-size: 13px;
+    color: var(--text-muted);
+    line-height: 1.5;
+  }
+
+  .field {
+    text-align: left;
+    margin-bottom: 16px;
+  }
+
+  .field label {
+    display: block;
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--text-muted);
+    margin-bottom: 6px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .field input {
+    width: 100%;
+    font-family: inherit;
+    font-size: 15px;
+    padding: 11px 14px;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    color: var(--text);
+  }
+
+  .field input:focus {
+    outline: none;
+    border-color: var(--accent);
+    background: #ffffff;
+  }
+
+  button.primary {
+    width: 100%;
+    font-family: inherit;
+    font-size: 15px;
+    font-weight: 700;
+    color: #ffffff;
+    background: var(--accent);
+    border: none;
+    border-radius: 12px;
+    padding: 13px;
+    cursor: pointer;
+    margin-top: 8px;
+  }
+  button.primary:hover { background: var(--accent-dark); }
+  button.primary:disabled { opacity: 0.6; cursor: default; }
+
+  .error-msg {
+    margin-top: 14px;
+    font-size: 13px;
+    color: var(--danger-text);
+    background: var(--danger-bg);
+    border: 1px solid var(--danger-border);
+    border-radius: 10px;
+    padding: 10px 12px;
+    display: none;
+  }
+  .error-msg.show { display: block; }
+
+  /* ---------- Dashboard ---------- */
+
+  #dashboardView { display: none; }
+
+  .controls {
+    display: flex;
+    align-items: flex-end;
+    gap: 14px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 18px 20px;
+    margin-bottom: 24px;
+  }
+
+  .controls .field { margin-bottom: 0; }
+  .controls .field input[type="date"] { cursor: pointer; }
+
+  .refresh-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--accent-dark);
+    background: #EEF3FC;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 11px 16px;
+    cursor: pointer;
+    height: 45px;
+  }
+  .refresh-btn:hover { background: #E4EBFC; }
+  .refresh-btn:disabled { opacity: 0.6; cursor: default; }
+  .refresh-btn #dailyRefreshIcon,
+  .refresh-btn #dailyErrorRetryIcon {
+    display: inline-block;
+    font-size: 15px;
+  }
+  .refresh-btn.spinning #dailyRefreshIcon,
+  .refresh-btn.spinning #dailyErrorRetryIcon {
+    animation: spin 0.7s linear infinite;
+  }
+  @keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+  }
+
+  /* Present/Absent stat tiles -- semantic color (green/red) carries the
+     state at a glance, same idea as the Late/On Leave pills, just much
+     larger since this is the headline number of the page. */
+  .stat-row {
+    display: flex;
+    gap: 16px;
+    margin-bottom: 24px;
+  }
+  .stat-tile {
+    flex: 1;
+    border-radius: 16px;
+    padding: 20px 22px;
+    border: 1px solid var(--border);
+  }
+  .stat-tile.present { background: var(--success-bg); border-color: var(--success-border); }
+  .stat-tile.absent { background: var(--danger-bg); border-color: var(--danger-border); }
+  .stat-tile.late { background: var(--late-bg); border-color: var(--late-border); }
+  .stat-tile.leave { background: var(--warn-bg); border-color: var(--warn-border); }
+  .stat-tile .stat-label {
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .stat-tile.present .stat-label { color: var(--success-text); }
+  .stat-tile.absent .stat-label { color: var(--danger-text); }
+  .stat-tile.late .stat-label { color: var(--late-text); }
+  .stat-tile.leave .stat-label { color: var(--warn-text); }
+  .stat-tile .stat-value {
+    font-size: 36px;
+    font-weight: 800;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.2;
+    margin-top: 4px;
+  }
+  .stat-tile.present .stat-value { color: var(--success-text); }
+  .stat-tile.absent .stat-value { color: var(--danger-text); }
+  .stat-tile.late .stat-value { color: var(--late-text); }
+  .stat-tile.leave .stat-value { color: var(--warn-text); }
+
+  .stat-tile .stat-hint {
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-top: 6px;
+    line-height: 1.4;
+  }
+
+  .section-label {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--text-muted);
+    padding: 16px 20px 4px;
+  }
+
+  .branch-group-label {
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--text-muted);
+    padding: 10px 20px 2px;
+  }
+  .branch-group-label.branch-pp { color: var(--branch-pp-text); }
+  .branch-group-label.branch-tl { color: var(--branch-tl-text); }
+
+  .name-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 12px 20px 20px;
+  }
+  .name-chip {
+    display: flex;
+    flex-direction: column;
+    background: #FAFBFF;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 8px 12px;
+    min-width: 140px;
+    position: relative;
+  }
+  .name-chip .chip-break {
+    position: absolute;
+    right: 12px;
+    bottom: 8px;
+    font-size: 10px;
+    font-weight: 700;
+    color: var(--text-muted);
+  }
+  .name-chip .chip-break.over-budget { color: var(--danger-text); }
+  .name-chip .chip-name { font-size: 13px; font-weight: 700; }
+  .name-chip .chip-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .name-chip .chip-header .chip-meta.pill { margin-top: 0; }
+  .name-chip .chip-meta { font-size: 11px; color: var(--text-muted); margin-top: 1px; }
+  .chip-meta.pill { margin-top: 2px; }
+  .chip-meta.branch-pp { background: var(--branch-pp-bg); color: var(--branch-pp-text); }
+  .chip-meta.branch-tl { background: var(--branch-tl-bg); color: var(--branch-tl-text); }
+  .chip-meta.branch-mismatch {
+    background: linear-gradient(90deg, var(--branch-pp-text), var(--branch-tl-text));
+    color: #ffffff;
+  }
+  .name-chip .chip-note { font-size: 11px; font-weight: 700; margin-top: 3px; }
+  .name-chip.leave .chip-note { color: var(--warn-text); }
+  .name-chip.present .chip-note { color: var(--success-text); }
+  .name-chip.late .chip-note { color: var(--late-text); }
+
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    overflow: hidden;
+  }
+  #dailyContent .card + .card { margin-top: 16px; }
+
+  .pill {
+    display: inline-block;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    padding: 3px 7px;
+    border-radius: 999px;
+    font-size: 12px;
+  }
+  .pill.late { background: var(--danger-bg); color: var(--danger-text); }
+
+  #dailyErrorState { color: var(--danger-text); }
+  #dailyErrorMessage { margin: 0 0 16px; }
+
+  .stale-banner {
+    display: none;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    font-size: 13px;
+    color: var(--warn-text);
+    background: var(--warn-bg);
+    border: 1px solid var(--warn-border);
+    border-radius: 12px;
+    padding: 10px 16px;
+    margin-bottom: 16px;
+  }
+  .stale-retry-btn {
+    flex: 0 0 auto;
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--warn-text);
+    background: #ffffff;
+    border: 1px solid var(--warn-border);
+    border-radius: 8px;
+    padding: 6px 14px;
+    cursor: pointer;
+  }
+  .stale-retry-btn:hover { background: var(--warn-bg); }
+
+  /* A tab left open for days has no way to know a newer version was
+     shipped -- checkForUpdate() polls for this and shows it. */
+  #updateBanner {
+    display: none;
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    background: var(--accent-dark);
+    color: #ffffff;
+    font-size: 13px;
+    font-weight: 600;
+    padding: 10px 20px;
+  }
+  #updateReloadBtn {
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--accent-dark);
+    background: #ffffff;
+    border: none;
+    border-radius: 8px;
+    padding: 6px 14px;
+    cursor: pointer;
+  }
+  #updateReloadBtn:hover { background: #EEF3FC; }
+
+  /* The 4 stat tiles get cramped before the general mobile breakpoint below
+     kicks in -- own threshold, wide enough that a tablet or a narrow
+     split-screen window still gets a comfortable 2x2 instead of 4 squeezed
+     tiles. This page is meant to be opened on a phone more than the admin
+     Dashboard is, so both breakpoints matter here in practice. */
+  @media (max-width: 860px) {
+    .stat-row { flex-wrap: wrap; }
+    .stat-tile { flex: 1 1 calc(50% - 8px); }
+  }
+
+  @media (max-width: 720px) {
+    main { padding: 24px 12px 60px; }
+    header { padding: 16px 18px; flex-wrap: wrap; row-gap: 10px; }
+    .header-right { flex-wrap: wrap; justify-content: flex-end; }
+    .controls { flex-wrap: wrap; }
+  }
+</style>
+</head>
+<body>
+
+<div id="updateBanner">
+  <span data-i18n="updateAvailable">A new version of this page is available.</span>
+  <button type="button" id="updateReloadBtn" data-i18n="updateReload">Reload</button>
+</div>
+
+<header>
+  <div class="brand">
+    <div class="brand-badge">📅</div>
+    <div class="brand-text">
+      <h1 data-i18n="brandTitle">Today's Attendance</h1>
+      <p>Yume Terasu</p>
+    </div>
+  </div>
+  <div class="header-right">
+    <div class="lang-toggle" id="langToggle">
+      <button type="button" class="lang-btn" data-lang="en">EN</button>
+      <button type="button" class="lang-btn" data-lang="ja">日本語</button>
+    </div>
+    <div id="whoami" style="display:none;">
+      <span id="whoamiName"></span>
+      <button id="logoutBtn" data-i18n="logout">Log out</button>
+    </div>
+  </div>
+</header>
+
+<main>
+
+  <div id="loginView">
+    <div class="login-card">
+      <div class="brand-badge">🔒</div>
+      <h2 id="loginTitle" data-i18n="loginViewerTitle">Viewer Access</h2>
+
+      <form id="viewerForm">
+        <p class="hint" data-i18n="viewerHint">Enter the viewing password shared with you to see today's attendance. Read-only — no admin account needed.</p>
+        <div class="field">
+          <label for="viewerPassword" data-i18n="passwordLabel">Password</label>
+          <input id="viewerPassword" type="password" autocomplete="current-password" placeholder="••••••" />
+        </div>
+        <button class="primary" type="submit" id="viewerBtn" data-i18n="viewDashboard">View Today's Attendance</button>
+      </form>
+
+      <div class="error-msg" id="loginError"></div>
+    </div>
+  </div>
+
+  <div id="dashboardView">
+    <div class="controls">
+      <div class="field" id="dateField" style="flex-basis:180px;">
+        <label for="dailyDateInput" data-i18n="dateLabel">Date</label>
+        <input type="date" id="dailyDateInput" />
+      </div>
+      <button class="refresh-btn" id="dailyRefreshBtn" type="button" data-i18n-title="reloadTitle" title="Reload from Google Sheet">
+        <span id="dailyRefreshIcon">↻</span> <span data-i18n="refresh">Refresh</span>
+      </button>
+    </div>
+
+    <div id="dailyView">
+      <div class="stale-banner" id="dailyStaleBanner"></div>
+      <div id="dailyLoadingState" style="text-align:center;padding:60px 20px;color:var(--text-muted);font-size:14px;" data-i18n="loading">Loading…</div>
+      <div id="dailyErrorState" style="text-align:center;padding:60px 20px;font-size:14px;display:none;">
+        <p id="dailyErrorMessage"></p>
+        <button type="button" id="dailyErrorRetryBtn" class="refresh-btn">
+          <span id="dailyErrorRetryIcon">↻</span> <span data-i18n="refresh">Refresh</span>
+        </button>
+      </div>
+
+      <div id="dailyContent" style="display:none;">
+        <div class="stat-row">
+          <div class="stat-tile present">
+            <div class="stat-label" data-i18n="onTimeLabel">On Time</div>
+            <div class="stat-value" id="onTimeCount">0</div>
+            <div class="stat-hint" data-i18n="onTimeHint">Punched in on time.</div>
+          </div>
+          <div class="stat-tile late">
+            <div class="stat-label" data-i18n="lateLabel">Late</div>
+            <div class="stat-value" id="lateCount">0</div>
+            <div class="stat-hint" data-i18n="lateHint">Punched in after shift start.</div>
+          </div>
+          <div class="stat-tile absent">
+            <div class="stat-label" data-i18n="absentLabel">Absent</div>
+            <div class="stat-value" id="absentCount">0</div>
+            <div class="stat-hint" data-i18n="absentHint">Had a real shift today, never tapped in.</div>
+          </div>
+          <div class="stat-tile leave">
+            <div class="stat-label" data-i18n="onLeaveLabel">On Leave</div>
+            <div class="stat-value" id="onLeaveCount">0</div>
+            <div class="stat-hint" data-i18n="onLeaveHint">Shift marked Leave/Holiday, never tapped in.</div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="section-label" data-i18n="absentSectionTitle">Absent today — scheduled, didn't punch in</div>
+          <div id="absentEmptyState" style="display:none;padding:4px 20px 20px;color:var(--text-muted);font-size:13px;" data-i18n="absentEmpty">Nobody — everyone scheduled today showed up.</div>
+          <div class="name-list" id="absentList"></div>
+        </div>
+
+        <div class="card">
+          <div class="section-label" data-i18n="onLeaveSectionTitle">On leave today</div>
+          <div id="onLeaveEmptyState" style="display:none;padding:4px 20px 20px;color:var(--text-muted);font-size:13px;" data-i18n="onLeaveEmpty">Nobody on leave today.</div>
+          <div class="name-list" id="onLeaveList"></div>
+        </div>
+
+        <div class="card">
+          <div class="section-label" data-i18n="checkedInSectionTitle">Checked in today</div>
+          <div id="onTimeEmptyState" style="display:none;padding:4px 20px 20px;color:var(--text-muted);font-size:13px;" data-i18n="checkedInEmpty">Nobody has punched in yet today.</div>
+          <div class="branch-group" id="onTimeGroupPP" style="display:none;">
+            <div class="branch-group-label branch-pp" data-branch-label="PP">Phrom Phong</div>
+            <div class="name-list" id="onTimeListPP"></div>
+          </div>
+          <div class="branch-group" id="onTimeGroupTL" style="display:none;">
+            <div class="branch-group-label branch-tl" data-branch-label="TL">Thonglor</div>
+            <div class="name-list" id="onTimeListTL"></div>
+          </div>
+          <div class="branch-group" id="onTimeGroupUnknown" style="display:none;">
+            <div class="branch-group-label">Unknown</div>
+            <div class="name-list" id="onTimeListUnknown"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</main>
+
+<script>
+  // This file is a trimmed, employee-facing fork of index.html (the admin
+  // Dashboard) -- same backend, same viewer password, same Daily-view
+  // rendering code, just with the Monthly table, the OT/Special calendar
+  // tab, and the tab-switching chrome between them removed entirely (not
+  // just hidden) so a regular employee opening this link only ever sees
+  // today's (or any one day's) attendance. Kept as a SEPARATE file rather
+  // than a mode/flag inside index.html -- simplest way to guarantee an
+  // employee can never accidentally land on the fuller admin view, and the
+  // two files can be told apart by URL alone with no login-time branching.
+  //
+  // Where a piece of code below matches index.html line for line, it's
+  // intentional -- changes made to the shared backend contract (new fields
+  // on a dashboardDaily response, a renamed action, etc.) need to land in
+  // both files; there's no build step tying them together.
+
+  // ---------- Language ----------
+
+  var LANG_KEY = 'attendance_dashboard_lang_v1';
+
+  var TRANSLATIONS = {
+    en: {
+      brandTitle: "Today's Attendance",
+      logout: 'Log out',
+      loginViewerTitle: 'Viewer Access',
+      viewerHint: "Enter the viewing password shared with you to see today's attendance. Read-only — no admin account needed.",
+      passwordLabel: 'Password',
+      viewDashboard: "View Today's Attendance",
+      checking: 'Checking…',
+      errIncorrectPassword: 'Incorrect password.',
+      errGeneric: 'Something went wrong.',
+      errNetwork: 'Could not reach the server. Check your connection.',
+      errTimeout: 'The server is taking too long to respond. Please try again in a moment.',
+      refresh: 'Refresh',
+      reloadTitle: 'Reload from Google Sheet',
+      loading: 'Loading…',
+      staleBanner: function (time) { return 'Showing data saved at ' + time + ' — couldn’t refresh just now. Try again in a moment.'; },
+      dateLabel: 'Date',
+      absentLabel: 'Absent',
+      absentHint: 'Didn’t punch in today.',
+      noShiftNote: 'No shift',
+      notYetOut: 'Not yet',
+      lateLabel: 'Late',
+      lateHint: 'Punched in after shift start.',
+      onLeaveLabel: 'On Leave',
+      onLeaveHint: 'Shift marked Leave/Holiday, never tapped in.',
+      onTimeLabel: 'On Time',
+      onTimeHint: 'Punched in on time.',
+      absentSectionTitle: 'Absent today — didn’t punch in',
+      absentEmpty: 'Nobody — everyone scheduled today showed up.',
+      onLeaveSectionTitle: 'On leave today',
+      onLeaveEmpty: 'Nobody on leave today.',
+      checkedInSectionTitle: 'Checked in today',
+      checkedInEmpty: 'Nobody has punched in yet today.',
+      lateBadge: 'Late',
+      viewerName: 'Viewer',
+      updateAvailable: 'A new version of this page is available.',
+      updateReload: 'Reload',
+      branchUnknown: 'Unknown',
+      punchMismatchTitle: function (inLabel, outLabel) { return 'Punched IN at ' + inLabel + ', OUT at ' + outLabel + '.'; }
+    },
+    ja: {
+      brandTitle: '本日の勤怠',
+      logout: 'ログアウト',
+      loginViewerTitle: '閲覧者アクセス',
+      viewerHint: '共有された閲覧用パスワードを入力すると、本日の勤怠を確認できます。閲覧専用 — 管理者アカウントは不要です。',
+      passwordLabel: 'パスワード',
+      viewDashboard: '本日の勤怠を見る',
+      checking: '確認中…',
+      errIncorrectPassword: 'パスワードが違います。',
+      errGeneric: 'エラーが発生しました。',
+      errNetwork: 'サーバーに接続できません。接続を確認してください。',
+      errTimeout: 'サーバーの応答に時間がかかっています。少し待ってからもう一度お試しください。',
+      refresh: '更新',
+      reloadTitle: 'Googleスプレッドシートから再読み込み',
+      loading: '読み込み中…',
+      staleBanner: function (time) { return time + ' 時点のデータを表示しています — 現在更新できません。しばらくしてからもう一度お試しください。'; },
+      dateLabel: '日付',
+      absentLabel: '欠勤',
+      absentHint: '本日、打刻していない。',
+      noShiftNote: 'シフトなし',
+      notYetOut: '未打刻',
+      lateLabel: '遅刻',
+      lateHint: 'シフト開始後に打刻した。',
+      onLeaveLabel: '休暇中',
+      onLeaveHint: 'シフトが休暇/休日で、打刻していない。',
+      onTimeLabel: '定刻',
+      onTimeHint: '定刻に打刻した。',
+      absentSectionTitle: '本日の欠勤者 — 未打刻',
+      absentEmpty: '該当者なし — 本日予定の全員が出勤しました。',
+      onLeaveSectionTitle: '本日の休暇者',
+      onLeaveEmpty: '本日、休暇者はいません。',
+      checkedInSectionTitle: '本日の出勤者',
+      checkedInEmpty: '本日、まだ打刻した人はいません。',
+      lateBadge: '遅刻',
+      viewerName: 'ビューアー',
+      updateAvailable: 'このページの新しいバージョンが利用可能です。',
+      updateReload: '再読み込み',
+      branchUnknown: '不明',
+      punchMismatchTitle: function (inLabel, outLabel) { return inLabel + 'で出勤、' + outLabel + 'で退勤しました。'; }
+    }
+  };
+
+  var currentLang = 'en';
+  try {
+    var storedLang = localStorage.getItem(LANG_KEY);
+    if (storedLang === 'en' || storedLang === 'ja') currentLang = storedLang;
+  } catch (e) {}
+
+  function t(key) {
+    return TRANSLATIONS[currentLang][key];
+  }
+
+  function applyStaticI18n() {
+    document.documentElement.lang = currentLang;
+    document.querySelectorAll('[data-i18n]').forEach(function (el) {
+      if (el.disabled) return;
+      el.textContent = t(el.getAttribute('data-i18n'));
+    });
+    document.querySelectorAll('[data-i18n-title]').forEach(function (el) {
+      el.title = t(el.getAttribute('data-i18n-title'));
+    });
+  }
+
+  function errorInfoFrom(result, fallbackKey) {
+    if (result.messageKey) return { key: result.messageKey };
+    if (result.message) return { text: result.message };
+    return { key: fallbackKey };
+  }
+  function resolveErrorText(info) {
+    return info.key ? t(info.key) : info.text;
+  }
+
+  function setLanguage(lang) {
+    if (lang !== 'en' && lang !== 'ja') return;
+    currentLang = lang;
+    try { localStorage.setItem(LANG_KEY, lang); } catch (e) {}
+    document.querySelectorAll('.lang-btn').forEach(function (btn) {
+      btn.classList.toggle('active', btn.getAttribute('data-lang') === lang);
+    });
+    applyStaticI18n();
+    if (loginErrorInfo) loginError.textContent = resolveErrorText(loginErrorInfo);
+    // Absent/On Leave chips show only raw data (name, shift) -- nothing
+    // there is looked up in TRANSLATIONS, so those two lists have nothing
+    // to update on a language switch. The merged On Time/Late list is
+    // different: an unattributed punch renders punchBranchLabel()'s
+    // translated "Unknown"/"不明" fallback, and the "Late" pill text is
+    // translated too, so it needs re-rendering here.
+    if (document.getElementById('dailyContent').style.display !== 'none') {
+      renderBranchGroupedList('onTime', lastToday);
+    }
+    var dailyErrorStateEl = document.getElementById('dailyErrorState');
+    if (dailyErrorStateEl.style.display === 'block' && dailyErrorInfo) {
+      document.getElementById('dailyErrorMessage').textContent = resolveErrorText(dailyErrorInfo);
+    }
+    var dailyStaleBannerEl = document.getElementById('dailyStaleBanner');
+    if (dailyStaleBannerEl.style.display === 'flex' && dailyStaleBannerEl.dataset.cachedAt) {
+      renderStaleBannerContent(dailyStaleBannerEl, Number(dailyStaleBannerEl.dataset.cachedAt));
+    }
+    var session = loadSession();
+    if (session) document.getElementById('whoamiName').textContent = t('viewerName');
+  }
+
+  document.querySelectorAll('.lang-btn').forEach(function (btn) {
+    btn.addEventListener('click', function () { setLanguage(btn.getAttribute('data-lang')); });
+  });
+
+  // Same Web App, same apiKey, as index.html and the Kiosk app -- already
+  // effectively public (shipped inside the distributed APK), so reusing it
+  // here doesn't add a new exposure. Auth for what this page can actually
+  // see is enforced by the shared viewer password (requireDashboardAccess_/
+  // checkViewerPassword_ in Report.gs/Auth.gs).
+  var API_URL = 'https://script.google.com/macros/s/AKfycbyfAUriIwgQlRjUv6cC1UKSazFW-KOrFd8a251bodchsBIa4On5ZZhji72Cjwsb-rYq/exec';
+  var API_KEY = 'UgeFNcfax1LES5RhzPQ9XqG7OiHZwoYJ';
+
+  var SESSION_KEY = 'attendance_dashboard_session_v1';
+
+  function loadSession() {
+    try { return JSON.parse(localStorage.getItem(SESSION_KEY) || 'null'); }
+    catch (e) { return null; }
+  }
+  function saveSession(session) {
+    try { localStorage.setItem(SESSION_KEY, JSON.stringify(session)); } catch (e) {}
+  }
+  function clearSession() {
+    try { localStorage.removeItem(SESSION_KEY); } catch (e) {}
+  }
+
+  var API_TIMEOUT_MS = 20000;
+
+  function apiGet(action, params, timeoutMs, isRetry) {
+    var url = new URL(API_URL);
+    url.searchParams.set('action', action);
+    url.searchParams.set('apiKey', API_KEY);
+    Object.keys(params || {}).forEach(function (k) { url.searchParams.set(k, params[k]); });
+
+    var controller = new AbortController();
+    var timedOut = false;
+    var timer = setTimeout(function () { timedOut = true; controller.abort(); }, timeoutMs || API_TIMEOUT_MS);
+
+    return fetch(url.toString(), { signal: controller.signal, cache: 'no-store' })
+      .then(function (res) { return res.json(); })
+      .catch(function () {
+        if (timedOut && !isRetry) {
+          return apiGet(action, params, timeoutMs, true);
+        }
+        return { success: false, error: 'network_error', messageKey: timedOut ? 'errTimeout' : 'errNetwork' };
+      })
+      .finally(function () { clearTimeout(timer); });
+  }
+
+  // ---------- Local cache (fallback when a live fetch can't complete) ----------
+
+  var LOCAL_CACHE_PREFIX = 'attendance_dashboard_cache_v1_';
+  var CACHE_SCHEMA_VERSION = 1;
+  var MAX_CACHE_AGE_MS = 3 * 24 * 60 * 60 * 1000; // 3 days
+
+  function saveLocalCache(key, data) {
+    try {
+      localStorage.setItem(LOCAL_CACHE_PREFIX + key, JSON.stringify({ v: CACHE_SCHEMA_VERSION, data: data, cachedAt: Date.now() }));
+    } catch (e) {}
+  }
+  var cacheWriteSeqByKey = {};
+  function saveLocalCacheIfNewest(key, data, seq) {
+    if ((cacheWriteSeqByKey[key] || 0) > seq) return;
+    cacheWriteSeqByKey[key] = seq;
+    saveLocalCache(key, data);
+    pruneOldCacheOnce();
+  }
+  function loadLocalCache(key) {
+    try {
+      var raw = localStorage.getItem(LOCAL_CACHE_PREFIX + key);
+      if (!raw) return null;
+      var entry = JSON.parse(raw);
+      if (entry.v !== CACHE_SCHEMA_VERSION) return null;
+      return (Date.now() - entry.cachedAt) <= MAX_CACHE_AGE_MS ? entry : null;
+    } catch (e) { return null; }
+  }
+  var prunedCacheThisSession = false;
+  function pruneOldCacheOnce() {
+    if (prunedCacheThisSession) return;
+    prunedCacheThisSession = true;
+    try {
+      var now = Date.now();
+      for (var i = localStorage.length - 1; i >= 0; i--) {
+        var key = localStorage.key(i);
+        if (!key || key.indexOf(LOCAL_CACHE_PREFIX) !== 0) continue;
+        try {
+          var entry = JSON.parse(localStorage.getItem(key));
+          if (!entry || entry.v !== CACHE_SCHEMA_VERSION || (now - entry.cachedAt) > MAX_CACHE_AGE_MS) localStorage.removeItem(key);
+        } catch (e) { localStorage.removeItem(key); }
+      }
+    } catch (e) {}
+  }
+  function dailyCacheKey(year, month, day) { return 'daily_' + year + '_' + month + '_' + day; }
+
+  function formatCachedAt(ms) {
+    var d = new Date(ms);
+    var pad = function (n) { return String(n).padStart(2, '0'); };
+    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+  }
+  function renderStaleBannerContent(el, cachedAt) {
+    el.innerHTML = '<span>' + escapeHtml(t('staleBanner')(formatCachedAt(cachedAt))) + '</span>' +
+      '<button type="button" class="stale-retry-btn">' + escapeHtml(t('refresh')) + '</button>';
+  }
+  function showStaleBanner(elId, cachedAt) {
+    var el = document.getElementById(elId);
+    el.dataset.cachedAt = cachedAt;
+    renderStaleBannerContent(el, cachedAt);
+    el.style.display = 'flex';
+  }
+  function hideStaleBanner(elId) {
+    document.getElementById(elId).style.display = 'none';
+  }
+  document.getElementById('dailyStaleBanner').addEventListener('click', function (e) {
+    if (e.target.closest('.stale-retry-btn')) loadDaily();
+  });
+  function tryStaleCacheFallback(cacheKey, bannerElId, renderFn) {
+    var cached = loadLocalCache(cacheKey);
+    if (!cached) return false;
+    showStaleBanner(bannerElId, cached.cachedAt);
+    renderFn(cached.data);
+    return true;
+  }
+
+  // ---------- Login ----------
+
+  var loginError = document.getElementById('loginError');
+  var viewerForm = document.getElementById('viewerForm');
+  var loginErrorInfo = null;
+
+  function showLoginError(info) {
+    loginErrorInfo = info;
+    loginError.textContent = resolveErrorText(info);
+    loginError.classList.add('show');
+  }
+  function clearLoginError() {
+    loginErrorInfo = null;
+    loginError.classList.remove('show');
+  }
+
+  document.getElementById('logoutBtn').addEventListener('click', function () {
+    clearSession();
+    location.reload();
+  });
+
+  var viewerBtn = document.getElementById('viewerBtn');
+
+  viewerForm.addEventListener('submit', function (e) {
+    e.preventDefault();
+    var password = document.getElementById('viewerPassword').value;
+    if (!password) return;
+
+    viewerBtn.disabled = true;
+    viewerBtn.textContent = t('checking');
+    clearLoginError();
+
+    // No dedicated "check password" endpoint, same as index.html -- this
+    // doubles as the first data fetch. Unlike index.html (which piggybacks
+    // on dashboardSummary, since Monthly opens by default there), this
+    // piggybacks on dashboardDaily for whatever date is already in
+    // dailyDateInput (set by setDefaultDailyDate() at boot, below) -- the
+    // only data this page ever shows, so there's no reason to fetch
+    // anything else just to validate the password.
+    var parts = dailyDateInput.value.split('-');
+    apiGet('dashboardDaily', {
+      viewerPassword: password,
+      year: parts[0],
+      month: parts[1],
+      day: parts[2]
+    }).then(function (result) {
+      viewerBtn.disabled = false;
+      viewerBtn.textContent = t('viewDashboard');
+
+      if (!result.success) {
+        showLoginError(result.messageKey ? { key: result.messageKey } : { key: 'errIncorrectPassword' });
+        return;
+      }
+      saveSession({ viewerPassword: password });
+      // true: the login check above already fetched today's data --
+      // skip showDashboard()'s own fetch and render this result directly
+      // instead, so a fresh login never fires a second, redundant request.
+      showDashboard(true);
+      saveLocalCacheIfNewest(dailyCacheKey(parts[0], parts[1], parts[2]), result, ++dailyRequestSeq);
+      dailyErrorInfo = null;
+      renderDailyResult(result);
+    });
+  });
+
+  // ---------- Dashboard: Daily view ----------
+  //
+  // Everything below is unchanged from index.html's own Daily-view code --
+  // same rendering functions, same field names from the same
+  // dashboardDaily backend response.
+
+  var dailyDateInput = document.getElementById('dailyDateInput');
+
+  // Employees.Branch stores the short code (see BRANCHES in Attendance.gs);
+  // shown here as the actual place name. Falls back to the raw code itself
+  // for anything unmapped, so a future third branch still shows *something*
+  // instead of going blank.
+  var BRANCH_LABELS = { PP: 'Phrom Phong', TL: 'Thonglor' };
+  function branchLabel(code) {
+    return BRANCH_LABELS[code] || code || '—';
+  }
+  function punchBranchLabel(code) {
+    return code ? branchLabel(code) : t('branchUnknown');
+  }
+
+  function escapeHtml(s) {
+    var div = document.createElement('div');
+    div.textContent = s;
+    return div.innerHTML;
+  }
+
+  function setDailyRefreshing(isRefreshing) {
+    [document.getElementById('dailyRefreshBtn'), document.getElementById('dailyErrorRetryBtn')].forEach(function (btn) {
+      btn.disabled = isRefreshing;
+      btn.classList.toggle('spinning', isRefreshing);
+    });
+  }
+
+  function branchPillClass(code) {
+    return code === 'PP' ? 'branch-pp' : code === 'TL' ? 'branch-tl' : '';
+  }
+
+  function buildNameChip(emp, noteClass) {
+    var chip = document.createElement('div');
+    chip.className = noteClass ? 'name-chip ' + noteClass : 'name-chip';
+    var note = ('shift' in emp) ? (emp.shift || t('noShiftNote')) : emp.inTime;
+    var noteHtml = note ? '<span class="chip-note">' + escapeHtml(note) + '</span>' : '';
+    var hasInTimeField = 'inTime' in emp;
+    var shiftHtml = hasInTimeField
+      ? '<span class="chip-meta">' + escapeHtml(emp.pickedShift || t('noShiftNote')) + '</span>'
+      : '';
+    var outTimeHtml = hasInTimeField
+      ? '<span class="chip-meta">' + escapeHtml(emp.outTime || t('notYetOut')) + '</span>'
+      : '';
+    var lateHtml = emp.isLate ? '<span class="chip-meta pill late">' + escapeHtml(t('lateBadge')) + '</span>' : '';
+
+    var branchHtml = '', branchTitle = '';
+    if ('punchBranch' in emp) {
+      var branchText = punchBranchLabel(emp.punchBranch);
+      var mismatch = emp.punchBranch && emp.outPunchBranch && emp.punchBranch !== emp.outPunchBranch;
+      var pillClass = mismatch ? 'branch-mismatch' : branchPillClass(emp.punchBranch);
+      var branchClass = pillClass ? 'chip-meta chip-branch pill ' + pillClass : 'chip-meta chip-branch';
+      branchHtml = '<span class="' + branchClass + '">' + escapeHtml(branchText) + '</span>';
+      if (mismatch) branchTitle = t('punchMismatchTitle')(branchLabel(emp.punchBranch), branchLabel(emp.outPunchBranch));
+    }
+
+    var breakOverBudget = emp.breakMinutes > 60;
+    var breakClass = breakOverBudget ? 'chip-break over-budget' : 'chip-break';
+    var breakHtml = emp.breakMinutes ? '<span class="' + breakClass + '">' + escapeHtml(String(emp.breakMinutes)) + 'm</span>' : '';
+
+    chip.innerHTML =
+      '<div class="chip-header"><span class="chip-name">' + escapeHtml(emp.name) + '</span>' + lateHtml + '</div>' +
+      branchHtml +
+      shiftHtml +
+      noteHtml +
+      outTimeHtml +
+      breakHtml;
+    if (branchTitle) chip.querySelector('.chip-branch').title = branchTitle;
+    return chip;
+  }
+
+  function renderNameList(elId, employees, noteClass) {
+    var el = document.getElementById(elId);
+    el.innerHTML = '';
+    (employees || []).forEach(function (emp) { el.appendChild(buildNameChip(emp, noteClass)); });
+  }
+
+  function renderBranchGroupedList(idPrefix, employees) {
+    var groups = { PP: [], TL: [], Unknown: [] };
+    (employees || []).forEach(function (emp) {
+      var code = emp.punchBranch;
+      groups[(code === 'PP' || code === 'TL') ? code : 'Unknown'].push(emp);
+    });
+    ['PP', 'TL', 'Unknown'].forEach(function (key) {
+      var groupEl = document.getElementById(idPrefix + 'Group' + key);
+      var listEl = document.getElementById(idPrefix + 'List' + key);
+      var list = groups[key];
+      groupEl.style.display = list.length ? '' : 'none';
+      var baseLabel = key === 'Unknown' ? t('branchUnknown') : branchLabel(key);
+      groupEl.querySelector('.branch-group-label').textContent = baseLabel + ' (' + list.length + ')';
+      listEl.innerHTML = '';
+      list.forEach(function (emp) { listEl.appendChild(buildNameChip(emp, emp.isLate ? 'late' : 'present')); });
+    });
+  }
+
+  var lastToday = [];
+  var lastAbsent = [];
+  var lastOnLeave = [];
+  var dailyErrorInfo = null;
+
+  function renderDailyResult(data) {
+    lastAbsent = data.absent;
+    lastOnLeave = data.onLeave;
+    lastToday = (data.onTime || []).concat((data.late || []).map(function (emp) {
+      var tagged = {};
+      for (var key in emp) { if (emp.hasOwnProperty(key)) tagged[key] = emp[key]; }
+      tagged.isLate = true;
+      return tagged;
+    }));
+
+    document.getElementById('absentCount').textContent = data.absentCount;
+    document.getElementById('lateCount').textContent = data.lateCount;
+    document.getElementById('onLeaveCount').textContent = data.onLeaveCount;
+    document.getElementById('onTimeCount').textContent = data.onTimeCount;
+    document.getElementById('absentEmptyState').style.display = data.absentCount === 0 ? 'block' : 'none';
+    document.getElementById('onLeaveEmptyState').style.display = data.onLeaveCount === 0 ? 'block' : 'none';
+    document.getElementById('onTimeEmptyState').style.display = (data.onTimeCount === 0 && data.lateCount === 0) ? 'block' : 'none';
+    renderNameList('absentList', lastAbsent);
+    renderNameList('onLeaveList', lastOnLeave, 'leave');
+    renderBranchGroupedList('onTime', lastToday);
+    document.getElementById('dailyContent').style.display = 'block';
+  }
+
+  var dailyRequestSeq = 0;
+
+  function loadDaily() {
+    var session = loadSession();
+    if (!session) return;
+    var parts = dailyDateInput.value.split('-');
+    if (parts.length !== 3) return;
+
+    var cacheKey = dailyCacheKey(parts[0], parts[1], parts[2]);
+    var mySeq = ++dailyRequestSeq;
+
+    setDailyRefreshing(true);
+    document.getElementById('dailyLoadingState').style.display = 'block';
+    document.getElementById('dailyErrorState').style.display = 'none';
+    document.getElementById('dailyContent').style.display = 'none';
+    hideStaleBanner('dailyStaleBanner');
+
+    apiGet('dashboardDaily', {
+      viewerPassword: session.viewerPassword,
+      year: parts[0],
+      month: parts[1],
+      day: parts[2]
+    }).then(function (result) {
+      if (result.success) saveLocalCacheIfNewest(cacheKey, result, mySeq);
+      if (mySeq !== dailyRequestSeq) return;
+
+      setDailyRefreshing(false);
+      document.getElementById('dailyLoadingState').style.display = 'none';
+
+      if (!result.success) {
+        if (result.error === 'session_expired' || result.error === 'forbidden') {
+          clearSession();
+          location.reload();
+          return;
+        }
+        if (result.error === 'network_error' && tryStaleCacheFallback(cacheKey, 'dailyStaleBanner', renderDailyResult)) return;
+        dailyErrorInfo = errorInfoFrom(result, 'errGeneric');
+        document.getElementById('dailyErrorMessage').textContent = resolveErrorText(dailyErrorInfo);
+        document.getElementById('dailyErrorState').style.display = 'block';
+        return;
+      }
+
+      dailyErrorInfo = null;
+      renderDailyResult(result);
+    });
+  }
+
+  dailyDateInput.addEventListener('change', loadDaily);
+  document.getElementById('dailyRefreshBtn').addEventListener('click', loadDaily);
+  document.getElementById('dailyErrorRetryBtn').addEventListener('click', loadDaily);
+
+  // skipInitialLoad: the login handler above already has a fresh
+  // dashboardDaily result in hand (the same request it used to check the
+  // password) and renders it itself right after calling this -- passing
+  // true there avoids an immediate, redundant second fetch. The Boot call
+  // at the bottom (a returning visit, loadSession() already had a saved
+  // password) has no such result yet and needs the normal fetch.
+  function showDashboard(skipInitialLoad) {
+    document.getElementById('loginView').style.display = 'none';
+    document.getElementById('dashboardView').style.display = 'block';
+    document.getElementById('whoami').style.display = 'flex';
+    document.getElementById('whoamiName').textContent = t('viewerName');
+    if (!skipInitialLoad) loadDaily();
+  }
+
+  // ---------- Update check ----------
+
+  var APP_VERSION = document.querySelector('meta[name="app-version"]').content;
+  var UPDATE_CHECK_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+  var updateAvailable = false;
+
+  function checkForUpdate() {
+    if (updateAvailable) return;
+    fetch(location.pathname + location.search, { cache: 'no-store' })
+      .then(function (res) { return res.text(); })
+      .then(function (html) {
+        var m = html.match(/<meta name="app-version" content="([^"]+)"/);
+        if (m && m[1] !== APP_VERSION) {
+          updateAvailable = true;
+          document.getElementById('updateBanner').style.display = 'flex';
+        }
+      })
+      .catch(function () {});
+  }
+  setInterval(checkForUpdate, UPDATE_CHECK_INTERVAL_MS);
+  document.addEventListener('visibilitychange', function () {
+    if (!document.hidden) checkForUpdate();
+  });
+  document.getElementById('updateReloadBtn').addEventListener('click', function () {
+    location.reload();
+  });
+
+  // ---------- Boot ----------
+
+  document.querySelectorAll('[data-branch-label]').forEach(function (el) {
+    el.textContent = branchLabel(el.getAttribute('data-branch-label'));
+  });
+
+  (function setDefaultDailyDate() {
+    var now = new Date();
+    var mm = String(now.getMonth() + 1).padStart(2, '0');
+    var dd = String(now.getDate()).padStart(2, '0');
+    dailyDateInput.value = now.getFullYear() + '-' + mm + '-' + dd;
+  })();
+
+  document.querySelectorAll('.lang-btn').forEach(function (btn) {
+    btn.classList.toggle('active', btn.getAttribute('data-lang') === currentLang);
+  });
+  applyStaticI18n();
+
+  if (loadSession()) {
+    showDashboard();
+  }
+</script>
+
+</body>
+</html>
