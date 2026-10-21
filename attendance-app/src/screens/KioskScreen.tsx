@@ -2427,7 +2427,11 @@ export default function KioskScreen({ navigation }: Props) {
           {renderMyScheduleStatBox(
             'Over Break days / วันพักเกิน',
             `${scheduleData.overCount} day${scheduleData.overCount === 1 ? '' : 's'}`,
-            SAGE
+            // BUTTER, not SAGE -- matches calendarDotOverBreak/the legend dot
+            // above (both amber), same reasoning breakStatusOver already uses
+            // this color for. Was SAGE (green) until user feedback pointed out
+            // the mismatch with its own dot.
+            BUTTER
           )}
           {/* Pressable only when there's itemized detail to actually show --
               allowanceDetail is optional (older cached data, or a brief
@@ -3147,7 +3151,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     marginTop: 6,
     marginBottom: 6,
-    maxWidth: 320
+    maxWidth: 320,
+    // Its parent is a plain, full-width View (see the aboveGridHeight
+    // measurement wrapper above) rather than the old centered-by-default
+    // layout, so without this the capped-width (maxWidth:320) banner sits
+    // flush against the left edge instead of centered under the title.
+    alignSelf: 'center'
   },
   staleBannerText: { flex: 1, color: '#8A5A1E', fontSize: 12, fontFamily: FONT_BODY_MEDIUM },
   staleBannerButton: { backgroundColor: SCHEDULE_ACCENT_DARK, borderRadius: 999, paddingVertical: 7, paddingHorizontal: 16, minWidth: 64, alignItems: 'center' },
@@ -3585,7 +3594,7 @@ const styles = StyleSheet.create({
   // 11/BOLD there, too small AND visibly mismatched) so the time and the OT
   // amount read as the same size at a glance.
   calendarOtAmount: { color: SAGE, fontSize: 13, fontFamily: FONT_BODY_BOLD },
-  calendarLegend: { flexDirection: 'row', gap: 20, marginTop: 12 },
+  calendarLegend: { flexDirection: 'row', gap: 20, marginTop: 12, justifyContent: 'center' },
   legendItem: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   legendText: { color: TEXT_MUTED, fontSize: 12, fontFamily: FONT_BODY_SEMIBOLD },
   // 2x2 grid of the 4 month-stat boxes (OT/Late/Over Break/Allowance) --
