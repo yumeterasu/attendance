@@ -37,6 +37,14 @@ function onOpen() {
  * converting all of them to OUT at once. Whole AttendanceLog history, not
  * just the current month, since the sheet is small enough to scan in full.
  *
+ * Excludes rows whose own recorded Shift is a Special shift genuinely
+ * starting at/after LATE_IN_HOUR_THRESHOLD (e.g. a closing/night-shift
+ * employee entered via "Add Backdated Check-in/Check-out") -- caught in
+ * review 2026-10-21: without this check, approving the batch to fix real
+ * mis-taps would also silently flip that legitimate late-starting IN to
+ * OUT, since the confirm below is all-or-nothing and this function has no
+ * other way to tell a mis-tap from a correctly-recorded night shift.
+ *
  * OT handling on conversion: Japanese OT is always auto-computed from the
  * (now-OUT) timestamp, same as a live check-out. Thai/other OT is left at 0
  * (plain OUT) -- there's no way to know after the fact whether "OUT OT" was
@@ -67,9 +75,19 @@ function menuFixLateInAsOut_() {
   for (var i = 1; i < values.length; i++) {
     if (values[i][typeCol] !== 'IN') continue;
     var ts = new Date(values[i][tsCol]);
-    if (ts.getHours() >= LATE_IN_HOUR_THRESHOLD) {
-      flagged.push({ rowIndex: i, timestamp: ts, employeeId: String(values[i][idCol]), name: values[i][nameCol], department: values[i][deptCol] });
+    if (ts.getHours() < LATE_IN_HOUR_THRESHOLD) continue;
+
+    // A Special shift's own start time can legitimately fall at/after the
+    // threshold (night/closing shifts) -- see the function doc comment
+    // above. Trust the row's own recorded Shift over the blanket "no shift
+    // starts this late" assumption rather than flagging it as a mis-tap.
+    var shiftValue = values[i][shiftCol];
+    if (isSpecialShift_(shiftValue)) {
+      var shiftStart = getShiftStartTime_(shiftValue);
+      if (shiftStart && (shiftStart.hour * 60 + shiftStart.minute) >= LATE_IN_HOUR_THRESHOLD * 60) continue;
     }
+
+    flagged.push({ rowIndex: i, timestamp: ts, employeeId: String(values[i][idCol]), name: values[i][nameCol], department: values[i][deptCol] });
   }
 
   if (flagged.length === 0) {
