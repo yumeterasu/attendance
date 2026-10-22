@@ -416,48 +416,38 @@ function reportSortGroup_(emp, dayLogs) {
   return 2;
 }
 
-// generateAllEmployeesReportPdf_ pads every employee's block out to a whole
-// multiple of this many rows, so the NEXT employee always starts at what
-// ends up being a fresh PDF page -- Apps Script/Sheets has no API for an
-// explicit "page break here", so this is the only lever available: as long
-// as row heights are never auto-shrunk to fit (true here -- the export URL
-// below only passes fitw=true, which scales WIDTH only, exactly like the
-// existing single-employee PDF already relies on), each page holds a fixed,
-// predictable number of default-height rows.
-//
-// This constant MUST be >= the true number of default-height rows that fit
-// on one real A4 page, never below it -- padding to a count still smaller
-// than the page's real capacity does nothing (the real page break still
-// lands wherever the renderer's own ~true-capacity row count falls, which
-// would land partway into the NEXT employee's block, not at this padding's
-// boundary). The direction that's always safe is to overshoot: if this
-// constant is larger than true capacity, the real page break always lands
-// somewhere inside the (blank, harmless) padding rows themselves -- the next
-// employee's title still starts cleanly on a fresh page, just not
-// necessarily at the very top of it.
-//
-// Two different plausible estimates of true capacity, depending on which
-// px->pt conversion the export renderer actually uses for default 21px
-// Sheets rows: ~49 rows/page at 96dpi (web pixel basis), or ~37 rows/page at
-// 72dpi (print-point basis, 1px=1pt) -- A4 portrait minus the 0.4in top+
-// bottom margins generateEmployeeReportPdf_ already uses = ~784pt usable.
-// Neither can be confirmed by actually rendering a PDF from here, so this is
-// set comfortably ABOVE both estimates rather than between/below them.
-// If a real exported copy ever shows noticeably more blank space at the
-// bottom of every page than expected, this can be lowered a bit -- but never
-// below ~50 (the top of the estimate range above), or the original bug
-// (padding too small to force a real break) comes back.
-var ALL_EMPLOYEES_REPORT_PAGE_ROWS = 70;
-
 /**
  * One combined, multi-page PDF covering every employee writeMonthlyReportData_
  * would normally show for this month (getSortedReportEmployees_ -- same
  * roster/order as the live Report sheet), each starting on their own fresh
- * page -- see ALL_EMPLOYEES_REPORT_PAGE_ROWS above for how the page breaks
- * are produced. Mirrors generateEmployeeReportPdf_'s (Menu.gs) throwaway-sheet
- * / export / Drive-folder / cleanup pattern exactly, just looping per
- * employee into ONE sheet instead of writing one employee into its own
- * one-off sheet.
+ * page. Mirrors generateEmployeeReportPdf_'s (Menu.gs) throwaway-sheet /
+ * export / Drive-folder / cleanup pattern, just once per employee instead of
+ * once total.
+ *
+ * How the page breaks are produced: an EARLIER version of this function
+ * wrote every employee into rows of one shared temp sheet, padding each
+ * block out to a fixed row count (ALL_EMPLOYEES_REPORT_PAGE_ROWS) in the
+ * hope that the renderer's real page breaks would always land inside the
+ * padding, never into a block's real content. That assumption was wrong in
+ * practice: the renderer's true rows-per-A4-page isn't a fixed number
+ * (confirmed against a real exported copy -- varied with how many of a
+ * block's title/summary cells happened to WRAP to 2 lines that month,
+ * which the row-count padding had no way to account for), so block
+ * boundaries (always multiples of the padding constant) drifted out of
+ * alignment with the renderer's real page breaks for roughly half the
+ * roster -- each of those employees' title ended up partway down the SAME
+ * physical page as their predecessor's trailing blank rows instead of at
+ * the top of a fresh one.
+ *
+ * This version sidesteps guessing a row-capacity number entirely: each
+ * employee gets their OWN temporary sheet (one tab per employee, unpadded),
+ * every other sheet in the spreadsheet is hidden for the moment of export,
+ * and the export URL omits &gid= -- which exports the WHOLE workbook, and
+ * Sheets always starts each SHEET on a fresh PDF page (unlike a row count,
+ * this isn't a size estimate that can drift; it's how Sheets' own PDF
+ * export has always worked). Hiding the other sheets first means that
+ * whole-workbook export only contains the per-employee sheets just built,
+ * in the order they were created.
  *
  * precomputedLogsByEmployee (optional) -- menuPrintAllEmployeeReports_
  * (Menu.gs) already has to read this to count the roster for its
@@ -467,87 +457,92 @@ var ALL_EMPLOYEES_REPORT_PAGE_ROWS = 70;
  */
 function generateAllEmployeesReportPdf_(year, month, precomputedLogsByEmployee) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var tempName = '_PrintAllReportsTemp_' + new Date().getTime();
-  var sheet = ss.insertSheet(tempName);
+  var runId = new Date().getTime();
+  var tempSheets = [];
+  // {sheet, wasHidden} for every PRE-EXISTING sheet -- captured before any
+  // temp sheet exists, so restoring afterward puts back exactly what was
+  // visible/hidden before this ran, rather than forcing everything visible.
+  var hiddenState = [];
+  var originalActiveSheet = ss.getActiveSheet();
+
+  var tz = Session.getScriptTimeZone();
+  // Read once and reuse across every employee below -- same reasoning
+  // writeYearlyReportData_ already uses precomputedLogsByEmployee for: a
+  // dozen-plus writeMonthlyReportData_ calls would otherwise each re-read
+  // the whole AttendanceLog/Schedule/Allowances sheets from scratch, once
+  // per employee, for no reason (all three are the same regardless of
+  // which employee is currently being written).
+  var logsByEmployee = precomputedLogsByEmployee !== undefined ? precomputedLogsByEmployee : getMonthLogsByEmployee_(year, month);
+  var scheduledShiftsForMonth = getScheduledShiftsForMonth_(year, month);
+  var allowancesByEmployee = getAllowancesForMonth_(year, month);
+  var employees = getSortedReportEmployees_(logsByEmployee, undefined);
+  var daysInMonth = new Date(year, month, 0).getDate();
+
+  if (employees.length === 0) {
+    throw new Error('No active employees to report for ' + month + '/' + year + '.');
+  }
 
   try {
-    var tz = Session.getScriptTimeZone();
-    // Read once and reuse across every employee below -- same reasoning
-    // writeYearlyReportData_ already uses precomputedLogsByEmployee for: a
-    // dozen-plus writeMonthlyReportData_ calls would otherwise each re-read
-    // the whole AttendanceLog/Schedule/Allowances sheets from scratch, once
-    // per employee, for no reason (all three are the same regardless of
-    // which employee is currently being written).
-    var logsByEmployee = precomputedLogsByEmployee !== undefined ? precomputedLogsByEmployee : getMonthLogsByEmployee_(year, month);
-    var scheduledShiftsForMonth = getScheduledShiftsForMonth_(year, month);
-    var allowancesByEmployee = getAllowancesForMonth_(year, month);
-    var employees = getSortedReportEmployees_(logsByEmployee, undefined);
-    var daysInMonth = new Date(year, month, 0).getDate();
+    employees.forEach(function (emp, i) {
+      var tempSheet = ss.insertSheet('_PrintAllReportsTemp_' + runId + '_' + i);
+      tempSheets.push(tempSheet);
 
-    // A freshly inserted sheet only gets Sheets' standard default size
-    // (1000 rows) -- with every employee padded out to a whole
-    // ALL_EMPLOYEES_REPORT_PAGE_ROWS-row page, a roster past ~1000/70 ≈ 14
-    // active employees already needs more than that, and Apps Script does
-    // NOT auto-grow a sheet just because a Range is requested past its
-    // current size (unlike typing beyond the edge in the UI) -- it throws
-    // "coordinates of the range are outside the dimensions of the sheet"
-    // instead. This is a worst-case upper bound (every employee consuming a
-    // full page), so it's always enough regardless of how many actually
-    // need a second page, and it's based on the real current roster count
-    // rather than a guess, so it keeps working automatically as the roster
-    // grows further.
-    var neededRows = employees.length * ALL_EMPLOYEES_REPORT_PAGE_ROWS;
-    if (sheet.getMaxRows() < neededRows) {
-      sheet.insertRowsAfter(sheet.getMaxRows(), neededRows - sheet.getMaxRows());
-    }
-
-    var row = 1;
-    employees.forEach(function (emp) {
-      var blockStartRow = row;
       var headerLabel = emp.Name + ' (' + emp.EmployeeID + ') -- ' +
         Utilities.formatDate(new Date(year, month - 1, 1), tz, 'MMMM yyyy');
       // Same 10-column merge/wrap treatment generateEmployeeReportPdf_ uses
       // for its single title row -- COLS (writeMonthlyReportData_) is 10.
-      sheet.getRange(row, 1, 1, 10).merge().setValue(headerLabel).setFontWeight('bold').setFontSize(14).setWrap(true);
+      tempSheet.getRange(1, 1, 1, 10).merge().setValue(headerLabel).setFontWeight('bold').setFontSize(14).setWrap(true);
 
-      // Summary line goes on row + 1, ABOVE the bordered day table -- same
+      // Summary line on row 2, ABOVE the bordered day table -- same
       // layout/reasoning as generateEmployeeReportPdf_ (Menu.gs): title, then
-      // summary, then a blank gap row, then the table.
+      // summary, then a blank gap row (row 3), then the table from row 4.
       var allowancesForEmp = allowancesByEmployee[emp.EmployeeID] || [];
       var summaryLine = buildEmployeeReportSummaryLine_(
         emp, logsByEmployee[emp.EmployeeID] || {}, scheduledShiftsForMonth[emp.EmployeeID], daysInMonth, allowancesForEmp
       );
       // setWrap -- same reasoning as the title row above: an unwrapped long
       // line in a merged cell gets attributed to column 1's (Date) width by
-      // writeMonthlyReportData_'s autoResizeColumns call, below.
-      sheet.getRange(row + 1, 1, 1, 10).merge().setValue(summaryLine).setFontWeight('bold').setBackground('#fff2cc').setWrap(true);
+      // writeMonthlyReportData_'s autoResizeColumns call, below. Each
+      // employee has their own sheet now, so a long line wrapping to 2
+      // lines here only makes THIS employee's own page taller -- it can no
+      // longer throw off where any other employee's content lands.
+      tempSheet.getRange(2, 1, 1, 10).merge().setValue(summaryLine).setFontWeight('bold').setBackground('#fff2cc').setWrap(true);
 
-      var rowsWritten = writeMonthlyReportData_(
-        sheet, row + 3, year, month, logsByEmployee, emp.EmployeeID, true,
+      writeMonthlyReportData_(
+        tempSheet, 4, year, month, logsByEmployee, emp.EmployeeID, true,
         scheduledShiftsForMonth, allowancesByEmployee
       );
-      // +3: the title row, the summary line row, plus one blank gap row
-      // below it -- same layout generateEmployeeReportPdf_ uses.
-      var blockRows = rowsWritten + 3;
-
-      // Round UP to the next whole PAGE_ROWS multiple rather than always
-      // adding exactly (PAGE_ROWS - blockRows) -- a block that happens to be
-      // taller than PAGE_ROWS (many Allowance entries in one month, for
-      // example) still ends up spanning a whole number of pages cleanly, so
-      // every employee AFTER this one still starts at a correct page
-      // boundary instead of everything downstream sliding out of alignment.
-      var pages = Math.ceil(blockRows / ALL_EMPLOYEES_REPORT_PAGE_ROWS);
-      row = blockStartRow + pages * ALL_EMPLOYEES_REPORT_PAGE_ROWS;
     });
 
-    SpreadsheetApp.flush(); // commit the sheet's real content/sizing before exporting it
+    // Switch away before hiding, in case the active sheet is one of the
+    // ones about to be hidden -- avoids relying on whether hideSheet()
+    // tolerates hiding the currently-active sheet.
+    ss.setActiveSheet(tempSheets[0]);
 
-    // Same export endpoint/params as generateEmployeeReportPdf_ (Menu.gs) --
-    // A4 portrait, fit-width only (never fit-height -- see
-    // ALL_EMPLOYEES_REPORT_PAGE_ROWS's comment above for why that matters here).
+    // getSheetId()-based lookup, not indexOf(s) on the Sheet objects
+    // themselves -- Apps Script hands back a fresh wrapper object on every
+    // ss.getSheets() call even for the same underlying sheet, so reference
+    // equality against the objects stored in tempSheets would never match
+    // and every temp sheet would get hidden right along with everything else.
+    var tempSheetIds = {};
+    tempSheets.forEach(function (s) { tempSheetIds[s.getSheetId()] = true; });
+
+    ss.getSheets().forEach(function (s) {
+      if (tempSheetIds[s.getSheetId()]) return; // one of ours -- must stay visible
+      var wasHidden = s.isSheetHidden();
+      hiddenState.push({ sheet: s, wasHidden: wasHidden });
+      if (!wasHidden) s.hideSheet();
+    });
+
+    SpreadsheetApp.flush(); // commit sheet content + visibility before exporting
+
+    // No &gid= -- exports the WHOLE workbook. Sheets always starts each
+    // sheet on a fresh PDF page; with every pre-existing sheet hidden above,
+    // the only visible sheets left are the per-employee ones just built, in
+    // the order they were created. Same remaining params as
+    // generateEmployeeReportPdf_ (Menu.gs) -- A4 portrait, fit-width only.
     var exportUrl = 'https://docs.google.com/spreadsheets/d/' + ss.getId() + '/export' +
-      '?format=pdf&gid=' + sheet.getSheetId() +
-      '&size=A4&portrait=true&fitw=true' +
+      '?format=pdf&size=A4&portrait=true&fitw=true' +
       '&top_margin=0.4&bottom_margin=0.4&left_margin=0.4&right_margin=0.4' +
       '&sheetnames=false&printtitle=false&pagenumbers=false&gridlines=false&fzr=false';
     var response = UrlFetchApp.fetch(exportUrl, {
@@ -569,7 +564,20 @@ function generateAllEmployeesReportPdf_(year, month, precomputedLogsByEmployee) 
     file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
     return file;
   } finally {
-    ss.deleteSheet(sheet);
+    // Restore visibility BEFORE deleting the temp sheets -- a spreadsheet
+    // must always have at least one visible sheet, and at this point that's
+    // only true of our temp sheets, so un-hiding the originals first keeps
+    // that true the whole way through instead of risking a "can't hide/
+    // delete the only visible sheet" error on the last temp sheet removed.
+    hiddenState.forEach(function (entry) {
+      if (!entry.wasHidden) {
+        try { entry.sheet.showSheet(); } catch (e) { /* best-effort restore */ }
+      }
+    });
+    tempSheets.forEach(function (s) {
+      try { ss.deleteSheet(s); } catch (e) { /* already gone, or never got created this run */ }
+    });
+    try { ss.setActiveSheet(originalActiveSheet); } catch (e) { /* best-effort restore */ }
   }
 }
 
