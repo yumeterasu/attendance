@@ -167,6 +167,37 @@ function removeDailyHealthCheckTrigger() {
   Logger.log(removed > 0 ? 'Daily Health Check trigger removed.' : 'No daily Health Check trigger was installed.');
 }
 
+/**
+ * One-off: deletes any leftover "_PrintReportTemp_..." / "_PrintAllReportsTemp_..."
+ * tabs -- the throwaway sheets generateEmployeeReportPdf_ and
+ * generateAllEmployeesReportPdf_ (Report.gs) build while making a PDF, always
+ * deleted again in their own finally block once the export finishes. The one
+ * way they can survive is the whole execution getting killed outright by
+ * Apps Script's own time limit before that finally block runs (a very large
+ * roster taking too long, a network hiccup on the export fetch, etc.) --
+ * finally blocks don't get a chance to run on a hard timeout, unlike a normal
+ * thrown error. Safe to run any time: only ever touches tabs matching this
+ * exact naming prefix, never anything an admin named themselves. Run once
+ * from the editor: select removeOrphanedPrintReportTempSheets in the toolbar
+ * dropdown, click Run.
+ */
+function removeOrphanedPrintReportTempSheets() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var removed = 0;
+  ss.getSheets().forEach(function (s) {
+    var name = s.getName();
+    if (name.indexOf('_PrintReportTemp_') === 0 || name.indexOf('_PrintAllReportsTemp_') === 0) {
+      try {
+        ss.deleteSheet(s);
+        removed++;
+      } catch (e) {
+        Logger.log('Could not remove "' + name + '": ' + e.message);
+      }
+    }
+  });
+  Logger.log(removed > 0 ? removed + ' orphaned print-temp sheet(s) removed.' : 'No orphaned print-temp sheets found.');
+}
+
 // Sheets whose exact tab NAME and header row must never drift -- every
 // getSheet_ lookup and headers.indexOf(...) call in this codebase depends on
 // both. A single accidental rename or header-cell edit silently breaks every

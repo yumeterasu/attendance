@@ -89,8 +89,20 @@ function buildEmployeeReportSummaryLine_(emp, dayLogs, scheduledShiftsForEmploye
  * these, EVERY one of those calls would independently re-read the whole
  * Schedule sheet and the whole Allowances sheet from scratch just to pull
  * out one employee's slice, scaling with roster size for no reason.
+ *
+ * skipColumnResize (optional) -- also for generateAllEmployeesReportPdf_'s
+ * per-employee loop: sheet.autoResizeColumns is one of the slower Sheets
+ * API calls (it has to measure rendered text), and every other caller here
+ * only ever triggers it once per run. generateAllEmployeesReportPdf_ calling
+ * this function once per employee used to mean once PER EMPLOYEE too --
+ * harmless for a handful of people, but a 50+ person roster pushed the
+ * whole menu action past Apps Script's execution time limit and left the
+ * admin staring at a stuck menu with temp sheet tabs never cleaned up. With
+ * this true, the caller is expected to set column widths itself afterward
+ * (see generateAllEmployeesReportPdf_ -- it measures once, off the first
+ * employee's sheet, and reuses that same width for everyone else's).
  */
-function writeMonthlyReportData_(sheet, startRow, year, month, precomputedLogsByEmployee, onlyEmployeeId, includeSummaryBlock, precomputedScheduledShiftsForMonth, precomputedAllowancesByEmployee) {
+function writeMonthlyReportData_(sheet, startRow, year, month, precomputedLogsByEmployee, onlyEmployeeId, includeSummaryBlock, precomputedScheduledShiftsForMonth, precomputedAllowancesByEmployee, skipColumnResize) {
   var tz = Session.getScriptTimeZone();
   var daysInMonth = new Date(year, month, 0).getDate();
   // Omit precomputedLogsByEmployee (undefined) to keep the old single-call
@@ -363,47 +375,49 @@ function writeMonthlyReportData_(sheet, startRow, year, month, precomputedLogsBy
       sheet.getRange(block.startRow, 1, 1, 2).merge().setWrap(true);
     });
   }
-  // Plain autoResizeColumns, not autoResizeColumnsWithPadding_ -- the extra
-  // +16px/column padding that helper adds was tried here to give the table
-  // "more room to breathe" per earlier feedback, but on the live Report
-  // sheet it just made every column visibly looser/less compact than
-  // before, which a later look at the real result asked to undo. The
-  // column-width caps below (Date/Shift) still apply on top of this, so
-  // those two specific columns stay safely bounded either way.
-  sheet.autoResizeColumns(1, COLS);
-  // Cap Date's (column 1) width directly rather than continuing to guess at
-  // what's inflating autoResizeColumns' measurement there -- the
-  // Name/Department merge above did NOT fix this in practice (a real
-  // exported PDF still showed Date too wide), so something else -- most
-  // likely the title and summary lines written by the caller at rows 1-2
-  // (generateEmployeeReportPdf_/generateAllEmployeesReportPdf_), both
-  // merged across all 10 columns -- is still influencing it, regardless of
-  // their .setWrap(true): wrap only controls whether text WRAPS once a
-  // width is already decided, not whether autoResizeColumns considers the
-  // text's natural unwrapped length when deciding that width in the first
-  // place. This caps rather than forces a fixed width (only shrinks column
-  // 1 if auto-size left it wider than 150px, never narrows it below that),
-  // and ONLY touches column 1 -- a previous attempt forced BOTH Date and
-  // Day down to a tight ~90px each and made the whole table vanish from the
-  // export (suspected: fitw=true scaling the table up by a much larger
-  // factor once the total width shrank a lot, pushing content past page 1)
-  // -- this is a single, much smaller, one-column change to reduce that risk.
-  if (sheet.getColumnWidth(1) > 150) sheet.setColumnWidth(1, 150);
-  // Same reasoning, column 5 (Shift) -- this is the column most likely to
-  // make the single-employee PDF and the all-employees PDF render at
-  // visibly different sizes: the all-employees temp sheet's Shift column
-  // has to fit the LONGEST real shift string anywhere in the whole roster
-  // ("Special 10:00-19:00" is 20 characters), while a single employee being
-  // printed alone might only ever have short shifts like "8:00-17:00" --
-  // and since the export scales the whole table to fill the page width
-  // (fitw=true), a wider natural table changes that scale factor, making
-  // the two PDFs look like different sizes even though nothing else
-  // differs. The all-employees sheet's natural width here can only be >=
-  // any one employee's own requirement (the roster is a superset), never
-  // narrower, so capping it down (shrink-only, same safe direction as the
-  // Date cap above) brings it closer to what a single-employee print would
-  // produce instead of always being the wider of the two.
-  if (sheet.getColumnWidth(5) > 180) sheet.setColumnWidth(5, 180);
+  if (!skipColumnResize) {
+    // Plain autoResizeColumns, not autoResizeColumnsWithPadding_ -- the extra
+    // +16px/column padding that helper adds was tried here to give the table
+    // "more room to breathe" per earlier feedback, but on the live Report
+    // sheet it just made every column visibly looser/less compact than
+    // before, which a later look at the real result asked to undo. The
+    // column-width caps below (Date/Shift) still apply on top of this, so
+    // those two specific columns stay safely bounded either way.
+    sheet.autoResizeColumns(1, COLS);
+    // Cap Date's (column 1) width directly rather than continuing to guess at
+    // what's inflating autoResizeColumns' measurement there -- the
+    // Name/Department merge above did NOT fix this in practice (a real
+    // exported PDF still showed Date too wide), so something else -- most
+    // likely the title and summary lines written by the caller at rows 1-2
+    // (generateEmployeeReportPdf_/generateAllEmployeesReportPdf_), both
+    // merged across all 10 columns -- is still influencing it, regardless of
+    // their .setWrap(true): wrap only controls whether text WRAPS once a
+    // width is already decided, not whether autoResizeColumns considers the
+    // text's natural unwrapped length when deciding that width in the first
+    // place. This caps rather than forces a fixed width (only shrinks column
+    // 1 if auto-size left it wider than 150px, never narrows it below that),
+    // and ONLY touches column 1 -- a previous attempt forced BOTH Date and
+    // Day down to a tight ~90px each and made the whole table vanish from the
+    // export (suspected: fitw=true scaling the table up by a much larger
+    // factor once the total width shrank a lot, pushing content past page 1)
+    // -- this is a single, much smaller, one-column change to reduce that risk.
+    if (sheet.getColumnWidth(1) > 150) sheet.setColumnWidth(1, 150);
+    // Same reasoning, column 5 (Shift) -- this is the column most likely to
+    // make the single-employee PDF and the all-employees PDF render at
+    // visibly different sizes: the all-employees temp sheet's Shift column
+    // has to fit the LONGEST real shift string anywhere in the whole roster
+    // ("Special 10:00-19:00" is 20 characters), while a single employee being
+    // printed alone might only ever have short shifts like "8:00-17:00" --
+    // and since the export scales the whole table to fill the page width
+    // (fitw=true), a wider natural table changes that scale factor, making
+    // the two PDFs look like different sizes even though nothing else
+    // differs. The all-employees sheet's natural width here can only be >=
+    // any one employee's own requirement (the roster is a superset), never
+    // narrower, so capping it down (shrink-only, same safe direction as the
+    // Date cap above) brings it closer to what a single-employee print would
+    // produce instead of always being the wider of the two.
+    if (sheet.getColumnWidth(5) > 180) sheet.setColumnWidth(5, 180);
+  }
   return rows.length; // lets writeYearlyReportData_ know where the next month's block should start
 }
 
@@ -482,6 +496,19 @@ function generateAllEmployeesReportPdf_(year, month, precomputedLogsByEmployee) 
     throw new Error('No active employees to report for ' + month + '/' + year + '.');
   }
 
+  // Column widths: measured ONCE (sheet.autoResizeColumns is one of the
+  // slower Sheets API calls, and running it once per employee on a 50+
+  // person roster is what pushed this whole menu action past Apps Script's
+  // execution time limit the first time this shipped -- see
+  // skipColumnResize's own doc comment on writeMonthlyReportData_). Taken
+  // from the FIRST employee's sheet (reportSortGroup_ sorts Japanese
+  // employees first, whose shift strings tend to run longest -- "Special
+  // 10:00-19:00" -- so this is usually at least as wide as it needs to be
+  // for everyone; the Date/Shift caps writeMonthlyReportData_ already
+  // applies bound the worst case either way) and reused for every other
+  // employee's sheet via plain setColumnWidth instead of re-measuring.
+  var sharedColumnWidths = null;
+
   try {
     employees.forEach(function (emp, i) {
       var tempSheet = ss.insertSheet('_PrintAllReportsTemp_' + runId + '_' + i);
@@ -502,16 +529,24 @@ function generateAllEmployeesReportPdf_(year, month, precomputedLogsByEmployee) 
       );
       // setWrap -- same reasoning as the title row above: an unwrapped long
       // line in a merged cell gets attributed to column 1's (Date) width by
-      // writeMonthlyReportData_'s autoResizeColumns call, below. Each
-      // employee has their own sheet now, so a long line wrapping to 2
-      // lines here only makes THIS employee's own page taller -- it can no
-      // longer throw off where any other employee's content lands.
+      // writeMonthlyReportData_'s autoResizeColumns call. Each employee has
+      // their own sheet now, so a long line wrapping to 2 lines here only
+      // makes THIS employee's own page taller -- it can no longer throw off
+      // where any other employee's content lands.
       tempSheet.getRange(2, 1, 1, 10).merge().setValue(summaryLine).setFontWeight('bold').setBackground('#fff2cc').setWrap(true);
 
       writeMonthlyReportData_(
         tempSheet, 4, year, month, logsByEmployee, emp.EmployeeID, true,
-        scheduledShiftsForMonth, allowancesByEmployee
+        scheduledShiftsForMonth, allowancesByEmployee,
+        sharedColumnWidths !== null // skipColumnResize once we already have widths to reuse
       );
+
+      if (sharedColumnWidths === null) {
+        sharedColumnWidths = [];
+        for (var c = 1; c <= 10; c++) sharedColumnWidths.push(tempSheet.getColumnWidth(c));
+      } else {
+        sharedColumnWidths.forEach(function (w, idx) { tempSheet.setColumnWidth(idx + 1, w); });
+      }
     });
 
     // Switch away before hiding, in case the active sheet is one of the
