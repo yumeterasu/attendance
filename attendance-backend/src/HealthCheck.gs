@@ -176,9 +176,9 @@ function removeDailyHealthCheckTrigger() {
  * that finally block runs (a network hiccup on the export fetch, etc.) --
  * finally blocks don't get a chance to run on a hard timeout, unlike a
  * normal thrown error. Also matches the older "_PrintAllReportsTemp_..."
- * prefix an earlier, abandoned version of generateAllEmployeesReportZip_
- * used (one real sheet per employee, before that approach turned out too
- * slow for the full roster) -- kept here so any tabs stuck behind from that
+ * prefix an earlier, abandoned version of the "All Employees" report used
+ * (one real sheet per employee, before that approach turned out too slow
+ * for the full roster) -- kept here so any tabs stuck behind from that
  * version can still be cleaned up the same way. Safe to run any time: only
  * ever touches tabs matching these exact naming prefixes, never anything an
  * admin named themselves. Run once from the editor: select

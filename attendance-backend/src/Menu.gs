@@ -737,8 +737,16 @@ function menuPrintEmployeeReport_() {
  * once -- one Year/Month prompt (no name lookup needed), one ZIP containing
  * every employee's own correctly-paginated PDF (same "Active, or has data
  * this month" roster the live Report sheet uses -- getSortedReportEmployees_,
- * Report.gs). See generateAllEmployeesReportZip_'s own doc comment (Report.gs)
- * for why this is a ZIP of individual PDFs rather than one combined PDF.
+ * Report.gs).
+ *
+ * This only STARTS the job (startAllEmployeesReportJob_, Report.gs) -- it
+ * does not wait for it. Generating 50-59 individual PDFs always takes
+ * longer than Apps Script's one execution can run for, confirmed by three
+ * different approaches all failing against the real roster (see
+ * startAllEmployeesReportJob_'s own doc comment for the full history), so
+ * the work is spread across several background executions a time-based
+ * trigger chains together instead. There's no link to hand back here --
+ * nothing is ready yet -- just a "started, check back later" dialog.
  */
 function menuPrintAllEmployeeReports_() {
   var ui = SpreadsheetApp.getUi();
@@ -760,9 +768,10 @@ function menuPrintAllEmployeeReports_() {
 
   // Same roster the PDF itself will use (getSortedReportEmployees_), counted
   // here first just so the confirmation step below can say how many people
-  // are about to be included -- this can take a little while for a large
-  // roster (one writeMonthlyReportData_ call per employee), so worth a
-  // chance to back out before it runs rather than after.
+  // are about to be included -- startAllEmployeesReportJob_ re-counts this
+  // same way internally too (it has to, to start the job), but counting it
+  // here first gives a chance to back out (or see "no one to include") on
+  // this prompt before committing to a background job at all.
   var logsByEmployee = getMonthLogsByEmployee_(year, month);
   var employeeCount = getSortedReportEmployees_(logsByEmployee, undefined).length;
   if (employeeCount === 0) {
@@ -773,37 +782,41 @@ function menuPrintAllEmployeeReports_() {
     title,
     'This will generate a ZIP file containing ' + employeeCount + ' individual PDF(s), one per employee, for ' +
       Utilities.formatDate(new Date(year, month - 1, 1), Session.getScriptTimeZone(), 'MMMM yyyy') +
-      '. This may take a moment. Continue?',
+      '. This runs in the background in small batches and can take 10-15 minutes in total -- you will NOT get a link right away. Continue?',
     ui.ButtonSet.YES_NO
   );
   if (confirm !== ui.Button.YES) return;
 
-  var zipFile;
+  var result;
   try {
     // logsByEmployee was already read above for the roster count -- passed
-    // through so generateAllEmployeesReportZip_ doesn't read the whole
+    // through so startAllEmployeesReportJob_ doesn't read the whole
     // AttendanceLog sheet a second time right after this.
-    zipFile = generateAllEmployeesReportZip_(year, month, logsByEmployee);
+    result = startAllEmployeesReportJob_(year, month, logsByEmployee);
   } catch (err) {
-    ui.alert(title, 'Could not generate the ZIP: ' + err.message, ui.ButtonSet.OK);
+    ui.alert(title, 'Could not start the job: ' + err.message, ui.ButtonSet.OK);
     return;
   }
 
-  var html = HtmlService.createHtmlOutput(
-    '<div style="font-family:Arial,sans-serif;padding:6px;">' +
-    '<p>ZIP is ready!</p>' +
-    '<p><a href="' + zipFile.getUrl() + '" target="_blank" style="font-size:16px;">🗂️ Open / Download ZIP</a></p>' +
-    '<p style="color:#666;font-size:12px;">One PDF per employee, inside the ZIP. Anyone with this link can open it -- feel free to forward it to anyone else.</p>' +
-    '</div>'
-  ).setWidth(340).setHeight(170);
-  ui.showModalDialog(html, title);
+  if (!result.started) {
+    ui.alert(title, result.message, ui.ButtonSet.OK);
+    return;
+  }
+
+  ui.alert(
+    title,
+    'Started -- generating ' + result.totalCount + ' individual PDF(s) in the background, in small batches.\n\n' +
+      'Check the "Attendance Reports" Drive folder in about 10-15 minutes for "All Employee Reports - ' +
+      Utilities.formatDate(new Date(year, month - 1, 1), Session.getScriptTimeZone(), 'yyyy-MM') + '.zip".',
+    ui.ButtonSet.OK
+  );
 }
 
 /**
  * Builds one employee's report for one month and saves it into an
  * "Attendance Reports" Drive folder (see getOrCreateDriveFolder_) -- the
  * actual throwaway-sheet/export/cleanup work is buildEmployeeReportPdfBlob_
- * (Report.gs), shared with generateAllEmployeesReportZip_'s per-employee
+ * (Report.gs), shared with continueAllEmployeesReportBatch_'s per-batch
  * loop. Returns the Drive File, shared as "anyone with the link can view"
  * -- a fresh Drive file is owner-only by default, which the admin running
  * this from the shared spreadsheet would not expect (the report used to

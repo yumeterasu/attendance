@@ -7,7 +7,7 @@
 
 /**
  * Picks and orders the employees a monthly report table should show --
- * factored out of writeMonthlyReportData_ so generateAllEmployeesReportZip_
+ * factored out of writeMonthlyReportData_ so continueAllEmployeesReportBatch_
  * can walk the exact same roster, in the exact same order, one PDF per
  * employee, without the two ever being able to silently disagree on "who's
  * included" or "in what order" (a real risk if this logic were duplicated).
@@ -75,22 +75,22 @@ function buildEmployeeReportSummaryLine_(emp, dayLogs, scheduledShiftsForEmploye
  * includeSummaryBlock (optional) adds the itemized Allowance lines+total
  * below each employee's day table -- used by both menuPrintEmployeeReport_
  * (single person) and buildEmployeeReportPdfBlob_ (everyone, via
- * generateAllEmployeesReportZip_), never by the live "Report" sheet or the
- * yearly "All" view, which would otherwise
- * repeat the same totals the "Summary" sheet already shows once per
- * employee, for no reason, on every dropdown change. The Late/OT/Over
- * Break/Special Allowance summary LINE itself is NOT written here -- both
- * of those same callers write it themselves, above this function's table,
- * via buildEmployeeReportSummaryLine_ (see its own doc comment for why).
+ * continueAllEmployeesReportBatch_), never by the live "Report" sheet or
+ * the yearly "All" view, which would otherwise repeat the same totals the
+ * "Summary" sheet already shows once per employee, for no reason, on every
+ * dropdown change. The Late/OT/Over Break/Special Allowance summary LINE
+ * itself is NOT written here -- both of those same callers write it
+ * themselves, above this function's table, via
+ * buildEmployeeReportSummaryLine_ (see its own doc comment for why).
  *
  * precomputedScheduledShiftsForMonth/precomputedAllowancesByEmployee
  * (optional) -- same "pass it in once, skip the fresh read" reasoning as
  * precomputedLogsByEmployee above, specifically for
- * buildEmployeeReportPdfBlob_'s generateAllEmployeesReportZip_ loop, which
- * otherwise calls this function once per employee: without these, EVERY one
- * of those calls would independently re-read the whole Schedule sheet and
- * the whole Allowances sheet from scratch just to pull out one employee's
- * slice, scaling with roster size for no reason.
+ * buildEmployeeReportPdfBlob_'s continueAllEmployeesReportBatch_ loop,
+ * which otherwise calls this function once per employee: without these,
+ * EVERY one of those calls would independently re-read the whole Schedule
+ * sheet and the whole Allowances sheet from scratch just to pull out one
+ * employee's slice, scaling with roster size for no reason.
  */
 function writeMonthlyReportData_(sheet, startRow, year, month, precomputedLogsByEmployee, onlyEmployeeId, includeSummaryBlock, precomputedScheduledShiftsForMonth, precomputedAllowancesByEmployee) {
   var tz = Session.getScriptTimeZone();
@@ -134,7 +134,7 @@ function writeMonthlyReportData_(sheet, startRow, year, month, precomputedLogsBy
     // see buildEmployeeReportSummaryLine_'s own doc comment -- so the two
     // can never show different totals for the same employee/month). Pulled
     // from precomputedAllowancesByEmployee when the caller already read the
-    // whole Allowances sheet once (generateAllEmployeesReportZip_'s loop),
+    // whole Allowances sheet once (continueAllEmployeesReportBatch_'s loop),
     // falling back to a fresh per-employee read otherwise
     // (menuPrintEmployeeReport_, which only ever needs the one employee).
     var allowances = includeSummaryBlock
@@ -411,23 +411,24 @@ function reportSortGroup_(emp, dayLogs) {
 
 /**
  * Core of generateEmployeeReportPdf_ (Menu.gs) and
- * generateAllEmployeesReportZip_ below: builds one employee's report on a
+ * continueAllEmployeesReportBatch_ below: builds one employee's report on a
  * throwaway sheet (always deleted before this returns, success or failure),
  * exports it as PDF via Sheets' own export endpoint, and returns the PDF as
  * a Blob -- nothing saved to Drive here, that's left to the caller, since
  * the two callers want different things done with it (one named file vs.
- * bundled into a ZIP with everyone else's).
+ * saved into a job's scratch folder, to be bundled into a ZIP with
+ * everyone else's once the whole background job finishes).
  *
  * precomputed* (all optional) -- same "pass it in once, skip the fresh
  * read" reasoning as writeMonthlyReportData_'s own precomputed params.
- * generateAllEmployeesReportZip_ calls this once per employee in a loop and
- * would otherwise re-read the whole AttendanceLog/Schedule/Allowances
- * sheets from scratch every single time; generateEmployeeReportPdf_ (one
- * person) omits them and lets this read fresh, same as always.
+ * continueAllEmployeesReportBatch_ calls this once per employee in its
+ * batch and would otherwise re-read the whole AttendanceLog/Schedule/
+ * Allowances sheets from scratch every single time; generateEmployeeReportPdf_
+ * (one person) omits them and lets this read fresh, same as always.
  */
 function buildEmployeeReportPdfBlob_(employee, year, month, precomputedLogsByEmployee, precomputedScheduledShiftsForMonth, precomputedAllowancesByEmployee) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
-  // Random suffix, not just the timestamp -- generateAllEmployeesReportZip_
+  // Random suffix, not just the timestamp -- continueAllEmployeesReportBatch_
   // calls this in a tight loop where two calls can land in the same
   // millisecond, which would otherwise collide on the sheet name.
   var tempName = '_PrintReportTemp_' + new Date().getTime() + '_' + Math.floor(Math.random() * 1e6);
@@ -491,74 +492,215 @@ function buildEmployeeReportPdfBlob_(employee, year, month, precomputedLogsByEmp
   }
 }
 
-/**
- * One ZIP covering every employee writeMonthlyReportData_ would normally
- * show for this month (getSortedReportEmployees_ -- same roster/order as
- * the live Report sheet), each as their own correctly-paginated PDF inside
- * it -- one buildEmployeeReportPdfBlob_ call per employee (same throwaway-
- * sheet/export/cleanup mechanics menuPrintEmployeeReport_ already uses
- * successfully for one person), bundled together with Utilities.zip.
- *
- * TWO EARLIER VERSIONS of this function tried to produce a single combined
- * multi-page PDF instead, both abandoned after failing against the real
- * ~50-person roster:
- *  1. Every employee written into rows of one shared temp sheet, padding
- *     each block out to a fixed row count so the next employee would land
- *     on a fresh page. Wrong in practice -- the renderer's true rows-per-
- *     page isn't a fixed number (varies with whether a title/summary cell
- *     happened to wrap to 2 lines that month), so block boundaries drifted
- *     out of alignment with the real page breaks for roughly half the
- *     roster: a title would land partway down the SAME physical page as
- *     the previous employee's trailing blank rows instead of a fresh one.
- *  2. One real temporary SHEET per employee (Sheets always starts a new
- *     sheet on a fresh PDF page, so no row-count guessing needed), every
- *     other sheet hidden, then one whole-workbook export. Correct in
- *     principle, but 50+ insertSheet/deleteSheet calls plus one export of
- *     a 50+ page combined document pushed the whole menu action past Apps
- *     Script's execution time limit -- the admin was left with a stuck
- *     menu and dozens of orphaned temp sheet tabs (see
- *     removeOrphanedPrintReportTempSheets_, HealthCheck.gs, for cleaning
- *     those up after the fact).
- * This version sidesteps both failure modes: no row-count guessing (each
- * employee's PDF is already a complete, independent document), and no
- * giant combined export (each export call is the same small, already-fast
- * single-employee one, just repeated and zipped together afterward).
- *
- * precomputedLogsByEmployee (optional) -- menuPrintAllEmployeeReports_
- * (Menu.gs) already has to read this to count the roster for its
- * confirmation prompt before calling this function; passing that same map
- * through avoids reading the whole AttendanceLog sheet a second time right
- * after the first.
- */
-function generateAllEmployeesReportZip_(year, month, precomputedLogsByEmployee) {
-  var tz = Session.getScriptTimeZone();
-  var logsByEmployee = precomputedLogsByEmployee !== undefined ? precomputedLogsByEmployee : getMonthLogsByEmployee_(year, month);
-  var scheduledShiftsForMonth = getScheduledShiftsForMonth_(year, month);
-  var allowancesByEmployee = getAllowancesForMonth_(year, month);
-  var employees = getSortedReportEmployees_(logsByEmployee, undefined);
+// ---------------------------------------------------------------------
+// "All Employees" report: one ZIP of every employee's own correctly-
+// paginated PDF (buildEmployeeReportPdfBlob_ above -- the same throwaway-
+// sheet/export/cleanup mechanics menuPrintEmployeeReport_ already uses
+// successfully for one person), run as a BACKGROUND JOB spread across
+// several Apps Script executions.
+//
+// THREE EARLIER VERSIONS of this were tried and abandoned against the real
+// ~50-59 person roster, each failing a different way:
+//  1. Every employee written into rows of one shared temp sheet, padding
+//     each block out to a fixed row count so the next employee would land
+//     on a fresh page. Wrong in practice -- the renderer's true rows-per-
+//     page isn't a fixed number (varies with whether a title/summary cell
+//     happened to wrap to 2 lines that month), so block boundaries drifted
+//     out of alignment with the real page breaks for roughly half the
+//     roster.
+//  2. One real temporary SHEET per employee, every other sheet hidden,
+//     then one whole-workbook export (Sheets always starts a new sheet on
+//     a fresh PDF page, so no row-count guessing needed). Correct for
+//     alignment, but 50+ insertSheet/hideSheet/deleteSheet calls plus
+//     rendering one 50+ page combined PDF in a single UrlFetchApp.fetch
+//     exceeded Apps Script's execution time limit.
+//  3. A ZIP of N independently-exported single-employee PDFs, all inside
+//     ONE execution (a straight loop calling buildEmployeeReportPdfBlob_
+//     once per employee). Each individual export is fast on its own (it's
+//     the same call "Print Employee Report (one person)" already uses
+//     successfully), but 50-59 of them back to back in one execution STILL
+//     exceeded the limit -- confirmed live, it died partway through with
+//     one orphaned temp sheet left behind.
+//
+// The real constraint: there is no way to produce ~50-59 individual PDF
+// exports inside Apps Script's one hard 6-minute execution ceiling, no
+// matter how the work inside that one execution is organized. The fix has
+// to span MULTIPLE executions -- the same ScriptApp.newTrigger time-based
+// primitive this codebase already uses for recurring daily jobs
+// (warmUpEmployeesCache_, Utils.gs; the daily backup, Backup.gs; daily
+// deactivations, Admin.gs; daily recompute, Attendance.gs), just used here
+// as a one-off continuation instead of a recurring schedule.
+// ---------------------------------------------------------------------
 
-  if (employees.length === 0) {
+var ALL_EMPLOYEES_REPORT_JOB_KEY = 'ALL_EMPLOYEES_REPORT_JOB';
+// Conservative on purpose -- three real failures already, safer to run a
+// few extra ~90-second-apart batches than to risk a 4th timeout. Raise this
+// later if a real run shows plenty of headroom per batch.
+var ALL_EMPLOYEES_REPORT_BATCH_SIZE = 8;
+
+/**
+ * Starts (or reports on) a background "All Employees" ZIP job -- called by
+ * menuPrintAllEmployeeReports_ (Menu.gs), which already validated year/month
+ * and confirmed the roster count with the admin. Returns
+ * {started: true, totalCount} on a clean start, or {started: false, message}
+ * if a job already looks to be in flight (the caller turns that into an
+ * alert instead of silently starting a second, overlapping job).
+ *
+ * Doesn't do any employee processing itself -- it only writes the initial
+ * job state and schedules the first batch via the exact same
+ * continueAllEmployeesReportBatch_ trigger every later batch uses, so
+ * there is exactly one code path that ever touches an employee's data,
+ * whether it's batch 1 or batch 7.
+ */
+function startAllEmployeesReportJob_(year, month, precomputedLogsByEmployee) {
+  var props = PropertiesService.getScriptProperties();
+  var existingRaw = props.getProperty(ALL_EMPLOYEES_REPORT_JOB_KEY);
+  if (existingRaw) {
+    var existing = JSON.parse(existingRaw);
+    var ageMinutes = (Date.now() - existing.startedAt) / 60000;
+    if (ageMinutes < 30) {
+      return {
+        started: false,
+        message: 'A report is already being generated (started ' + Math.round(ageMinutes) + ' minute(s) ago, for ' +
+          existing.month + '/' + existing.year + '). Check the "Attendance Reports" Drive folder in a few minutes, or wait for it to finish before starting another.'
+      };
+    }
+    // Stale -- almost certainly a dead job from a past failure (a batch
+    // threw, or the trigger never fired). Clean up whatever it left behind
+    // and fall through to start fresh, same as a clean start below.
+    cleanupAllEmployeesReportJob_(existing);
+  }
+
+  var logsByEmployee = precomputedLogsByEmployee !== undefined ? precomputedLogsByEmployee : getMonthLogsByEmployee_(year, month);
+  var totalCount = getSortedReportEmployees_(logsByEmployee, undefined).length;
+  if (totalCount === 0) {
     throw new Error('No active employees to report for ' + month + '/' + year + '.');
   }
 
-  var monthLabel = Utilities.formatDate(new Date(year, month - 1, 1), tz, 'yyyy-MM');
-  var blobs = employees.map(function (emp) {
-    var blob = buildEmployeeReportPdfBlob_(emp, year, month, logsByEmployee, scheduledShiftsForMonth, allowancesByEmployee);
-    // Each blob's own name becomes its filename INSIDE the zip -- without
-    // this every entry would share the export endpoint's generic default
-    // name instead of being identifiable per employee once extracted.
-    blob.setName('Report - ' + emp.Name + ' - ' + monthLabel + '.pdf');
+  var scratchFolder = DriveApp.createFolder('_AllEmployeesReportScratch_' + new Date().getTime());
+  var job = {
+    year: year,
+    month: month,
+    nextIndex: 0,
+    totalCount: totalCount,
+    scratchFolderId: scratchFolder.getId(),
+    startedAt: Date.now()
+  };
+  props.setProperty(ALL_EMPLOYEES_REPORT_JOB_KEY, JSON.stringify(job));
+
+  ScriptApp.newTrigger('continueAllEmployeesReportBatch_').timeBased().after(5 * 1000).create();
+
+  return { started: true, totalCount: totalCount };
+}
+
+/**
+ * The background worker -- fired by a one-off time-based trigger, NEVER
+ * called directly from a menu click. Runs with no UI attached
+ * (SpreadsheetApp.getUi() would throw here), so on any failure it just
+ * stops rather than trying to alert anyone: the job state is left in
+ * Properties as a trail, and startAllEmployeesReportJob_'s staleness check
+ * above is what eventually surfaces that to an admin, next time they try
+ * to print the all-employees report.
+ *
+ * Processes ALL_EMPLOYEES_REPORT_BATCH_SIZE employees, saves each one's PDF
+ * into the job's scratch Drive folder (NOT the real "Attendance Reports"
+ * folder -- these are intermediate files, deleted again once zipped), and
+ * either schedules the next batch or, if this was the last one, builds the
+ * final ZIP and cleans up.
+ */
+function continueAllEmployeesReportBatch_() {
+  var props = PropertiesService.getScriptProperties();
+  var raw = props.getProperty(ALL_EMPLOYEES_REPORT_JOB_KEY);
+  if (!raw) return; // job already finished/cleared -- a stray trigger fire, nothing to do
+  var job = JSON.parse(raw);
+
+  var logsByEmployee = getMonthLogsByEmployee_(job.year, job.month);
+  var scheduledShiftsForMonth = getScheduledShiftsForMonth_(job.year, job.month);
+  var allowancesByEmployee = getAllowancesForMonth_(job.year, job.month);
+  // Re-derived fresh every batch rather than serialized into Properties --
+  // deterministic given the same year/month, and much simpler than storing
+  // the whole roster as JSON. Assumes attendance data isn't being actively
+  // edited during the ~10-15 minute span of the whole job, which is fine
+  // for an admin-triggered monthly report.
+  var employees = getSortedReportEmployees_(logsByEmployee, undefined);
+
+  var scratchFolder = DriveApp.getFolderById(job.scratchFolderId);
+  var chunk = employees.slice(job.nextIndex, job.nextIndex + ALL_EMPLOYEES_REPORT_BATCH_SIZE);
+
+  chunk.forEach(function (emp, i) {
+    var blob = buildEmployeeReportPdfBlob_(emp, job.year, job.month, logsByEmployee, scheduledShiftsForMonth, allowancesByEmployee);
+    // Zero-padded index PREFIX, not just the name -- Utilities.zip has no
+    // concept of entry order, so this is what lets the finalize step below
+    // read the scratch folder back and reconstruct the original roster
+    // order (Drive's own file listing order isn't guaranteed to match
+    // creation order) just by sorting filenames.
+    var index = job.nextIndex + i;
+    blob.setName(Utilities.formatString('%03d', index) + ' - ' + emp.Name + '.pdf');
+    scratchFolder.createFile(blob);
+  });
+
+  job.nextIndex += chunk.length;
+
+  // employees.length (freshly derived just above), not the job's own
+  // totalCount snapshot from when it started -- if attendance data were
+  // somehow edited mid-job and the roster changed size, comparing against
+  // a now-stale totalCount could either stop one batch early or, worse,
+  // keep scheduling batches forever once nextIndex can never catch up to
+  // a totalCount that no longer matches reality (chunk.length would stay
+  // 0 every time). Comparing against the roster as it exists RIGHT NOW is
+  // always a real, reachable stopping point.
+  if (job.nextIndex < employees.length) {
+    props.setProperty(ALL_EMPLOYEES_REPORT_JOB_KEY, JSON.stringify(job));
+    ScriptApp.newTrigger('continueAllEmployeesReportBatch_').timeBased().after(90 * 1000).create();
+    return;
+  }
+
+  // Last batch -- collect everything the scratch folder has, in filename
+  // (== roster) order, zip it, save the real result, clean up.
+  var tz = Session.getScriptTimeZone();
+  var monthLabel = Utilities.formatDate(new Date(job.year, job.month - 1, 1), tz, 'yyyy-MM');
+  var files = scratchFolder.getFiles();
+  var blobs = [];
+  while (files.hasNext()) blobs.push(files.next());
+  blobs.sort(function (a, b) { return a.getName() < b.getName() ? -1 : 1; });
+  var pdfBlobs = blobs.map(function (f) {
+    // Strip the "NNN - " sort prefix and ".pdf" back off the scratch name
+    // ("023 - PINGPONG.pdf" -> "PINGPONG"), then rebuild the same filename
+    // shape the single-employee command already uses -- that sort prefix
+    // only ever existed to survive Drive's unordered file listing, an
+    // admin opening the finished ZIP has no use for it.
+    var employeeName = f.getName().replace(/^\d{3} - /, '').replace(/\.pdf$/, '');
+    var blob = f.getBlob();
+    blob.setName('Report - ' + employeeName + ' - ' + monthLabel + '.pdf');
     return blob;
   });
 
-  var zipBlob = Utilities.zip(blobs, 'All Employee Reports - ' + monthLabel + '.zip');
+  var zipBlob = Utilities.zip(pdfBlobs, 'All Employee Reports - ' + monthLabel + '.zip');
 
   // Same folder, same sharing, same "always a new file" reasoning as
   // generateEmployeeReportPdf_ -- see its own doc comment (Menu.gs).
   var folder = getOrCreateDriveFolder_('Attendance Reports');
-  var file = folder.createFile(zipBlob);
-  file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
-  return file;
+  folder.createFile(zipBlob).setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+
+  cleanupAllEmployeesReportJob_(job);
+}
+
+/**
+ * Deletes a job's scratch folder (and everything in it, via Drive's normal
+ * trash -- recoverable for 30 days, not an immediate hard delete) and
+ * always clears its Properties entry too -- shared by the normal
+ * end-of-job path above and startAllEmployeesReportJob_'s stale-job
+ * recovery, so there's exactly one place that knows how to tear a job
+ * down. Safe to call even when a fresh job's state is about to be written
+ * into the same Properties key right after (the stale-job recovery path
+ * does exactly that) -- deleting then immediately overwriting is harmless.
+ */
+function cleanupAllEmployeesReportJob_(job) {
+  try {
+    var scratchFolder = DriveApp.getFolderById(job.scratchFolderId);
+    scratchFolder.setTrashed(true);
+  } catch (e) { /* already gone, or never got created -- nothing to clean up */ }
+  PropertiesService.getScriptProperties().deleteProperty(ALL_EMPLOYEES_REPORT_JOB_KEY);
 }
 
 /**
