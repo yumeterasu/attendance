@@ -7,8 +7,8 @@
 
 /**
  * Picks and orders the employees a monthly report table should show --
- * factored out of writeMonthlyReportData_ so generateAllEmployeesReportPdf_
- * can walk the exact same roster, in the exact same order, one page per
+ * factored out of writeMonthlyReportData_ so generateAllEmployeesReportZip_
+ * can walk the exact same roster, in the exact same order, one PDF per
  * employee, without the two ever being able to silently disagree on "who's
  * included" or "in what order" (a real risk if this logic were duplicated).
  *
@@ -39,7 +39,7 @@ function getSortedReportEmployees_(logsByEmployee, onlyEmployeeId) {
 /**
  * One compact line -- Late days / OT / Over Break days / Special Allowance --
  * for one employee's one month. Written by the PDF-generating callers
- * (generateEmployeeReportPdf_, Menu.gs; generateAllEmployeesReportPdf_ below)
+ * (generateEmployeeReportPdf_, Menu.gs; buildEmployeeReportPdfBlob_ below)
  * as a plain text line ABOVE the bordered day table, between the title and
  * the table itself -- not as a row inside writeMonthlyReportData_'s table,
  * which would otherwise stretch that table's own bordered box by one row
@@ -74,8 +74,9 @@ function buildEmployeeReportSummaryLine_(emp, dayLogs, scheduledShiftsForEmploye
  *
  * includeSummaryBlock (optional) adds the itemized Allowance lines+total
  * below each employee's day table -- used by both menuPrintEmployeeReport_
- * (single person) and generateAllEmployeesReportPdf_ (everyone), never by
- * the live "Report" sheet or the yearly "All" view, which would otherwise
+ * (single person) and buildEmployeeReportPdfBlob_ (everyone, via
+ * generateAllEmployeesReportZip_), never by the live "Report" sheet or the
+ * yearly "All" view, which would otherwise
  * repeat the same totals the "Summary" sheet already shows once per
  * employee, for no reason, on every dropdown change. The Late/OT/Over
  * Break/Special Allowance summary LINE itself is NOT written here -- both
@@ -84,25 +85,14 @@ function buildEmployeeReportSummaryLine_(emp, dayLogs, scheduledShiftsForEmploye
  *
  * precomputedScheduledShiftsForMonth/precomputedAllowancesByEmployee
  * (optional) -- same "pass it in once, skip the fresh read" reasoning as
- * precomputedLogsByEmployee above, specifically for generateAllEmployeesReportPdf_,
- * which otherwise calls this function once per employee in a loop: without
- * these, EVERY one of those calls would independently re-read the whole
- * Schedule sheet and the whole Allowances sheet from scratch just to pull
- * out one employee's slice, scaling with roster size for no reason.
- *
- * skipColumnResize (optional) -- also for generateAllEmployeesReportPdf_'s
- * per-employee loop: sheet.autoResizeColumns is one of the slower Sheets
- * API calls (it has to measure rendered text), and every other caller here
- * only ever triggers it once per run. generateAllEmployeesReportPdf_ calling
- * this function once per employee used to mean once PER EMPLOYEE too --
- * harmless for a handful of people, but a 50+ person roster pushed the
- * whole menu action past Apps Script's execution time limit and left the
- * admin staring at a stuck menu with temp sheet tabs never cleaned up. With
- * this true, the caller is expected to set column widths itself afterward
- * (see generateAllEmployeesReportPdf_ -- it measures once, off the first
- * employee's sheet, and reuses that same width for everyone else's).
+ * precomputedLogsByEmployee above, specifically for
+ * buildEmployeeReportPdfBlob_'s generateAllEmployeesReportZip_ loop, which
+ * otherwise calls this function once per employee: without these, EVERY one
+ * of those calls would independently re-read the whole Schedule sheet and
+ * the whole Allowances sheet from scratch just to pull out one employee's
+ * slice, scaling with roster size for no reason.
  */
-function writeMonthlyReportData_(sheet, startRow, year, month, precomputedLogsByEmployee, onlyEmployeeId, includeSummaryBlock, precomputedScheduledShiftsForMonth, precomputedAllowancesByEmployee, skipColumnResize) {
+function writeMonthlyReportData_(sheet, startRow, year, month, precomputedLogsByEmployee, onlyEmployeeId, includeSummaryBlock, precomputedScheduledShiftsForMonth, precomputedAllowancesByEmployee) {
   var tz = Session.getScriptTimeZone();
   var daysInMonth = new Date(year, month, 0).getDate();
   // Omit precomputedLogsByEmployee (undefined) to keep the old single-call
@@ -144,7 +134,7 @@ function writeMonthlyReportData_(sheet, startRow, year, month, precomputedLogsBy
     // see buildEmployeeReportSummaryLine_'s own doc comment -- so the two
     // can never show different totals for the same employee/month). Pulled
     // from precomputedAllowancesByEmployee when the caller already read the
-    // whole Allowances sheet once (generateAllEmployeesReportPdf_'s loop),
+    // whole Allowances sheet once (generateAllEmployeesReportZip_'s loop),
     // falling back to a fresh per-employee read otherwise
     // (menuPrintEmployeeReport_, which only ever needs the one employee).
     var allowances = includeSummaryBlock
@@ -375,49 +365,38 @@ function writeMonthlyReportData_(sheet, startRow, year, month, precomputedLogsBy
       sheet.getRange(block.startRow, 1, 1, 2).merge().setWrap(true);
     });
   }
-  if (!skipColumnResize) {
-    // Plain autoResizeColumns, not autoResizeColumnsWithPadding_ -- the extra
-    // +16px/column padding that helper adds was tried here to give the table
-    // "more room to breathe" per earlier feedback, but on the live Report
-    // sheet it just made every column visibly looser/less compact than
-    // before, which a later look at the real result asked to undo. The
-    // column-width caps below (Date/Shift) still apply on top of this, so
-    // those two specific columns stay safely bounded either way.
-    sheet.autoResizeColumns(1, COLS);
-    // Cap Date's (column 1) width directly rather than continuing to guess at
-    // what's inflating autoResizeColumns' measurement there -- the
-    // Name/Department merge above did NOT fix this in practice (a real
-    // exported PDF still showed Date too wide), so something else -- most
-    // likely the title and summary lines written by the caller at rows 1-2
-    // (generateEmployeeReportPdf_/generateAllEmployeesReportPdf_), both
-    // merged across all 10 columns -- is still influencing it, regardless of
-    // their .setWrap(true): wrap only controls whether text WRAPS once a
-    // width is already decided, not whether autoResizeColumns considers the
-    // text's natural unwrapped length when deciding that width in the first
-    // place. This caps rather than forces a fixed width (only shrinks column
-    // 1 if auto-size left it wider than 150px, never narrows it below that),
-    // and ONLY touches column 1 -- a previous attempt forced BOTH Date and
-    // Day down to a tight ~90px each and made the whole table vanish from the
-    // export (suspected: fitw=true scaling the table up by a much larger
-    // factor once the total width shrank a lot, pushing content past page 1)
-    // -- this is a single, much smaller, one-column change to reduce that risk.
-    if (sheet.getColumnWidth(1) > 150) sheet.setColumnWidth(1, 150);
-    // Same reasoning, column 5 (Shift) -- this is the column most likely to
-    // make the single-employee PDF and the all-employees PDF render at
-    // visibly different sizes: the all-employees temp sheet's Shift column
-    // has to fit the LONGEST real shift string anywhere in the whole roster
-    // ("Special 10:00-19:00" is 20 characters), while a single employee being
-    // printed alone might only ever have short shifts like "8:00-17:00" --
-    // and since the export scales the whole table to fill the page width
-    // (fitw=true), a wider natural table changes that scale factor, making
-    // the two PDFs look like different sizes even though nothing else
-    // differs. The all-employees sheet's natural width here can only be >=
-    // any one employee's own requirement (the roster is a superset), never
-    // narrower, so capping it down (shrink-only, same safe direction as the
-    // Date cap above) brings it closer to what a single-employee print would
-    // produce instead of always being the wider of the two.
-    if (sheet.getColumnWidth(5) > 180) sheet.setColumnWidth(5, 180);
-  }
+  // Plain autoResizeColumns, not autoResizeColumnsWithPadding_ -- the extra
+  // +16px/column padding that helper adds was tried here to give the table
+  // "more room to breathe" per earlier feedback, but on the live Report
+  // sheet it just made every column visibly looser/less compact than
+  // before, which a later look at the real result asked to undo. The
+  // column-width caps below (Date/Shift) still apply on top of this, so
+  // those two specific columns stay safely bounded either way.
+  sheet.autoResizeColumns(1, COLS);
+  // Cap Date's (column 1) width directly rather than continuing to guess at
+  // what's inflating autoResizeColumns' measurement there -- the
+  // Name/Department merge above did NOT fix this in practice (a real
+  // exported PDF still showed Date too wide), so something else -- most
+  // likely the title and summary lines written by the caller at rows 1-2
+  // (generateEmployeeReportPdf_/buildEmployeeReportPdfBlob_), both merged
+  // across all 10 columns -- is still influencing it, regardless of their
+  // .setWrap(true): wrap only controls whether text WRAPS once a width is
+  // already decided, not whether autoResizeColumns considers the text's
+  // natural unwrapped length when deciding that width in the first place.
+  // This caps rather than forces a fixed width (only shrinks column 1 if
+  // auto-size left it wider than 150px, never narrows it below that), and
+  // ONLY touches column 1 -- a previous attempt forced BOTH Date and Day
+  // down to a tight ~90px each and made the whole table vanish from the
+  // export (suspected: fitw=true scaling the table up by a much larger
+  // factor once the total width shrank a lot, pushing content past page 1)
+  // -- this is a single, much smaller, one-column change to reduce that risk.
+  if (sheet.getColumnWidth(1) > 150) sheet.setColumnWidth(1, 150);
+  // Same reasoning, column 5 (Shift) -- capped shrink-only so a month with
+  // an unusually long shift string ("Special 10:00-19:00") can't make that
+  // one PDF render at a visibly different scale than any other, since the
+  // export scales the whole table to fill the page width (fitw=true) and a
+  // wider natural table changes that scale factor.
+  if (sheet.getColumnWidth(5) > 180) sheet.setColumnWidth(5, 180);
   return rows.length; // lets writeYearlyReportData_ know where the next month's block should start
 }
 
@@ -431,37 +410,119 @@ function reportSortGroup_(emp, dayLogs) {
 }
 
 /**
- * One combined, multi-page PDF covering every employee writeMonthlyReportData_
- * would normally show for this month (getSortedReportEmployees_ -- same
- * roster/order as the live Report sheet), each starting on their own fresh
- * page. Mirrors generateEmployeeReportPdf_'s (Menu.gs) throwaway-sheet /
- * export / Drive-folder / cleanup pattern, just once per employee instead of
- * once total.
+ * Core of generateEmployeeReportPdf_ (Menu.gs) and
+ * generateAllEmployeesReportZip_ below: builds one employee's report on a
+ * throwaway sheet (always deleted before this returns, success or failure),
+ * exports it as PDF via Sheets' own export endpoint, and returns the PDF as
+ * a Blob -- nothing saved to Drive here, that's left to the caller, since
+ * the two callers want different things done with it (one named file vs.
+ * bundled into a ZIP with everyone else's).
  *
- * How the page breaks are produced: an EARLIER version of this function
- * wrote every employee into rows of one shared temp sheet, padding each
- * block out to a fixed row count (ALL_EMPLOYEES_REPORT_PAGE_ROWS) in the
- * hope that the renderer's real page breaks would always land inside the
- * padding, never into a block's real content. That assumption was wrong in
- * practice: the renderer's true rows-per-A4-page isn't a fixed number
- * (confirmed against a real exported copy -- varied with how many of a
- * block's title/summary cells happened to WRAP to 2 lines that month,
- * which the row-count padding had no way to account for), so block
- * boundaries (always multiples of the padding constant) drifted out of
- * alignment with the renderer's real page breaks for roughly half the
- * roster -- each of those employees' title ended up partway down the SAME
- * physical page as their predecessor's trailing blank rows instead of at
- * the top of a fresh one.
+ * precomputed* (all optional) -- same "pass it in once, skip the fresh
+ * read" reasoning as writeMonthlyReportData_'s own precomputed params.
+ * generateAllEmployeesReportZip_ calls this once per employee in a loop and
+ * would otherwise re-read the whole AttendanceLog/Schedule/Allowances
+ * sheets from scratch every single time; generateEmployeeReportPdf_ (one
+ * person) omits them and lets this read fresh, same as always.
+ */
+function buildEmployeeReportPdfBlob_(employee, year, month, precomputedLogsByEmployee, precomputedScheduledShiftsForMonth, precomputedAllowancesByEmployee) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  // Random suffix, not just the timestamp -- generateAllEmployeesReportZip_
+  // calls this in a tight loop where two calls can land in the same
+  // millisecond, which would otherwise collide on the sheet name.
+  var tempName = '_PrintReportTemp_' + new Date().getTime() + '_' + Math.floor(Math.random() * 1e6);
+  var sheet = ss.insertSheet(tempName);
+
+  try {
+    var tz = Session.getScriptTimeZone();
+    var headerLabel = employee.Name + ' (' + employee.EmployeeID + ') -- ' +
+      Utilities.formatDate(new Date(year, month - 1, 1), tz, 'MMMM yyyy');
+    // setWrap so a long name doesn't force column A wide enough to unbalance
+    // the table below it -- writeMonthlyReportData_'s own autoResizeColumns
+    // call measures column A across the whole sheet, header row included,
+    // and an unwrapped long single line would otherwise win that measurement.
+    sheet.getRange(1, 1, 1, 10).merge().setValue(headerLabel).setFontWeight('bold').setFontSize(14).setWrap(true); // 10 = writeMonthlyReportData_'s COLS
+
+    var logsByEmployee = precomputedLogsByEmployee !== undefined ? precomputedLogsByEmployee : getMonthLogsByEmployee_(year, month);
+    var scheduledShiftsForMonth = precomputedScheduledShiftsForMonth !== undefined ? precomputedScheduledShiftsForMonth : getScheduledShiftsForMonth_(year, month);
+    var allowancesByEmployee = precomputedAllowancesByEmployee !== undefined ? precomputedAllowancesByEmployee : getAllowancesForMonth_(year, month);
+    var daysInMonth = new Date(year, month, 0).getDate();
+    // Summary line (Late/OT/Over Break/Special Allowance) goes ABOVE the
+    // bordered day table, row 2, not as a row inside it -- see
+    // buildEmployeeReportSummaryLine_'s own doc comment for why.
+    var summaryLine = buildEmployeeReportSummaryLine_(
+      employee,
+      logsByEmployee[employee.EmployeeID] || {},
+      scheduledShiftsForMonth[employee.EmployeeID],
+      daysInMonth,
+      allowancesByEmployee[employee.EmployeeID] || []
+    );
+    // setWrap -- same reasoning as the title row above.
+    sheet.getRange(2, 1, 1, 10).merge().setValue(summaryLine).setFontWeight('bold').setBackground('#fff2cc').setWrap(true); // light amber -- distinct "at a glance" caption line, outside the table's own border
+
+    writeMonthlyReportData_(sheet, 4, year, month, logsByEmployee, employee.EmployeeID, true, scheduledShiftsForMonth, allowancesByEmployee);
+    SpreadsheetApp.flush(); // commit the sheet's real content/sizing before exporting it
+
+    var exportUrl = 'https://docs.google.com/spreadsheets/d/' + ss.getId() + '/export' +
+      '?format=pdf&gid=' + sheet.getSheetId() +
+      '&size=A4&portrait=true&fitw=true' +
+      '&top_margin=0.4&bottom_margin=0.4&left_margin=0.4&right_margin=0.4' +
+      '&sheetnames=false&printtitle=false&pagenumbers=false&gridlines=false&fzr=false';
+    var response = UrlFetchApp.fetch(exportUrl, {
+      headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
+      muteHttpExceptions: true
+    });
+    // The export endpoint isn't a documented API -- an insufficient token or
+    // a Google-side hiccup can come back as a 200 with an HTML error/sign-in
+    // page instead of a real PDF. Check both the status and the content type
+    // before trusting the blob, instead of silently saving garbage as a
+    // ".pdf" and telling the admin it's ready.
+    var contentType = response.getHeaders()['Content-Type'] || '';
+    if (response.getResponseCode() !== 200 || contentType.indexOf('pdf') === -1) {
+      throw new Error('Export endpoint returned ' + response.getResponseCode() + ' (' + contentType + ') instead of a PDF for ' + employee.Name + ' -- try again in a moment.');
+    }
+
+    return response.getBlob();
+  } finally {
+    // Runs even if the export above throws -- the throwaway sheet never
+    // sticks around either way, so there's never a stray tab for anyone to
+    // have to notice and clean up by hand.
+    ss.deleteSheet(sheet);
+  }
+}
+
+/**
+ * One ZIP covering every employee writeMonthlyReportData_ would normally
+ * show for this month (getSortedReportEmployees_ -- same roster/order as
+ * the live Report sheet), each as their own correctly-paginated PDF inside
+ * it -- one buildEmployeeReportPdfBlob_ call per employee (same throwaway-
+ * sheet/export/cleanup mechanics menuPrintEmployeeReport_ already uses
+ * successfully for one person), bundled together with Utilities.zip.
  *
- * This version sidesteps guessing a row-capacity number entirely: each
- * employee gets their OWN temporary sheet (one tab per employee, unpadded),
- * every other sheet in the spreadsheet is hidden for the moment of export,
- * and the export URL omits &gid= -- which exports the WHOLE workbook, and
- * Sheets always starts each SHEET on a fresh PDF page (unlike a row count,
- * this isn't a size estimate that can drift; it's how Sheets' own PDF
- * export has always worked). Hiding the other sheets first means that
- * whole-workbook export only contains the per-employee sheets just built,
- * in the order they were created.
+ * TWO EARLIER VERSIONS of this function tried to produce a single combined
+ * multi-page PDF instead, both abandoned after failing against the real
+ * ~50-person roster:
+ *  1. Every employee written into rows of one shared temp sheet, padding
+ *     each block out to a fixed row count so the next employee would land
+ *     on a fresh page. Wrong in practice -- the renderer's true rows-per-
+ *     page isn't a fixed number (varies with whether a title/summary cell
+ *     happened to wrap to 2 lines that month), so block boundaries drifted
+ *     out of alignment with the real page breaks for roughly half the
+ *     roster: a title would land partway down the SAME physical page as
+ *     the previous employee's trailing blank rows instead of a fresh one.
+ *  2. One real temporary SHEET per employee (Sheets always starts a new
+ *     sheet on a fresh PDF page, so no row-count guessing needed), every
+ *     other sheet hidden, then one whole-workbook export. Correct in
+ *     principle, but 50+ insertSheet/deleteSheet calls plus one export of
+ *     a 50+ page combined document pushed the whole menu action past Apps
+ *     Script's execution time limit -- the admin was left with a stuck
+ *     menu and dozens of orphaned temp sheet tabs (see
+ *     removeOrphanedPrintReportTempSheets_, HealthCheck.gs, for cleaning
+ *     those up after the fact).
+ * This version sidesteps both failure modes: no row-count guessing (each
+ * employee's PDF is already a complete, independent document), and no
+ * giant combined export (each export call is the same small, already-fast
+ * single-employee one, just repeated and zipped together afterward).
  *
  * precomputedLogsByEmployee (optional) -- menuPrintAllEmployeeReports_
  * (Menu.gs) already has to read this to count the roster for its
@@ -469,151 +530,35 @@ function reportSortGroup_(emp, dayLogs) {
  * through avoids reading the whole AttendanceLog sheet a second time right
  * after the first.
  */
-function generateAllEmployeesReportPdf_(year, month, precomputedLogsByEmployee) {
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var runId = new Date().getTime();
-  var tempSheets = [];
-  // {sheet, wasHidden} for every PRE-EXISTING sheet -- captured before any
-  // temp sheet exists, so restoring afterward puts back exactly what was
-  // visible/hidden before this ran, rather than forcing everything visible.
-  var hiddenState = [];
-  var originalActiveSheet = ss.getActiveSheet();
-
+function generateAllEmployeesReportZip_(year, month, precomputedLogsByEmployee) {
   var tz = Session.getScriptTimeZone();
-  // Read once and reuse across every employee below -- same reasoning
-  // writeYearlyReportData_ already uses precomputedLogsByEmployee for: a
-  // dozen-plus writeMonthlyReportData_ calls would otherwise each re-read
-  // the whole AttendanceLog/Schedule/Allowances sheets from scratch, once
-  // per employee, for no reason (all three are the same regardless of
-  // which employee is currently being written).
   var logsByEmployee = precomputedLogsByEmployee !== undefined ? precomputedLogsByEmployee : getMonthLogsByEmployee_(year, month);
   var scheduledShiftsForMonth = getScheduledShiftsForMonth_(year, month);
   var allowancesByEmployee = getAllowancesForMonth_(year, month);
   var employees = getSortedReportEmployees_(logsByEmployee, undefined);
-  var daysInMonth = new Date(year, month, 0).getDate();
 
   if (employees.length === 0) {
     throw new Error('No active employees to report for ' + month + '/' + year + '.');
   }
 
-  // Column widths: measured ONCE (sheet.autoResizeColumns is one of the
-  // slower Sheets API calls, and running it once per employee on a 50+
-  // person roster is what pushed this whole menu action past Apps Script's
-  // execution time limit the first time this shipped -- see
-  // skipColumnResize's own doc comment on writeMonthlyReportData_). Taken
-  // from the FIRST employee's sheet (reportSortGroup_ sorts Japanese
-  // employees first, whose shift strings tend to run longest -- "Special
-  // 10:00-19:00" -- so this is usually at least as wide as it needs to be
-  // for everyone; the Date/Shift caps writeMonthlyReportData_ already
-  // applies bound the worst case either way) and reused for every other
-  // employee's sheet via plain setColumnWidth instead of re-measuring.
-  var sharedColumnWidths = null;
+  var monthLabel = Utilities.formatDate(new Date(year, month - 1, 1), tz, 'yyyy-MM');
+  var blobs = employees.map(function (emp) {
+    var blob = buildEmployeeReportPdfBlob_(emp, year, month, logsByEmployee, scheduledShiftsForMonth, allowancesByEmployee);
+    // Each blob's own name becomes its filename INSIDE the zip -- without
+    // this every entry would share the export endpoint's generic default
+    // name instead of being identifiable per employee once extracted.
+    blob.setName('Report - ' + emp.Name + ' - ' + monthLabel + '.pdf');
+    return blob;
+  });
 
-  try {
-    employees.forEach(function (emp, i) {
-      var tempSheet = ss.insertSheet('_PrintAllReportsTemp_' + runId + '_' + i);
-      tempSheets.push(tempSheet);
+  var zipBlob = Utilities.zip(blobs, 'All Employee Reports - ' + monthLabel + '.zip');
 
-      var headerLabel = emp.Name + ' (' + emp.EmployeeID + ') -- ' +
-        Utilities.formatDate(new Date(year, month - 1, 1), tz, 'MMMM yyyy');
-      // Same 10-column merge/wrap treatment generateEmployeeReportPdf_ uses
-      // for its single title row -- COLS (writeMonthlyReportData_) is 10.
-      tempSheet.getRange(1, 1, 1, 10).merge().setValue(headerLabel).setFontWeight('bold').setFontSize(14).setWrap(true);
-
-      // Summary line on row 2, ABOVE the bordered day table -- same
-      // layout/reasoning as generateEmployeeReportPdf_ (Menu.gs): title, then
-      // summary, then a blank gap row (row 3), then the table from row 4.
-      var allowancesForEmp = allowancesByEmployee[emp.EmployeeID] || [];
-      var summaryLine = buildEmployeeReportSummaryLine_(
-        emp, logsByEmployee[emp.EmployeeID] || {}, scheduledShiftsForMonth[emp.EmployeeID], daysInMonth, allowancesForEmp
-      );
-      // setWrap -- same reasoning as the title row above: an unwrapped long
-      // line in a merged cell gets attributed to column 1's (Date) width by
-      // writeMonthlyReportData_'s autoResizeColumns call. Each employee has
-      // their own sheet now, so a long line wrapping to 2 lines here only
-      // makes THIS employee's own page taller -- it can no longer throw off
-      // where any other employee's content lands.
-      tempSheet.getRange(2, 1, 1, 10).merge().setValue(summaryLine).setFontWeight('bold').setBackground('#fff2cc').setWrap(true);
-
-      writeMonthlyReportData_(
-        tempSheet, 4, year, month, logsByEmployee, emp.EmployeeID, true,
-        scheduledShiftsForMonth, allowancesByEmployee,
-        sharedColumnWidths !== null // skipColumnResize once we already have widths to reuse
-      );
-
-      if (sharedColumnWidths === null) {
-        sharedColumnWidths = [];
-        for (var c = 1; c <= 10; c++) sharedColumnWidths.push(tempSheet.getColumnWidth(c));
-      } else {
-        sharedColumnWidths.forEach(function (w, idx) { tempSheet.setColumnWidth(idx + 1, w); });
-      }
-    });
-
-    // Switch away before hiding, in case the active sheet is one of the
-    // ones about to be hidden -- avoids relying on whether hideSheet()
-    // tolerates hiding the currently-active sheet.
-    ss.setActiveSheet(tempSheets[0]);
-
-    // getSheetId()-based lookup, not indexOf(s) on the Sheet objects
-    // themselves -- Apps Script hands back a fresh wrapper object on every
-    // ss.getSheets() call even for the same underlying sheet, so reference
-    // equality against the objects stored in tempSheets would never match
-    // and every temp sheet would get hidden right along with everything else.
-    var tempSheetIds = {};
-    tempSheets.forEach(function (s) { tempSheetIds[s.getSheetId()] = true; });
-
-    ss.getSheets().forEach(function (s) {
-      if (tempSheetIds[s.getSheetId()]) return; // one of ours -- must stay visible
-      var wasHidden = s.isSheetHidden();
-      hiddenState.push({ sheet: s, wasHidden: wasHidden });
-      if (!wasHidden) s.hideSheet();
-    });
-
-    SpreadsheetApp.flush(); // commit sheet content + visibility before exporting
-
-    // No &gid= -- exports the WHOLE workbook. Sheets always starts each
-    // sheet on a fresh PDF page; with every pre-existing sheet hidden above,
-    // the only visible sheets left are the per-employee ones just built, in
-    // the order they were created. Same remaining params as
-    // generateEmployeeReportPdf_ (Menu.gs) -- A4 portrait, fit-width only.
-    var exportUrl = 'https://docs.google.com/spreadsheets/d/' + ss.getId() + '/export' +
-      '?format=pdf&size=A4&portrait=true&fitw=true' +
-      '&top_margin=0.4&bottom_margin=0.4&left_margin=0.4&right_margin=0.4' +
-      '&sheetnames=false&printtitle=false&pagenumbers=false&gridlines=false&fzr=false';
-    var response = UrlFetchApp.fetch(exportUrl, {
-      headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
-      muteHttpExceptions: true
-    });
-    var contentType = response.getHeaders()['Content-Type'] || '';
-    if (response.getResponseCode() !== 200 || contentType.indexOf('pdf') === -1) {
-      throw new Error('Export endpoint returned ' + response.getResponseCode() + ' (' + contentType + ') instead of a PDF -- try again in a moment.');
-    }
-
-    var fileName = 'All Employee Reports - ' + Utilities.formatDate(new Date(year, month - 1, 1), tz, 'yyyy-MM') + '.pdf';
-    var blob = response.getBlob().setName(fileName);
-
-    // Same folder, same sharing, same "always a new file" reasoning as
-    // generateEmployeeReportPdf_ -- see its own doc comment (Menu.gs).
-    var folder = getOrCreateDriveFolder_('Attendance Reports');
-    var file = folder.createFile(blob);
-    file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
-    return file;
-  } finally {
-    // Restore visibility BEFORE deleting the temp sheets -- a spreadsheet
-    // must always have at least one visible sheet, and at this point that's
-    // only true of our temp sheets, so un-hiding the originals first keeps
-    // that true the whole way through instead of risking a "can't hide/
-    // delete the only visible sheet" error on the last temp sheet removed.
-    hiddenState.forEach(function (entry) {
-      if (!entry.wasHidden) {
-        try { entry.sheet.showSheet(); } catch (e) { /* best-effort restore */ }
-      }
-    });
-    tempSheets.forEach(function (s) {
-      try { ss.deleteSheet(s); } catch (e) { /* already gone, or never got created this run */ }
-    });
-    try { ss.setActiveSheet(originalActiveSheet); } catch (e) { /* best-effort restore */ }
-  }
+  // Same folder, same sharing, same "always a new file" reasoning as
+  // generateEmployeeReportPdf_ -- see its own doc comment (Menu.gs).
+  var folder = getOrCreateDriveFolder_('Attendance Reports');
+  var file = folder.createFile(zipBlob);
+  file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+  return file;
 }
 
 /**

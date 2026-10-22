@@ -168,18 +168,21 @@ function removeDailyHealthCheckTrigger() {
 }
 
 /**
- * One-off: deletes any leftover "_PrintReportTemp_..." / "_PrintAllReportsTemp_..."
- * tabs -- the throwaway sheets generateEmployeeReportPdf_ and
- * generateAllEmployeesReportPdf_ (Report.gs) build while making a PDF, always
- * deleted again in their own finally block once the export finishes. The one
- * way they can survive is the whole execution getting killed outright by
- * Apps Script's own time limit before that finally block runs (a very large
- * roster taking too long, a network hiccup on the export fetch, etc.) --
- * finally blocks don't get a chance to run on a hard timeout, unlike a normal
- * thrown error. Safe to run any time: only ever touches tabs matching this
- * exact naming prefix, never anything an admin named themselves. Run once
- * from the editor: select removeOrphanedPrintReportTempSheets in the toolbar
- * dropdown, click Run.
+ * One-off: deletes any leftover "_PrintReportTemp_..." tabs -- the
+ * throwaway sheet buildEmployeeReportPdfBlob_ (Report.gs) builds while
+ * making one employee's PDF, always deleted again in its own finally block
+ * once the export finishes. The one way it can survive is the whole
+ * execution getting killed outright by Apps Script's own time limit before
+ * that finally block runs (a network hiccup on the export fetch, etc.) --
+ * finally blocks don't get a chance to run on a hard timeout, unlike a
+ * normal thrown error. Also matches the older "_PrintAllReportsTemp_..."
+ * prefix an earlier, abandoned version of generateAllEmployeesReportZip_
+ * used (one real sheet per employee, before that approach turned out too
+ * slow for the full roster) -- kept here so any tabs stuck behind from that
+ * version can still be cleaned up the same way. Safe to run any time: only
+ * ever touches tabs matching these exact naming prefixes, never anything an
+ * admin named themselves. Run once from the editor: select
+ * removeOrphanedPrintReportTempSheets in the toolbar dropdown, click Run.
  */
 function removeOrphanedPrintReportTempSheets() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
