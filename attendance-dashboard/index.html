@@ -1231,6 +1231,7 @@
       leavePaidSpecial: 'Paid Special',
       leaveSubstitutional: 'Substitutional',
       leaveUnpaid: 'Unpaid',
+      leaveMaternity: 'Maternity',
       viewerName: 'Viewer',
       updateAvailable: 'A new version of this page is available.',
       updateReload: 'Reload',
@@ -1302,6 +1303,7 @@
       leavePaidSpecial: '特別有給',
       leaveSubstitutional: '代休',
       leaveUnpaid: '無給休暇',
+      leaveMaternity: '産休',
       viewerName: 'ビューアー',
       updateAvailable: 'このページの新しいバージョンが利用可能です。',
       updateReload: '再読み込み',
@@ -1777,6 +1779,7 @@
       if (emp.leave.paidSpecial) leaveBadges.push(t('leavePaidSpecial') + ' ' + formatLeaveCount(emp.leave.paidSpecial));
       if (emp.leave.substitutional) leaveBadges.push(t('leaveSubstitutional') + ' ' + formatLeaveCount(emp.leave.substitutional));
       if (emp.leave.unpaid) leaveBadges.push(t('leaveUnpaid') + ' ' + formatLeaveCount(emp.leave.unpaid));
+      if (emp.leave.maternity) leaveBadges.push(t('leaveMaternity') + ' ' + formatLeaveCount(emp.leave.maternity));
       var leaveHtml = leaveBadges.length
         ? '<div class="leave-badges">' + leaveBadges.map(function (b) { return '<span class="leave-badge">' + b + '</span>'; }).join('') + '</div>'
         : '<span class="pill zero">—</span>';

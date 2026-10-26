@@ -46,7 +46,7 @@ var DUPLICATE_GUARD_MS = 60 * 1000; // reject re-scans within 60s of the last lo
 // recompute/Report/Dashboard/PDF read all already gate on the same check.
 // Unlike the two Event shifts above, the real tap time is still what's
 // recorded for Special -- only Late/OT math is skipped on top of it.
-var SHIFTS = ['7:00-16:00', '7:30-16:30', '8:00-17:00', '8:30-17:30', '7:00-17:00', '7:00-17:30', '8:00-18:00', '8:00-18:30', 'Event Full Day 8:00-17:00', 'Event Half Day 8:00-12:30', 'Special 8:30-17:30', 'Annual Leave', 'Sick Leave', 'Unpaid Leave', 'Paid Special Leave', 'Substitutional Leave', 'Half Day Annual Leave AM 8:00-12:30', 'Half Day Annual Leave PM 12:30-17:00', 'Half Day Sick Leave AM 8:00-12:30', 'Half Day Sick Leave PM 12:30-17:00', 'Half Day Unpaid Leave AM 8:00-12:30', 'Half Day Unpaid Leave PM 12:30-17:00', 'Holiday'];
+var SHIFTS = ['7:00-16:00', '7:30-16:30', '8:00-17:00', '8:30-17:30', '7:00-17:00', '7:00-17:30', '8:00-18:00', '8:00-18:30', 'Event Full Day 8:00-17:00', 'Event Half Day 8:00-12:30', 'Special 8:30-17:30', 'Annual Leave', 'Sick Leave', 'Unpaid Leave', 'Paid Special Leave', 'Substitutional Leave', 'Maternity Leave', 'Half Day Annual Leave AM 8:00-12:30', 'Half Day Annual Leave PM 12:30-17:00', 'Half Day Sick Leave AM 8:00-12:30', 'Half Day Sick Leave PM 12:30-17:00', 'Half Day Unpaid Leave AM 8:00-12:30', 'Half Day Unpaid Leave PM 12:30-17:00', 'Holiday'];
 // Shift values that mean "nobody's expected in at all that day" -- as
 // opposed to a blank cell (not scheduled yet) or a Half Day Leave entry
 // (still expected in for half the day -- see isHalfDayLeaveShift_). Used
@@ -59,8 +59,12 @@ var SHIFTS = ['7:00-16:00', '7:30-16:30', '8:00-17:00', '8:30-17:30', '7:00-17:0
 // so the Schedule sheet records WHY the day's off -- a genuine Paid
 // Special Leave entitlement vs. a day taken in lieu of having worked a
 // weekend/Holiday -- and so Summary/Report/PDF total them separately (see
-// LEAVE_COUNT_TYPES, Report.gs). "Holiday" is the whole company closed.
-var FULL_DAY_OFF_SHIFTS = ['Annual Leave', 'Sick Leave', 'Unpaid Leave', 'Paid Special Leave', 'Substitutional Leave', 'Holiday'];
+// LEAVE_COUNT_TYPES, Report.gs). "Maternity Leave" is the same full-day-off
+// treatment too, deliberately left OUT of LEAVE_COUNT_TYPES (no half-day
+// variant either) -- it doesn't need its own tally column on Summary/PDF,
+// just to not count against absence/Late/OT like every other leave type
+// here. "Holiday" is the whole company closed.
+var FULL_DAY_OFF_SHIFTS = ['Annual Leave', 'Sick Leave', 'Unpaid Leave', 'Paid Special Leave', 'Substitutional Leave', 'Maternity Leave', 'Holiday'];
 var BRANCHES = ['PP', 'TL']; // Phrom Phong, Thonglor -- Schedule sheet row order: this branch order first, then Japanese before Thai within each branch
 
 /**
