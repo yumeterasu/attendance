@@ -487,8 +487,41 @@ function buildEmployeeReportPdfBlob_(employee, year, month, precomputedLogsByEmp
   } finally {
     // Runs even if the export above throws -- the throwaway sheet never
     // sticks around either way, so there's never a stray tab for anyone to
-    // have to notice and clean up by hand.
-    ss.deleteSheet(sheet);
+    // have to notice and clean up by hand. Wrapped in a retry
+    // (retryTransientSheetsError_ below) because this exact call is where a
+    // real production failure struck (Execution log: "Service Spreadsheets
+    // timed out" thrown from this deleteSheet, 2026-10-27) -- the export
+    // above had almost certainly already succeeded by that point, but a
+    // JS `finally` that throws replaces whatever the `try` block returned,
+    // so one transient hiccup on CLEANUP alone was silently turning an
+    // otherwise-successful PDF into a reported failure for that employee.
+    retryTransientSheetsError_(function () { ss.deleteSheet(sheet); });
+  }
+}
+
+/**
+ * Retries fn() up to maxAttempts times (default 3), but ONLY for the
+ * specific "Service Spreadsheets timed out..." class of error -- confirmed
+ * from this spreadsheet's own Execution log to be a genuinely transient
+ * Google-infrastructure hiccup, not a bug in the calling code: it has
+ * independently struck buildEmployeeReportPdfBlob_, buildSalarySheet_, and
+ * guardedMenuCreateScheduleAndSalarySheets_ (Menu.gs) on different days,
+ * each succeeding on a plain retry. Any other error is rethrown immediately
+ * on the first attempt -- this is deliberately not a general-purpose
+ * "retry anything" wrapper, since most errors here (a real data problem, a
+ * bad argument) would just fail identically three times slower.
+ */
+function retryTransientSheetsError_(fn, maxAttempts) {
+  maxAttempts = maxAttempts || 3;
+  for (var attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return fn();
+    } catch (e) {
+      var message = String((e && e.message) || e);
+      var isTransient = /timed out|Service Spreadsheets/i.test(message);
+      if (!isTransient || attempt === maxAttempts) throw e;
+      Utilities.sleep(2000 * attempt); // 2s, then 4s before the next attempt
+    }
   }
 }
 
@@ -628,15 +661,41 @@ function continueAllEmployeesReportBatch_() {
   var chunk = employees.slice(job.nextIndex, job.nextIndex + ALL_EMPLOYEES_REPORT_BATCH_SIZE);
 
   chunk.forEach(function (emp, i) {
-    var blob = buildEmployeeReportPdfBlob_(emp, job.year, job.month, logsByEmployee, scheduledShiftsForMonth, allowancesByEmployee);
     // Zero-padded index PREFIX, not just the name -- Utilities.zip has no
     // concept of entry order, so this is what lets the finalize step below
     // read the scratch folder back and reconstruct the original roster
     // order (Drive's own file listing order isn't guaranteed to match
     // creation order) just by sorting filenames.
     var index = job.nextIndex + i;
-    blob.setName(Utilities.formatString('%03d', index) + ' - ' + emp.Name + '.pdf');
-    scratchFolder.createFile(blob);
+    try {
+      // retryTransientSheetsError_ (above) already covers the single most
+      // common failure point inside buildEmployeeReportPdfBlob_ (its own
+      // cleanup call) -- this OUTER try/catch is the last line of defense
+      // for anything else transient that slips through, so one employee's
+      // bad luck can never again take down the whole batch (and with it,
+      // every other employee's already-successful PDF sitting in this same
+      // scratch folder) the way it did in production on 2026-10-27.
+      var blob = retryTransientSheetsError_(function () {
+        return buildEmployeeReportPdfBlob_(emp, job.year, job.month, logsByEmployee, scheduledShiftsForMonth, allowancesByEmployee);
+      });
+      blob.setName(Utilities.formatString('%03d', index) + ' - ' + emp.Name + '.pdf');
+      scratchFolder.createFile(blob);
+    } catch (e) {
+      // Exhausted retries on a genuinely stuck case -- skip this one
+      // employee rather than crash the whole job. Drops a visible .txt note
+      // into the SAME scratch folder so it rides along into the final ZIP
+      // below: no UI/email available from a trigger-fired function (see
+      // this function's own doc comment), but an admin who opens the ZIP
+      // and sees a .txt where a .pdf should be knows immediately who to
+      // reprint by hand via "Print Employee Report" (one person).
+      var noteBlob = Utilities.newBlob(
+        'Could not generate this employee\'s report after retrying: ' + String((e && e.message) || e) +
+          '\n\nReprint this one person individually via "Print Employee Report" in the Attendance Admin menu.',
+        'text/plain',
+        Utilities.formatString('%03d', index) + ' - FAILED - ' + emp.Name + '.txt'
+      );
+      scratchFolder.createFile(noteBlob);
+    }
   });
 
   job.nextIndex += chunk.length;
@@ -663,19 +722,28 @@ function continueAllEmployeesReportBatch_() {
   var blobs = [];
   while (files.hasNext()) blobs.push(files.next());
   blobs.sort(function (a, b) { return a.getName() < b.getName() ? -1 : 1; });
-  var pdfBlobs = blobs.map(function (f) {
+  var finalBlobs = blobs.map(function (f) {
+    var name = f.getName();
+    var blob = f.getBlob();
+    if (/\.txt$/.test(name)) {
+      // A FAILED note from the forEach loop above (retries exhausted for
+      // that one employee) -- keep it recognizably different from a real
+      // report rather than silently dropping it, just strip the sort
+      // prefix so the admin sees "FAILED - Name.txt" at a glance.
+      blob.setName(name.replace(/^\d{3} - /, ''));
+      return blob;
+    }
     // Strip the "NNN - " sort prefix and ".pdf" back off the scratch name
     // ("023 - PINGPONG.pdf" -> "PINGPONG"), then rebuild the same filename
     // shape the single-employee command already uses -- that sort prefix
     // only ever existed to survive Drive's unordered file listing, an
     // admin opening the finished ZIP has no use for it.
-    var employeeName = f.getName().replace(/^\d{3} - /, '').replace(/\.pdf$/, '');
-    var blob = f.getBlob();
+    var employeeName = name.replace(/^\d{3} - /, '').replace(/\.pdf$/, '');
     blob.setName('Report - ' + employeeName + ' - ' + monthLabel + '.pdf');
     return blob;
   });
 
-  var zipBlob = Utilities.zip(pdfBlobs, 'All Employee Reports - ' + monthLabel + '.zip');
+  var zipBlob = Utilities.zip(finalBlobs, 'All Employee Reports - ' + monthLabel + '.zip');
 
   // Same folder, same sharing, same "always a new file" reasoning as
   // generateEmployeeReportPdf_ -- see its own doc comment (Menu.gs).
