@@ -1920,9 +1920,39 @@ function buildSalarySheet_(year, month) {
       existing.getRange(2, 3, existing.getLastRow() - 1, 1).setNumberFormat('#,##0.00');
     }
 
+    // Column D, "OT per Quarter (Baht)" -- informational only, nothing
+    // downstream reads it (getSalaryForMonth_ finds Salary by header NAME,
+    // not position). A live FORMULA, not a static computed value, so it
+    // keeps itself correct if an admin edits the Salary cell directly --
+    // the sheet's normal correction method -- without needing to re-run
+    // this command. Backfilled across the WHOLE column every run, same
+    // "cosmetic/derived data is safe to reapply every run" reasoning as the
+    // Salary number-format refresh just above -- so a sheet built before
+    // this column existed (like one from before this change shipped) gets
+    // it filled in retroactively the next time this command runs for that
+    // month, same self-healing spirit as checkAndFixSalaryHeaders_.
+    if (existing.getRange(1, 4).getValue() !== 'OT per Quarter (Baht)') {
+      existing.getRange(1, 4).setValue('OT per Quarter (Baht)').setFontWeight('bold');
+    }
+    if (existing.getLastRow() > 1) {
+      var otQuarterFormulas = [];
+      for (var r = 2; r <= existing.getLastRow(); r++) {
+        otQuarterFormulas.push(['=IF(C' + r + '="","",ROUND(C' + r + '/640,2))']);
+      }
+      var otQuarterRange = existing.getRange(2, 4, otQuarterFormulas.length, 1);
+      otQuarterRange.setFormulas(otQuarterFormulas);
+      otQuarterRange.setNumberFormat('#,##0.00');
+    }
+    if (existing.getColumnWidth(4) < 140) existing.setColumnWidth(4, 140);
+
     // Re-sort the whole sheet (existing rows + whatever just got appended)
     // every time this runs -- same reasoning as buildScheduleSheet_'s
-    // identical re-sort pass.
+    // identical re-sort pass. Read AFTER the column D backfill above (not
+    // headers.length from the top of this branch, which is a stale 3-wide
+    // snapshot on a sheet that didn't have column D yet) so this resort
+    // write's range width always matches what's actually on the sheet now
+    // -- writing a 3-wide range with 4-wide row arrays throws "Incorrect
+    // range width".
     var employeesById = {};
     getAllEmployees_().forEach(function (emp) { employeesById[String(emp.EmployeeID)] = emp; });
     var freshValues = existing.getDataRange().getValues();
@@ -1935,7 +1965,7 @@ function buildSalarySheet_(year, month) {
         if (keyA[1] !== keyB[1]) return keyA[1] - keyB[1];
         return String(rowA[idCol]).localeCompare(String(rowB[idCol]));
       });
-      existing.getRange(2, 1, dataRows.length, headers.length).setValues(dataRows);
+      existing.getRange(2, 1, dataRows.length, freshValues[0].length).setValues(dataRows);
     }
     // Floor, not a fixed width -- auto-fit (new-sheet branch below) sizes
     // the column to whatever's typed in SO FAR, which is too narrow the
@@ -1946,23 +1976,33 @@ function buildSalarySheet_(year, month) {
     return sheetName;
   }
 
-  var header = ['EmployeeID', 'Name', 'Salary'];
+  var header = ['EmployeeID', 'Name', 'Salary', 'OT per Quarter (Baht)'];
   var rows = [header];
-  employees.forEach(function (emp) { rows.push([emp.EmployeeID, emp.Name, seedSalary_(emp)]); });
+  employees.forEach(function (emp) { rows.push([emp.EmployeeID, emp.Name, seedSalary_(emp), '']); });
 
   var sheet = ss.insertSheet(sheetName);
-  sheet.getRange(1, 1, rows.length, 3).setValues(rows);
-  sheet.getRange(1, 1, 1, 3).setFontWeight('bold');
+  sheet.getRange(1, 1, rows.length, 4).setValues(rows);
+  sheet.getRange(1, 1, 1, 4).setFontWeight('bold');
   sheet.setFrozenRows(1);
   if (rows.length > 1) {
     sheet.getRange(2, 3, rows.length - 1, 1).setNumberFormat('#,##0.00');
+    // Same live-formula approach as the existing-sheet branch above -- see
+    // its own comment for why this is a formula, not a static value.
+    var otQuarterFormulas = [];
+    for (var r = 2; r < rows.length + 1; r++) {
+      otQuarterFormulas.push(['=IF(C' + r + '="","",ROUND(C' + r + '/640,2))']);
+    }
+    var otQuarterRange = sheet.getRange(2, 4, otQuarterFormulas.length, 1);
+    otQuarterRange.setFormulas(otQuarterFormulas);
+    otQuarterRange.setNumberFormat('#,##0.00');
   }
-  sheet.autoResizeColumns(1, 3);
+  sheet.autoResizeColumns(1, 4);
   // Same floor as the existing-sheet branch above -- auto-fit alone sizes
   // the Salary column to whatever's already filled in (often blank, or
   // short whole-baht legacy values), too narrow for a real value with
   // cents typed in later.
   if (sheet.getColumnWidth(3) < 100) sheet.setColumnWidth(3, 100);
+  if (sheet.getColumnWidth(4) < 140) sheet.setColumnWidth(4, 140);
   return sheetName;
 }
 
