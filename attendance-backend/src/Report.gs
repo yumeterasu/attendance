@@ -1920,17 +1920,56 @@ function buildSalarySheet_(year, month) {
       existing.getRange(2, 3, existing.getLastRow() - 1, 1).setNumberFormat('#,##0.00');
     }
 
+    // Re-sort the whole sheet (existing rows + whatever just got appended)
+    // every time this runs -- same reasoning as buildScheduleSheet_'s
+    // identical re-sort pass. Deliberately A:C ONLY (3 columns), never
+    // touching column D here -- an earlier version of this resort read the
+    // WHOLE row including D via getValues() (which returns each formula's
+    // last-COMPUTED result, not the formula text) and wrote that back with
+    // setValues(), silently flattening D's live "=IF(C..=\"\",\"\",ROUND(C../640,2))"
+    // formulas into frozen static numbers on every single run -- exactly
+    // the "self-updating, never needs a re-run" behavior this column exists
+    // for, undone by the very re-run meant to maintain it. Column D is
+    // rebuilt fresh from scratch AFTER this resort completes (below)
+    // instead, so it only ever gets REAL live formulas, never a stale
+    // snapshot. A smaller side benefit: a 3-wide write is less data moved
+    // in the single most expensive call in this function, which matters
+    // because this exact call is the prime suspect for a "Service
+    // Spreadsheets timed out" failure this function hit in production on a
+    // populated sheet (recovered via Version History) -- less data at risk
+    // in the one write that rewrites every existing row at once.
+    var employeesById = {};
+    getAllEmployees_().forEach(function (emp) { employeesById[String(emp.EmployeeID)] = emp; });
+    var freshValues = existing.getRange(1, 1, existing.getLastRow(), 3).getValues();
+    var dataRows = freshValues.slice(1);
+    if (dataRows.length > 0) {
+      dataRows.sort(function (rowA, rowB) {
+        var keyA = scheduleSortKey_(employeesById[String(rowA[idCol])]);
+        var keyB = scheduleSortKey_(employeesById[String(rowB[idCol])]);
+        if (keyA[0] !== keyB[0]) return keyA[0] - keyB[0];
+        if (keyA[1] !== keyB[1]) return keyA[1] - keyB[1];
+        return String(rowA[idCol]).localeCompare(String(rowB[idCol]));
+      });
+      existing.getRange(2, 1, dataRows.length, 3).setValues(dataRows);
+    }
+    // Floor, not a fixed width -- auto-fit (new-sheet branch below) sizes
+    // the column to whatever's typed in SO FAR, which is too narrow the
+    // moment someone enters a salary with real cents (e.g. "19,599.30"
+    // visually clipped) -- never shrinks a column an admin widened further
+    // by hand.
+    if (existing.getColumnWidth(3) < 100) existing.setColumnWidth(3, 100);
+
     // Column D, "OT per Quarter (Baht)" -- informational only, nothing
     // downstream reads it (getSalaryForMonth_ finds Salary by header NAME,
     // not position). A live FORMULA, not a static computed value, so it
     // keeps itself correct if an admin edits the Salary cell directly --
     // the sheet's normal correction method -- without needing to re-run
-    // this command. Backfilled across the WHOLE column every run, same
-    // "cosmetic/derived data is safe to reapply every run" reasoning as the
-    // Salary number-format refresh just above -- so a sheet built before
-    // this column existed (like one from before this change shipped) gets
-    // it filled in retroactively the next time this command runs for that
-    // month, same self-healing spirit as checkAndFixSalaryHeaders_.
+    // this command. Rebuilt across the WHOLE column every run, AFTER the
+    // resort above (not before -- see that block's own comment for why
+    // order matters here), so it only ever lands REAL live formulas on
+    // whatever the final, just-resorted row order turns out to be, same
+    // self-healing spirit as checkAndFixSalaryHeaders_ for a sheet built
+    // before this column existed.
     if (existing.getRange(1, 4).getValue() !== 'OT per Quarter (Baht)') {
       existing.getRange(1, 4).setValue('OT per Quarter (Baht)').setFontWeight('bold');
     }
@@ -1944,35 +1983,6 @@ function buildSalarySheet_(year, month) {
       otQuarterRange.setNumberFormat('#,##0.00');
     }
     if (existing.getColumnWidth(4) < 140) existing.setColumnWidth(4, 140);
-
-    // Re-sort the whole sheet (existing rows + whatever just got appended)
-    // every time this runs -- same reasoning as buildScheduleSheet_'s
-    // identical re-sort pass. Read AFTER the column D backfill above (not
-    // headers.length from the top of this branch, which is a stale 3-wide
-    // snapshot on a sheet that didn't have column D yet) so this resort
-    // write's range width always matches what's actually on the sheet now
-    // -- writing a 3-wide range with 4-wide row arrays throws "Incorrect
-    // range width".
-    var employeesById = {};
-    getAllEmployees_().forEach(function (emp) { employeesById[String(emp.EmployeeID)] = emp; });
-    var freshValues = existing.getDataRange().getValues();
-    var dataRows = freshValues.slice(1);
-    if (dataRows.length > 0) {
-      dataRows.sort(function (rowA, rowB) {
-        var keyA = scheduleSortKey_(employeesById[String(rowA[idCol])]);
-        var keyB = scheduleSortKey_(employeesById[String(rowB[idCol])]);
-        if (keyA[0] !== keyB[0]) return keyA[0] - keyB[0];
-        if (keyA[1] !== keyB[1]) return keyA[1] - keyB[1];
-        return String(rowA[idCol]).localeCompare(String(rowB[idCol]));
-      });
-      existing.getRange(2, 1, dataRows.length, freshValues[0].length).setValues(dataRows);
-    }
-    // Floor, not a fixed width -- auto-fit (new-sheet branch below) sizes
-    // the column to whatever's typed in SO FAR, which is too narrow the
-    // moment someone enters a salary with real cents (e.g. "19,599.30"
-    // visually clipped) -- never shrinks a column an admin widened further
-    // by hand.
-    if (existing.getColumnWidth(3) < 100) existing.setColumnWidth(3, 100);
     return sheetName;
   }
 
