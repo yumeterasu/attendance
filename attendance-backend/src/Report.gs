@@ -647,6 +647,30 @@ function continueAllEmployeesReportBatch_() {
   if (!raw) return; // job already finished/cleared -- a stray trigger fire, nothing to do
   var job = JSON.parse(raw);
 
+  // Whole-function try/catch, deliberately swallowing anything that gets
+  // past the per-employee retry/skip handling below -- discovered in
+  // production (2026-10-27/28) that when a function fired by a one-off
+  // ScriptApp trigger throws uncaught, Apps Script doesn't clean up that
+  // trigger the way it does one that completes normally -- it leaves it
+  // behind, DISABLED, still counting against the project's hard 20-trigger
+  // ceiling. Every earlier failed run of this exact job left one of these
+  // behind; they piled up silently (no email, by design -- see this
+  // function's own doc comment above) until a later "Print Employee Report
+  // - All Employees" couldn't even create its first trigger ("This script
+  // has too many triggers"). A truly catastrophic, unanticipated failure
+  // here now just abandons the job cleanly (same cleanup the normal
+  // staleness path already does) instead of throwing -- so the trigger
+  // that invoked this execution always finishes "successfully" from Apps
+  // Script's point of view and is removed the normal way, never stranded.
+  try {
+    runAllEmployeesReportBatch_(props, job);
+  } catch (e) {
+    cleanupAllEmployeesReportJob_(job);
+  }
+}
+
+/** The actual batch work, split out of continueAllEmployeesReportBatch_ only so that function can wrap it in one top-level try/catch -- see that function's own comment for why. */
+function runAllEmployeesReportBatch_(props, job) {
   var logsByEmployee = getMonthLogsByEmployee_(job.year, job.month);
   var scheduledShiftsForMonth = getScheduledShiftsForMonth_(job.year, job.month);
   var allowancesByEmployee = getAllowancesForMonth_(job.year, job.month);
