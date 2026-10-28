@@ -201,6 +201,32 @@ function removeOrphanedPrintReportTempSheets() {
   Logger.log(removed > 0 ? removed + ' orphaned print-temp sheet(s) removed.' : 'No orphaned print-temp sheets found.');
 }
 
+/**
+ * One-off: bulk-deletes every leftover continueAllEmployeesReportBatch_
+ * trigger (Report.gs) -- run once from the editor (select this function in
+ * the toolbar dropdown, click Run) after a run of "Print Employee Report -
+ * All Employees" failed enough times to strand a pile of them as Disabled
+ * (see continueAllEmployeesReportBatch_'s own doc comment in Report.gs for
+ * why that used to happen -- fixed going forward, but doesn't clean up
+ * triggers that were already stranded before that fix shipped).
+ *
+ * ScriptApp.getProjectTriggers() only ever returns triggers owned by
+ * whoever RUNS this function -- Apps Script has no API for deleting another
+ * user's triggers, so any trigger the Triggers page shows as "Other user"
+ * has to be deleted by that person themselves (or by hand, from the
+ * Triggers page, by whoever owns it). This clears your own.
+ */
+function removeStrayAllEmployeesReportTriggers() {
+  var removed = 0;
+  ScriptApp.getProjectTriggers().forEach(function (trigger) {
+    if (trigger.getHandlerFunction() === 'continueAllEmployeesReportBatch_') {
+      ScriptApp.deleteTrigger(trigger);
+      removed++;
+    }
+  });
+  Logger.log(removed > 0 ? removed + ' stray continueAllEmployeesReportBatch_ trigger(s) removed.' : 'No stray continueAllEmployeesReportBatch_ triggers found for you.');
+}
+
 // Sheets whose exact tab NAME and header row must never drift -- every
 // getSheet_ lookup and headers.indexOf(...) call in this codebase depends on
 // both. A single accidental rename or header-cell edit silently breaks every
