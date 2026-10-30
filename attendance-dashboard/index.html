@@ -639,6 +639,100 @@
   .pill.otpay { background: var(--success-bg); color: var(--success-text); }
   .pill.zero { color: var(--text-muted); font-weight: 500; background: none; padding: 0; }
 
+  /* A pill rendered as a real <button> (the Allowance pill, when nonzero --
+     see renderRows below) instead of the plain <span> every other pill
+     still is -- undoes the parts of button's own UA stylesheet that would
+     otherwise fight the shared .pill look (border, font, cursor). */
+  button.pill { border: none; cursor: pointer; font-family: inherit; }
+
+  /* Allowance detail modal -- opened by clicking a nonzero Allowance pill.
+     Built from scratch for this feature (there was no existing
+     modal/overlay pattern anywhere on this page to copy), so it only
+     reuses the page's existing tokens and the .pill/.card visual language
+     already used elsewhere, rather than introducing a new palette. */
+  .modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(18, 21, 28, 0.38);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+    padding: 20px;
+  }
+  .modal-overlay.open { display: flex; }
+  .modal-card {
+    background: var(--card);
+    border-radius: 16px;
+    width: 100%;
+    max-width: 360px;
+    padding: 22px 22px 18px;
+    box-shadow: 0 24px 60px rgba(18, 21, 28, 0.22);
+  }
+  .modal-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 12px;
+    margin-bottom: 4px;
+  }
+  .modal-head h3 { font-size: 16px; margin: 0; font-weight: 800; color: var(--text); }
+  .modal-head .modal-sub { font-size: 12.5px; color: var(--text-muted); margin: 2px 0 0; }
+  .modal-close {
+    border: none;
+    background: var(--bg);
+    width: 26px;
+    height: 26px;
+    border-radius: 8px;
+    color: var(--text-muted);
+    font-size: 14px;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  .modal-close:hover { color: var(--text); }
+  .modal-list { margin: 16px 0; }
+  .modal-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 9px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 13.5px;
+    color: var(--text);
+  }
+  .modal-row:last-child { border-bottom: none; }
+  .modal-row .amt { font-variant-numeric: tabular-nums; font-weight: 700; flex-shrink: 0; }
+  .modal-total {
+    display: flex;
+    justify-content: space-between;
+    padding-top: 10px;
+    font-size: 13.5px;
+    font-weight: 800;
+    color: var(--text);
+  }
+  .modal-footer {
+    display: flex;
+    gap: 8px;
+    margin-top: 18px;
+  }
+  .modal-footer .btn {
+    flex: 1;
+    border-radius: 9px;
+    padding: 9px 12px;
+    font-size: 13px;
+    font-weight: 700;
+    font-family: inherit;
+    cursor: pointer;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    color: var(--text);
+  }
+  .modal-footer .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .modal-footer .btn.primary:hover { background: var(--accent-dark); }
+  /* Copy-link confirmation state -- reuses the success tokens, same family
+     as .pill.otpay, for the same "this went well" meaning. */
+  .modal-footer .btn.primary.copied { background: var(--success-bg); border-color: var(--success-border); color: var(--success-text); }
+
   .leave-badges {
     display: flex;
     gap: 5px;
@@ -1154,6 +1248,30 @@
 
 </main>
 
+<!-- Allowance detail popup (click a nonzero Allowance pill in Monthly) --
+     see the "Allowance detail modal" JS section below for behavior. Lives
+     at body level, outside #dashboardView, since it's a fixed overlay. -->
+<div class="modal-overlay" id="allowanceModalOverlay">
+  <div class="modal-card">
+    <div class="modal-head">
+      <div>
+        <h3 id="allowanceModalName"></h3>
+        <p class="modal-sub" id="allowanceModalSub"></p>
+      </div>
+      <button type="button" class="modal-close" id="allowanceModalCloseX" aria-label="Close">✕</button>
+    </div>
+    <div class="modal-list" id="allowanceModalList"></div>
+    <div class="modal-total">
+      <span data-i18n="allowanceModalTotal">Total</span>
+      <span id="allowanceModalTotalAmt"></span>
+    </div>
+    <div class="modal-footer">
+      <button type="button" class="btn" id="allowanceModalCloseBtn" data-i18n="allowanceModalClose">Close</button>
+      <button type="button" class="btn primary" id="allowanceModalCopyBtn" data-i18n="allowanceModalCopyLink">Copy link</button>
+    </div>
+  </div>
+</div>
+
 <script>
   // ---------- Language ----------
   //
@@ -1236,7 +1354,13 @@
       updateAvailable: 'A new version of this page is available.',
       updateReload: 'Reload',
       branchUnknown: 'Unknown',
-      punchMismatchTitle: function (inLabel, outLabel) { return 'Punched IN at ' + inLabel + ', OUT at ' + outLabel + '.'; }
+      punchMismatchTitle: function (inLabel, outLabel) { return 'Punched IN at ' + inLabel + ', OUT at ' + outLabel + '.'; },
+      allowanceModalTotal: 'Total',
+      allowanceModalClose: 'Close',
+      allowanceModalCopyLink: 'Copy link',
+      allowanceModalCopied: 'Copied!',
+      allowanceModalPeriod: function (monthName, year) { return monthName + ' ' + year; },
+      allowanceModalPeriodAll: function (year) { return 'All (fiscal year) ' + year; }
     },
     ja: {
       brandTitle: '勤怠ダッシュボード',
@@ -1308,7 +1432,13 @@
       updateAvailable: 'このページの新しいバージョンが利用可能です。',
       updateReload: '再読み込み',
       branchUnknown: '不明',
-      punchMismatchTitle: function (inLabel, outLabel) { return inLabel + 'で出勤、' + outLabel + 'で退勤しました。'; }
+      punchMismatchTitle: function (inLabel, outLabel) { return inLabel + 'で出勤、' + outLabel + 'で退勤しました。'; },
+      allowanceModalTotal: '合計',
+      allowanceModalClose: '閉じる',
+      allowanceModalCopyLink: 'リンクをコピー',
+      allowanceModalCopied: 'コピーしました！',
+      allowanceModalPeriod: function (monthName, year) { return year + '年' + monthName; },
+      allowanceModalPeriodAll: function (year) { return '全期間(会計年度) ' + year; }
     }
   };
 
@@ -1411,6 +1541,14 @@
     var calendarErrorStateEl = document.getElementById('calendarErrorState');
     if (calendarErrorStateEl.style.display === 'block' && calendarErrorInfo) {
       document.getElementById('calendarErrorMessage').textContent = resolveErrorText(calendarErrorInfo);
+    }
+    // The Allowance modal's dynamic text (name/period/itemized rows/total)
+    // isn't swept by applyStaticI18n() above -- same reasoning as the
+    // Calendar table re-render just above, re-run it only if it's actually
+    // open right now.
+    if (allowanceModalOverlay.classList.contains('open')) {
+      var reopenEmp = lastEmployees.find(function (e) { return e.name === allowanceModalOverlay.dataset.empName; });
+      if (reopenEmp) openAllowanceModal(reopenEmp);
     }
     ['monthlyStaleBanner', 'dailyStaleBanner', 'calendarStaleBanner'].forEach(function (elId) {
       var el = document.getElementById(elId);
@@ -1704,6 +1842,20 @@
     });
   });
 
+  // ---------- Allowance deep link ----------
+  //
+  // Parsed once at page load from ?view=monthly&year=&month=&allowance=<name>
+  // (built by the "Copy link" button in the Allowance modal, further down
+  // this file) -- consumed exactly once, right after the Monthly view's
+  // first real render, by renderSummaryResult() below, which clears it back
+  // to null so a later Refresh/Year-Month change/sort doesn't keep
+  // reopening the same employee's popup forever.
+  var pendingAllowanceDeepLink = (function () {
+    var params = new URLSearchParams(location.search);
+    if (params.get('view') !== 'monthly' || !params.get('allowance')) return null;
+    return { year: params.get('year'), month: params.get('month'), name: params.get('allowance') };
+  })();
+
   // ---------- Dashboard ----------
 
   var yearSelect = document.getElementById('yearSelect');
@@ -1808,9 +1960,13 @@
       // and silently render as "฿0.00" while its own hover tooltip still
       // listed the real negative line item underneath it, visibly
       // disagreeing with the headline pill it belonged to).
+      // A nonzero amount is a real <button> (clicking it opens the detail
+      // modal, see "Allowance detail modal" below) -- a ฿0.00 row has
+      // nothing to show, so it stays a plain, non-interactive <span>, same
+      // as every other .pill.zero on this page.
       var allowanceHtml = emp.specialAllowance !== 0
-        ? '<span class="pill otpay allowance-pill">' + formatBaht(emp.specialAllowance) + '</span>'
-        : '<span class="pill zero allowance-pill">฿0.00</span>';
+        ? '<button type="button" class="pill otpay allowance-pill">' + formatBaht(emp.specialAllowance) + '</button>'
+        : '<span class="pill zero">฿0.00</span>';
 
       tr.innerHTML =
         '<td class="name">' + escapeHtml(emp.name) + '</td>' +
@@ -1824,31 +1980,109 @@
         '<td class="num">' + otPayHtml + '</td>' +
         '<td class="num">' + allowanceHtml + '</td>' +
         '<td>' + leaveHtml + '</td>';
-      // Same reasoning as the punch-mismatch tooltip above: set as a DOM
-      // .title property, not concatenated into the innerHTML string, so a
-      // stray " or < in a label (free text an admin typed into "Add
-      // Special Allowance") can never break out of the attribute or get
-      // parsed as markup.
-      var allowanceTitle = allowanceTooltip(emp.specialAllowanceDetail);
-      if (allowanceTitle) tr.querySelector('.allowance-pill').title = allowanceTitle;
+      if (emp.specialAllowance !== 0) {
+        tr.querySelector('.allowance-pill').addEventListener('click', function () { openAllowanceModal(emp); });
+      }
       body.appendChild(tr);
     });
   }
 
-  // One line per Special Allowance entry behind the Allowance column's
-  // hover tooltip -- label + amount, and (only in the "All" yearly view,
-  // where one employee's entries can span several months) which month it
-  // was for, since otherwise e.g. two separate "Lunch" entries in
-  // different months would read as one unexplained duplicate line. Amounts
-  // use the same otPayFormatter as the pill itself so the itemized lines
-  // visibly add up to the total shown above them.
-  function allowanceTooltip(detail) {
+  // ---------- Allowance detail modal ----------
+  //
+  // Replaces an earlier, now-removed design: a browser-native `.title`
+  // tooltip, set as a DOM property (not concatenated into innerHTML) so a
+  // stray " or < in a free-text admin-typed label couldn't break out of the
+  // attribute or get parsed as markup. A plain hover tooltip can't be
+  // copied or shared with anyone who isn't physically looking at this
+  // screen, which is exactly what the "Copy link" button below exists to
+  // fix -- so the content moved from a .title string to real DOM markup,
+  // and keeps the same escaping discipline via escapeHtml() instead.
+  var allowanceModalOverlay = document.getElementById('allowanceModalOverlay');
+  var allowanceModalName = document.getElementById('allowanceModalName');
+  var allowanceModalSub = document.getElementById('allowanceModalSub');
+  var allowanceModalList = document.getElementById('allowanceModalList');
+  var allowanceModalTotalAmt = document.getElementById('allowanceModalTotalAmt');
+  var allowanceModalCopyBtn = document.getElementById('allowanceModalCopyBtn');
+  var allowanceModalKeydownHandler = null;
+
+  // One row per Special Allowance entry, label + amount, and (only in the
+  // "All" yearly view, where one employee's entries can span several
+  // months) which month it was for -- otherwise e.g. two separate "Lunch"
+  // entries in different months would read as one unexplained duplicate
+  // row. Amounts use the same formatBaht() as the pill itself so the
+  // itemized rows visibly add up to the total shown below them.
+  function buildAllowanceModalRows(detail) {
     if (!detail || !detail.length) return '';
     var monthNames = t('months');
     return detail.map(function (a) {
-      return (a.month ? monthNames[a.month - 1] + ': ' : '') + a.label + ' ' + formatBaht(a.amount);
-    }).join('\n');
+      var prefix = a.month ? escapeHtml(monthNames[a.month - 1]) + ': ' : '';
+      return '<div class="modal-row"><span>' + prefix + escapeHtml(a.label) + '</span><span class="amt">' + formatBaht(a.amount) + '</span></div>';
+    }).join('');
   }
+
+  function openAllowanceModal(emp) {
+    allowanceModalName.textContent = emp.name;
+    allowanceModalSub.textContent = monthSelect.value === 'All'
+      ? t('allowanceModalPeriodAll')(yearSelect.value)
+      : t('allowanceModalPeriod')(t('months')[Number(monthSelect.value) - 1], yearSelect.value);
+    allowanceModalList.innerHTML = buildAllowanceModalRows(emp.specialAllowanceDetail);
+    allowanceModalTotalAmt.textContent = formatBaht(emp.specialAllowance);
+    // Read back by the "Copy link" button and by setLanguage()'s re-render
+    // hook -- plain data attribute, not a closure variable, since either
+    // of those can fire long after this specific openAllowanceModal() call
+    // has returned.
+    allowanceModalOverlay.dataset.empName = emp.name;
+    allowanceModalOverlay.classList.add('open');
+
+    // Scoped to while the modal is actually open (added here, removed in
+    // closeAllowanceModal) rather than one permanent global listener -- an
+    // Escape press anywhere else on the page must never be swallowed by a
+    // modal that isn't even showing.
+    allowanceModalKeydownHandler = function (e) {
+      if (e.key === 'Escape') closeAllowanceModal();
+    };
+    document.addEventListener('keydown', allowanceModalKeydownHandler);
+  }
+
+  function closeAllowanceModal() {
+    allowanceModalOverlay.classList.remove('open');
+    if (allowanceModalKeydownHandler) {
+      document.removeEventListener('keydown', allowanceModalKeydownHandler);
+      allowanceModalKeydownHandler = null;
+    }
+  }
+
+  allowanceModalOverlay.addEventListener('click', function (e) {
+    if (e.target === allowanceModalOverlay) closeAllowanceModal();
+  });
+  document.getElementById('allowanceModalCloseBtn').addEventListener('click', closeAllowanceModal);
+  document.getElementById('allowanceModalCloseX').addEventListener('click', closeAllowanceModal);
+
+  // Builds a URL that reopens this exact popup once pasted elsewhere --
+  // keyed on the employee's NAME, not a numeric id, since the dashboard's
+  // API response has no employeeId field at all (every other feature here,
+  // e.g. the Calendar view's Department filter, already identifies an
+  // employee by name alone, so this matches that existing convention
+  // rather than inventing a new kind of identifier). Whoever opens the
+  // link still has to pass the dashboard's own viewer-password gate as
+  // normal -- this only pre-selects what to show once they're already in,
+  // it never bypasses access control.
+  allowanceModalCopyBtn.addEventListener('click', function () {
+    var url = new URL(location.pathname, location.origin);
+    url.searchParams.set('view', 'monthly');
+    url.searchParams.set('year', yearSelect.value);
+    url.searchParams.set('month', monthSelect.value);
+    url.searchParams.set('allowance', allowanceModalOverlay.dataset.empName);
+    var original = allowanceModalCopyBtn.textContent;
+    navigator.clipboard.writeText(url.toString()).then(function () {
+      allowanceModalCopyBtn.textContent = t('allowanceModalCopied');
+      allowanceModalCopyBtn.classList.add('copied');
+      setTimeout(function () {
+        allowanceModalCopyBtn.textContent = original;
+        allowanceModalCopyBtn.classList.remove('copied');
+      }, 1400);
+    });
+  });
 
   function escapeHtml(s) {
     var div = document.createElement('div');
@@ -1958,6 +2192,17 @@
     }
     applySortAndRender();
     document.getElementById('summaryTable').style.display = 'table';
+
+    // Consume the deep link (if any) exactly once, right after the first
+    // render it could actually find its target row in -- cleared
+    // immediately after so a later Refresh/Year-Month change/sort doesn't
+    // keep popping the same employee's modal back open.
+    if (pendingAllowanceDeepLink) {
+      var targetName = pendingAllowanceDeepLink.name;
+      pendingAllowanceDeepLink = null;
+      var targetEmp = data.employees.find(function (e) { return e.name === targetName; });
+      if (targetEmp) openAllowanceModal(targetEmp);
+    }
   }
 
   // Guards against a slow/timed-out request finishing AFTER a newer one
@@ -2604,8 +2849,21 @@
     document.getElementById('dashboardView').style.display = 'block';
     document.getElementById('whoami').style.display = 'flex';
     document.getElementById('whoamiName').textContent = t('viewerName');
+    // An Allowance "Copy link" URL pre-selects Year/Month before Monthly's
+    // own first load fires below -- yearSelect's options already exist by
+    // this point (populateYears() runs unconditionally at boot, before the
+    // session check that leads here). A year outside that populated range
+    // just silently fails to set, leaving the default; out of scope to
+    // handle here.
+    if (pendingAllowanceDeepLink) {
+      if (pendingAllowanceDeepLink.year) yearSelect.value = pendingAllowanceDeepLink.year;
+      if (pendingAllowanceDeepLink.month) monthSelect.value = pendingAllowanceDeepLink.month;
+    }
     updateFiscalHint();
-    setDashboardView('daily'); // Daily opens by default; Monthly is a click away.
+    // Daily opens by default; a copied Allowance link jumps straight to
+    // Monthly instead, where renderSummaryResult() picks the deep link back
+    // up once that first load actually renders.
+    setDashboardView(pendingAllowanceDeepLink ? 'monthly' : 'daily');
   }
 
   // ---------- Update check ----------
