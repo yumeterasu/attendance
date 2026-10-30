@@ -717,6 +717,11 @@
   }
   .modal-footer .btn {
     flex: 1;
+    /* Without this, a flex item's default min-width:auto keeps it from
+       shrinking below its own text's content width -- "Copy link"/
+       "คัดลอกลิงก์" needs more room than "Close"/"ปิด", so flex:1 alone
+       let it claim extra space instead of splitting the row evenly. */
+    min-width: 0;
     border-radius: 9px;
     padding: 9px 12px;
     font-size: 13px;
