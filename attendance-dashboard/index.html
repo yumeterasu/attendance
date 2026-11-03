@@ -732,7 +732,16 @@
     background: var(--bg);
     color: var(--text);
   }
-  .modal-footer .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  /* border-color is accent-dark, not accent -- Close has a visibly
+     different border color from its own fill (var(--border) vs var(--bg)),
+     which frames it with a visible outline; this button's border used to
+     exactly match its own background, so it had no outline at all and
+     read as a slightly larger, edge-less block next to Close's crisply
+     outlined one even though both are the same CSS width (real feedback,
+     2026-11-03 -- confirmed via pixel measurement that the two buttons
+     were already flex:1/min-width:0 equal width; the visible outline on
+     only one of them was the actual mismatch). */
+  .modal-footer .btn.primary { background: var(--accent); border-color: var(--accent-dark); color: #fff; }
   .modal-footer .btn.primary:hover { background: var(--accent-dark); }
   /* Copy-link confirmation state -- reuses the success tokens, same family
      as .pill.otpay, for the same "this went well" meaning. */
@@ -742,6 +751,24 @@
     display: flex;
     gap: 5px;
     flex-wrap: wrap;
+  }
+  /* The Leave badges, wrapped in a real <button> whenever there's at least
+     one leave day this period (see renderRows below) so clicking anywhere
+     in the group opens the per-day detail modal, same "nonzero -> clickable"
+     treatment the Allowance pill already has. Resets the <button> UA
+     stylesheet (border/background/padding/text-align) back to looking
+     exactly like the plain .leave-badges div it replaces. */
+  button.leave-badges-btn {
+    display: flex;
+    gap: 5px;
+    flex-wrap: wrap;
+    border: none;
+    background: none;
+    padding: 0;
+    margin: 0;
+    cursor: pointer;
+    text-align: left;
+    font-family: inherit;
   }
   .leave-badge {
     font-size: 11px;
@@ -1277,6 +1304,33 @@
   </div>
 </div>
 
+<!-- Leave detail popup (click a nonzero Leave badge group in Monthly) --
+     see the "Leave detail modal" JS section below for behavior. Same
+     structure/markup as the Allowance modal above (deliberately -- same
+     .modal-* classes, so the Close/Copy link buttons get the same
+     equal-width fix for free) with its own ids so both can exist
+     independently. -->
+<div class="modal-overlay" id="leaveModalOverlay">
+  <div class="modal-card">
+    <div class="modal-head">
+      <div>
+        <h3 id="leaveModalName"></h3>
+        <p class="modal-sub" id="leaveModalSub"></p>
+      </div>
+      <button type="button" class="modal-close" id="leaveModalCloseX" aria-label="Close">✕</button>
+    </div>
+    <div class="modal-list" id="leaveModalList"></div>
+    <div class="modal-total">
+      <span data-i18n="leaveModalTotal">Total days</span>
+      <span id="leaveModalTotalAmt"></span>
+    </div>
+    <div class="modal-footer">
+      <button type="button" class="btn" id="leaveModalCloseBtn" data-i18n="allowanceModalClose">Close</button>
+      <button type="button" class="btn primary" id="leaveModalCopyBtn" data-i18n="allowanceModalCopyLink">Copy link</button>
+    </div>
+  </div>
+</div>
+
 <script>
   // ---------- Language ----------
   //
@@ -1365,7 +1419,9 @@
       allowanceModalCopyLink: 'Copy link',
       allowanceModalCopied: 'Copied!',
       allowanceModalPeriod: function (monthName, year) { return monthName + ' ' + year; },
-      allowanceModalPeriodAll: function (year) { return 'All (fiscal year) ' + year; }
+      allowanceModalPeriodAll: function (year) { return 'All (fiscal year) ' + year; },
+      leaveModalTotal: 'Total days',
+      leaveModalHalfDay: 'Half day'
     },
     ja: {
       brandTitle: '勤怠ダッシュボード',
@@ -1443,7 +1499,9 @@
       allowanceModalCopyLink: 'リンクをコピー',
       allowanceModalCopied: 'コピーしました！',
       allowanceModalPeriod: function (monthName, year) { return year + '年' + monthName; },
-      allowanceModalPeriodAll: function (year) { return '全期間(会計年度) ' + year; }
+      allowanceModalPeriodAll: function (year) { return '全期間(会計年度) ' + year; },
+      leaveModalTotal: '合計日数',
+      leaveModalHalfDay: '半休'
     }
   };
 
@@ -1554,6 +1612,12 @@
     if (allowanceModalOverlay.classList.contains('open')) {
       var reopenEmp = lastEmployees.find(function (e) { return e.name === allowanceModalOverlay.dataset.empName; });
       if (reopenEmp) openAllowanceModal(reopenEmp);
+    }
+    // Same re-render-if-open rule as the Allowance modal just above, for the
+    // Leave modal's own dynamic text.
+    if (leaveModalOverlay.classList.contains('open')) {
+      var reopenLeaveEmp = lastEmployees.find(function (e) { return e.name === leaveModalOverlay.dataset.empName; });
+      if (reopenLeaveEmp) openLeaveModal(reopenLeaveEmp);
     }
     ['monthlyStaleBanner', 'dailyStaleBanner', 'calendarStaleBanner'].forEach(function (elId) {
       var el = document.getElementById(elId);
@@ -1861,6 +1925,14 @@
     return { year: params.get('year'), month: params.get('month'), name: params.get('allowance') };
   })();
 
+  // Same shape as pendingAllowanceDeepLink just above, for the Leave
+  // modal's own Copy link ('leave' query param instead of 'allowance').
+  var pendingLeaveDeepLink = (function () {
+    var params = new URLSearchParams(location.search);
+    if (params.get('view') !== 'monthly' || !params.get('leave')) return null;
+    return { year: params.get('year'), month: params.get('month'), name: params.get('leave') };
+  })();
+
   // ---------- Dashboard ----------
 
   var yearSelect = document.getElementById('yearSelect');
@@ -1937,8 +2009,16 @@
       if (emp.leave.substitutional) leaveBadges.push(t('leaveSubstitutional') + ' ' + formatLeaveCount(emp.leave.substitutional));
       if (emp.leave.unpaid) leaveBadges.push(t('leaveUnpaid') + ' ' + formatLeaveCount(emp.leave.unpaid));
       if (emp.leave.maternity) leaveBadges.push(t('leaveMaternity') + ' ' + formatLeaveCount(emp.leave.maternity));
+      // A real <button> whenever there's at least one leave day this period
+      // (clicking it opens the per-day detail modal, see "Leave detail
+      // modal" below) -- same "nonzero -> clickable" treatment as the
+      // Allowance pill just below. Checked against leaveDetail.length, not
+      // leaveBadges.length -- both should always agree (leaveBadges comes
+      // from emp.leave's per-type counts, leaveDetail from the same
+      // underlying Schedule scan), but leaveDetail is what the modal
+      // actually renders, so that's the one this guards.
       var leaveHtml = leaveBadges.length
-        ? '<div class="leave-badges">' + leaveBadges.map(function (b) { return '<span class="leave-badge">' + b + '</span>'; }).join('') + '</div>'
+        ? '<button type="button" class="leave-badges-btn">' + leaveBadges.map(function (b) { return '<span class="leave-badge">' + b + '</span>'; }).join('') + '</button>'
         : '<span class="pill zero">—</span>';
 
       var lateHtml = emp.lateCount > 0
@@ -1987,6 +2067,9 @@
         '<td>' + leaveHtml + '</td>';
       if (emp.specialAllowance !== 0) {
         tr.querySelector('.allowance-pill').addEventListener('click', function () { openAllowanceModal(emp); });
+      }
+      if (leaveBadges.length) {
+        tr.querySelector('.leave-badges-btn').addEventListener('click', function () { openLeaveModal(emp); });
       }
       body.appendChild(tr);
     });
@@ -2085,6 +2168,110 @@
       setTimeout(function () {
         allowanceModalCopyBtn.textContent = original;
         allowanceModalCopyBtn.classList.remove('copied');
+      }, 1400);
+    });
+  });
+
+  // ---------- Leave detail modal ----------
+  //
+  // Same pattern as the Allowance detail modal just above (click target,
+  // popup shape, Copy link deep link) -- added right after it so an admin
+  // can see WHICH dates a Leave badge's count refers to instead of just a
+  // type + number (requested 2026-11-03).
+  var leaveModalOverlay = document.getElementById('leaveModalOverlay');
+  var leaveModalName = document.getElementById('leaveModalName');
+  var leaveModalSub = document.getElementById('leaveModalSub');
+  var leaveModalList = document.getElementById('leaveModalList');
+  var leaveModalTotalAmt = document.getElementById('leaveModalTotalAmt');
+  var leaveModalCopyBtn = document.getElementById('leaveModalCopyBtn');
+  var leaveModalKeydownHandler = null;
+
+  // leaveDetailForEmployee_ (Report.gs) keys each entry by its full
+  // Schedule-sheet label ("Annual Leave") -- map back to the same short
+  // i18n keys the table's own badges already use (leaveAnnual/leaveSick/
+  // ...), so a row here and the badge that opened this modal always agree.
+  var LEAVE_TYPE_I18N_KEY = {
+    'Annual Leave': 'leaveAnnual',
+    'Sick Leave': 'leaveSick',
+    'Paid Special Leave': 'leavePaidSpecial',
+    'Substitutional Leave': 'leaveSubstitutional',
+    'Unpaid Leave': 'leaveUnpaid',
+    'Maternity Leave': 'leaveMaternity'
+  };
+
+  // One row per leave day, date + type (+ a "Half day" suffix for a Half
+  // Day Leave cell). `month`/`year` are stamped onto every entry by BOTH
+  // branches of getDashboardSummaryData_ (Report.gs), not just the "All"
+  // one the way specialAllowanceDetail's `month` is -- so unlike
+  // buildAllowanceModalRows above, this never needs an isAllMonths branch.
+  function buildLeaveModalRows(detail) {
+    if (!detail || !detail.length) return '';
+    var monthNames = t('months');
+    return detail.map(function (d) {
+      var dateStr = monthNames[d.month - 1] + ' ' + d.day;
+      var typeLabel = t(LEAVE_TYPE_I18N_KEY[d.type] || d.type);
+      if (d.half) typeLabel += ' (' + t('leaveModalHalfDay') + ')';
+      return '<div class="modal-row"><span>' + escapeHtml(dateStr) + '</span><span class="amt">' + escapeHtml(typeLabel) + '</span></div>';
+    }).join('');
+  }
+
+  // Half Day entries count 0.5 toward this total, same convention
+  // countLeavesForEmployee_/leaveDetailForEmployee_ (Report.gs) already use
+  // for the per-type counts the table's badges show.
+  function leaveDetailTotalDays(detail) {
+    return (detail || []).reduce(function (sum, d) { return sum + (d.half ? 0.5 : 1); }, 0);
+  }
+
+  function openLeaveModal(emp) {
+    leaveModalName.textContent = emp.name;
+    leaveModalSub.textContent = monthSelect.value === 'All'
+      ? t('allowanceModalPeriodAll')(yearSelect.value)
+      : t('allowanceModalPeriod')(t('months')[Number(monthSelect.value) - 1], yearSelect.value);
+    leaveModalList.innerHTML = buildLeaveModalRows(emp.leaveDetail);
+    leaveModalTotalAmt.textContent = formatLeaveCount(leaveDetailTotalDays(emp.leaveDetail));
+    // Read back by the "Copy link" button and by setLanguage()'s re-render
+    // hook -- same reasoning as allowanceModalOverlay.dataset.empName above.
+    leaveModalOverlay.dataset.empName = emp.name;
+    leaveModalOverlay.classList.add('open');
+
+    leaveModalKeydownHandler = function (e) {
+      if (e.key === 'Escape') closeLeaveModal();
+    };
+    document.addEventListener('keydown', leaveModalKeydownHandler);
+  }
+
+  function closeLeaveModal() {
+    leaveModalOverlay.classList.remove('open');
+    if (leaveModalKeydownHandler) {
+      document.removeEventListener('keydown', leaveModalKeydownHandler);
+      leaveModalKeydownHandler = null;
+    }
+  }
+
+  leaveModalOverlay.addEventListener('click', function (e) {
+    if (e.target === leaveModalOverlay) closeLeaveModal();
+  });
+  document.getElementById('leaveModalCloseBtn').addEventListener('click', closeLeaveModal);
+  document.getElementById('leaveModalCloseX').addEventListener('click', closeLeaveModal);
+
+  // Same deep-link shape as the Allowance modal's Copy link (own query
+  // param, 'leave' instead of 'allowance', consumed by pendingLeaveDeepLink
+  // below) -- keyed on the employee's NAME for the same reason
+  // allowanceModalCopyBtn's own handler already is (no employeeId field in
+  // this API's response at all).
+  leaveModalCopyBtn.addEventListener('click', function () {
+    var url = new URL(location.pathname, location.origin);
+    url.searchParams.set('view', 'monthly');
+    url.searchParams.set('year', yearSelect.value);
+    url.searchParams.set('month', monthSelect.value);
+    url.searchParams.set('leave', leaveModalOverlay.dataset.empName);
+    var original = leaveModalCopyBtn.textContent;
+    navigator.clipboard.writeText(url.toString()).then(function () {
+      leaveModalCopyBtn.textContent = t('allowanceModalCopied');
+      leaveModalCopyBtn.classList.add('copied');
+      setTimeout(function () {
+        leaveModalCopyBtn.textContent = original;
+        leaveModalCopyBtn.classList.remove('copied');
       }, 1400);
     });
   });
@@ -2207,6 +2394,14 @@
       pendingAllowanceDeepLink = null;
       var targetEmp = data.employees.find(function (e) { return e.name === targetName; });
       if (targetEmp) openAllowanceModal(targetEmp);
+    }
+    // Same one-shot consume as pendingAllowanceDeepLink just above, for the
+    // Leave modal's own deep link.
+    if (pendingLeaveDeepLink) {
+      var targetLeaveName = pendingLeaveDeepLink.name;
+      pendingLeaveDeepLink = null;
+      var targetLeaveEmp = data.employees.find(function (e) { return e.name === targetLeaveName; });
+      if (targetLeaveEmp) openLeaveModal(targetLeaveEmp);
     }
   }
 
@@ -2864,11 +3059,18 @@
       if (pendingAllowanceDeepLink.year) yearSelect.value = pendingAllowanceDeepLink.year;
       if (pendingAllowanceDeepLink.month) monthSelect.value = pendingAllowanceDeepLink.month;
     }
+    // Same pre-selection for a Leave "Copy link" URL -- the two deep links
+    // are mutually exclusive by construction (each Copy link button only
+    // ever sets its own query param), so no ordering conflict between them.
+    if (pendingLeaveDeepLink) {
+      if (pendingLeaveDeepLink.year) yearSelect.value = pendingLeaveDeepLink.year;
+      if (pendingLeaveDeepLink.month) monthSelect.value = pendingLeaveDeepLink.month;
+    }
     updateFiscalHint();
-    // Daily opens by default; a copied Allowance link jumps straight to
-    // Monthly instead, where renderSummaryResult() picks the deep link back
-    // up once that first load actually renders.
-    setDashboardView(pendingAllowanceDeepLink ? 'monthly' : 'daily');
+    // Daily opens by default; a copied Allowance/Leave link jumps straight
+    // to Monthly instead, where renderSummaryResult() picks the deep link
+    // back up once that first load actually renders.
+    setDashboardView((pendingAllowanceDeepLink || pendingLeaveDeepLink) ? 'monthly' : 'daily');
   }
 
   // ---------- Update check ----------
