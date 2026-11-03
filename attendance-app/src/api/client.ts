@@ -202,6 +202,10 @@ export function kioskMyAttendance(pin: string, year?: number, month?: number) {
     month: number;
     days: ScheduleDay[];
     otUnit: OtUnit;
+    // Same sumMonthTotals_ figure the Report/Summary sheets and Dashboard
+    // already show (see handleKioskMyAttendance_, Attendance.gs) -- added
+    // 2026-11-03 for the My Schedule summary grid's new Days Worked box.
+    daysWorked: number;
     otMinutesTotal: number;
     otQuartersTotal: number;
     lateCount: number;
@@ -222,7 +226,7 @@ const SCHEDULE_BULK_SYNC_TIMEOUT_MS = 45000;
 export function kioskMyAttendanceBulk(pin: string) {
   return postAction<{
     name: string;
-    months: { year: number; month: number; days: ScheduleDay[]; otUnit: OtUnit; otMinutesTotal: number; otQuartersTotal: number; lateCount: number; overCount: number; allowanceTotal: number; allowanceDetail?: AllowanceDetailEntry[] }[];
+    months: { year: number; month: number; days: ScheduleDay[]; otUnit: OtUnit; daysWorked: number; otMinutesTotal: number; otQuartersTotal: number; lateCount: number; overCount: number; allowanceTotal: number; allowanceDetail?: AllowanceDetailEntry[] }[];
   }>('kioskMyAttendanceBulk', { pin }, SCHEDULE_BULK_SYNC_TIMEOUT_MS);
 }
 
@@ -268,7 +272,7 @@ export function kioskDirectory() {
 // shape for its own `employees` parameter, rather than a second inline
 // copy of these 9 fields that could silently drift out of sync with this
 // one the next time a field is added here and forgotten there.
-export type ScheduleSyncEmployee = { pin: string; name: string; days: ScheduleDay[]; otUnit: OtUnit; otMinutesTotal: number; otQuartersTotal: number; lateCount: number; overCount: number; allowanceTotal: number; allowanceDetail?: AllowanceDetailEntry[] };
+export type ScheduleSyncEmployee = { pin: string; name: string; days: ScheduleDay[]; otUnit: OtUnit; daysWorked: number; otMinutesTotal: number; otQuartersTotal: number; lateCount: number; overCount: number; allowanceTotal: number; allowanceDetail?: AllowanceDetailEntry[] };
 
 // Device-wide daily background sync (see useScheduleSync) -- every active
 // employee's current month in one call, no PIN. Same budget as

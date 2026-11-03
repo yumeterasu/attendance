@@ -26,7 +26,10 @@ import { ScheduleDay, OtUnit, ScheduleSyncEmployee, AllowanceDetailEntry } from 
 // cache has none of them, so this starts clean again rather than risking
 // "undefined day(s)"/"฿undefined" in the My Schedule summary grid's new
 // Late/Over Break/Allowance cells when reading an old entry back offline.
-const KEY_PREFIX = 'kiosk_schedule_cache_v3';
+// Bumped v3 -> v4, 2026-11-03: daysWorked (added below) is now a REQUIRED
+// field too, for the summary grid's new Days Worked box -- same reasoning,
+// a v3 tablet cache has no such field at all.
+const KEY_PREFIX = 'kiosk_schedule_cache_v4';
 
 // otUnit/otMinutesTotal/otQuartersTotal cached alongside days (added
 // 2026-10-07) so the month-total summary shown below the calendar is
@@ -34,12 +37,13 @@ const KEY_PREFIX = 'kiosk_schedule_cache_v3';
 // ScheduleDay/kioskMyAttendance's own comments in client.ts for why otUnit
 // specifically can't just be re-derived from the cached days themselves.
 // lateCount/overCount/allowanceTotal (added 2026-10-20) follow the same
-// reasoning, for the summary grid's 3 new stats. allowanceDetail (also
-// 2026-10-20) is intentionally OPTIONAL -- not part of the v2->v3 bump's
-// required-fields reasoning above, since the tap-to-expand breakdown it
-// backs degrades gracefully (just not tappable) rather than needing yet
-// another cache wipe for a nice-to-have.
-export type CachedMonth = { name: string; year: number; month: number; days: ScheduleDay[]; otUnit: OtUnit; otMinutesTotal: number; otQuartersTotal: number; lateCount: number; overCount: number; allowanceTotal: number; allowanceDetail?: AllowanceDetailEntry[] };
+// reasoning, for the summary grid's 3 new stats. daysWorked (added
+// 2026-11-03) follows it too, for the grid's newest stat. allowanceDetail
+// (2026-10-20) is intentionally OPTIONAL -- not part of any of these
+// required-fields bumps, since the tap-to-expand breakdown it backs
+// degrades gracefully (just not tappable) rather than needing yet another
+// cache wipe for a nice-to-have.
+export type CachedMonth = { name: string; year: number; month: number; days: ScheduleDay[]; otUnit: OtUnit; daysWorked: number; otMinutesTotal: number; otQuartersTotal: number; lateCount: number; overCount: number; allowanceTotal: number; allowanceDetail?: AllowanceDetailEntry[] };
 
 function keyFor(pin: string, year: number, month: number): string {
   return `${KEY_PREFIX}_${pin}_${year}_${month}`;
@@ -71,8 +75,9 @@ export async function getCachedScheduleMonth(pin: string, year: number, month: n
 // banner) after a live fetch has failed -- never silently in place of one.
 // Bumped v1 -> v2 alongside KEY_PREFIX above, same reason and same day.
 // Bumped v2 -> v3 alongside KEY_PREFIX above too, same reason and same day.
-const CURRENT_KEY_PREFIX = 'kiosk_schedule_current_v3';
-export type CurrentSnapshot = { name: string; year: number; month: number; days: ScheduleDay[]; otUnit: OtUnit; otMinutesTotal: number; otQuartersTotal: number; lateCount: number; overCount: number; allowanceTotal: number; allowanceDetail?: AllowanceDetailEntry[]; fetchedAt: number };
+// Bumped v3 -> v4 alongside KEY_PREFIX above too, same reason and same day.
+const CURRENT_KEY_PREFIX = 'kiosk_schedule_current_v4';
+export type CurrentSnapshot = { name: string; year: number; month: number; days: ScheduleDay[]; otUnit: OtUnit; daysWorked: number; otMinutesTotal: number; otQuartersTotal: number; lateCount: number; overCount: number; allowanceTotal: number; allowanceDetail?: AllowanceDetailEntry[]; fetchedAt: number };
 
 function currentKeyFor(pin: string): string {
   return `${CURRENT_KEY_PREFIX}_${pin}`;

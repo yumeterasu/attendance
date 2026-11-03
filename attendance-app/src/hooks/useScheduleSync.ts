@@ -96,7 +96,7 @@ export function useScheduleSync(isConnected: boolean) {
       // hasn't been redeployed yet, and a bad write here would poison every
       // employee's offline-fallback snapshot in one shot, not just one
       // person's.
-      const safeEmployees = res.employees.map((e) => ({ ...e, lateCount: e.lateCount ?? 0, overCount: e.overCount ?? 0, allowanceTotal: e.allowanceTotal ?? 0 }));
+      const safeEmployees = res.employees.map((e) => ({ ...e, daysWorked: e.daysWorked ?? 0, lateCount: e.lateCount ?? 0, overCount: e.overCount ?? 0, allowanceTotal: e.allowanceTotal ?? 0 }));
       const wrote = await cacheCurrentScheduleSnapshots(res.year, res.month, safeEmployees);
       // Marked done only if every employee's snapshot actually landed --
       // cacheCurrentScheduleSnapshots reports false (rather than silently

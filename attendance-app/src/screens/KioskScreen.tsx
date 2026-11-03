@@ -533,6 +533,31 @@ function renderMyScheduleStatBox(label: string, value: string, color: string, hi
   );
 }
 
+// Late + Over Break's own stat box (added 2026-11-03 alongside Days
+// Worked) -- two mini-stats side by side instead of renderMyScheduleStatBox's
+// single big number, so the two boxes they used to each have (Late, Over
+// Break) fold into the one statsGridItem slot Days Worked's new box needed
+// freed up to keep the grid at 2x2. Never Pressable -- unlike the Allowance
+// box, neither Late nor Over Break has any itemized detail to expand into.
+function renderMyScheduleMergedStatBox(label: string, lateValue: string, overValue: string) {
+  return (
+    <View style={styles.statsGridItem}>
+      <Text style={styles.otSummaryLabel}>{label}</Text>
+      <View style={styles.mergedStatRow}>
+        <View style={styles.miniStat}>
+          <Text style={[styles.miniStatValue, { color: LATE_RED }]} numberOfLines={1}>{lateValue}</Text>
+          <Text style={[styles.miniStatLabel, { color: LATE_RED }]}>Late</Text>
+        </View>
+        <View style={styles.miniStat}>
+          <Text style={[styles.miniStatValue, { color: BUTTER }]} numberOfLines={1}>{overValue}</Text>
+          <Text style={[styles.miniStatLabel, { color: BUTTER }]}>Over Break</Text>
+        </View>
+      </View>
+      <Text style={styles.statsGridTapHint}></Text>
+    </View>
+  );
+}
+
 export default function KioskScreen({ navigation }: Props) {
   const isConnected = useNetworkStatus();
   useOfflineSync(isConnected);
@@ -1815,19 +1840,20 @@ export default function KioskScreen({ navigation }: Props) {
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       if (scheduleRequestIdRef.current !== requestId) return; // re-check -- resetSchedule could have fired during the Haptics await just above
       setScheduleAuthPin(value);
-      // lateCount/overCount/allowanceTotal defensively coalesced to 0 here --
-      // same reasoning as kioskLookupPin's totalMinutesUsedToday?: number
-      // above: the app/backend deploy independently (CLAUDE.md), so a
-      // freshly-released APK can briefly talk to a backend that hasn't been
-      // redeployed with these fields yet, and these 3 are NOT optional in
-      // CachedMonth (unlike that field) -- without this, a `res` missing
-      // them during that window would crash later on
-      // scheduleData.allowanceTotal.toLocaleString() rather than just
-      // rendering "0 day(s)"/"฿0" until the backend catches up. Spreading
-      // `res` (not re-listing every field by hand) is what setScheduleData(cached)
-      // below already does for the exact same reason -- one place that could
-      // silently miss a field instead of several copies that could drift.
-      const safeResult = { ...res, lateCount: res.lateCount ?? 0, overCount: res.overCount ?? 0, allowanceTotal: res.allowanceTotal ?? 0 };
+      // lateCount/overCount/allowanceTotal/daysWorked defensively coalesced
+      // to 0 here -- same reasoning as kioskLookupPin's
+      // totalMinutesUsedToday?: number above: the app/backend deploy
+      // independently (CLAUDE.md), so a freshly-released APK can briefly
+      // talk to a backend that hasn't been redeployed with these fields yet,
+      // and these 4 are NOT optional in CachedMonth (unlike that field) --
+      // without this, a `res` missing them during that window would crash
+      // later on scheduleData.allowanceTotal.toLocaleString() rather than
+      // just rendering "0 day(s)"/"฿0" until the backend catches up.
+      // Spreading `res` (not re-listing every field by hand) is what
+      // setScheduleData(cached) below already does for the exact same
+      // reason -- one place that could silently miss a field instead of
+      // several copies that could drift.
+      const safeResult = { ...res, daysWorked: res.daysWorked ?? 0, lateCount: res.lateCount ?? 0, overCount: res.overCount ?? 0, allowanceTotal: res.allowanceTotal ?? 0 };
       setScheduleData(safeResult);
       setScheduleIsStale(false);
       setScheduleStaleAt(null);
@@ -1921,7 +1947,7 @@ export default function KioskScreen({ navigation }: Props) {
     // so this can't just spread `res` the way those two do.
     const writes = res.months
       .filter((m) => !(m.year === now.getFullYear() && m.month === now.getMonth() + 1))
-      .map((m) => cacheScheduleMonth(pin, { ...m, name: res.name, lateCount: m.lateCount ?? 0, overCount: m.overCount ?? 0, allowanceTotal: m.allowanceTotal ?? 0 }));
+      .map((m) => cacheScheduleMonth(pin, { ...m, name: res.name, daysWorked: m.daysWorked ?? 0, lateCount: m.lateCount ?? 0, overCount: m.overCount ?? 0, allowanceTotal: m.allowanceTotal ?? 0 }));
     await Promise.all(writes);
   };
 
@@ -2005,7 +2031,7 @@ export default function KioskScreen({ navigation }: Props) {
       // See submitSchedulePin's identical safeResult comment -- same
       // deploy-skew guard, same reason to spread `res` once here instead of
       // re-listing every field twice below.
-      const safeResult = { ...res, lateCount: res.lateCount ?? 0, overCount: res.overCount ?? 0, allowanceTotal: res.allowanceTotal ?? 0 };
+      const safeResult = { ...res, daysWorked: res.daysWorked ?? 0, lateCount: res.lateCount ?? 0, overCount: res.overCount ?? 0, allowanceTotal: res.allowanceTotal ?? 0 };
       setScheduleData(safeResult);
       // Any successful live fetch here -- past month or current -- proves
       // the server is reachable right now, so whatever stale-fallback
@@ -2398,7 +2424,7 @@ export default function KioskScreen({ navigation }: Props) {
         {/* Month totals, always labeled the same way regardless of value --
             shown even when 0 (see ScheduleDay/kioskMyAttendance's own
             comments in client.ts for why OT specifically can't just be
-            inferred from whichever total is nonzero; Late/Over
+            inferred from whichever total is nonzero; Days Worked/Late/Over
             Break/Allowance are plain counts with no such ambiguity, but
             kept unconditionally visible too, for the same "always the same
             4 boxes" consistency). Split into a small label + a big,
@@ -2410,8 +2436,19 @@ export default function KioskScreen({ navigation }: Props) {
             4 full-width stacked rows instead would add 3 extra rows'
             worth of height here, which (being inside the belowGridHeight
             measurement above) directly shrinks cellHeight for every month;
-            a 2x2 grid keeps that cost to 1 extra row instead of 3. */}
+            a 2x2 grid keeps that cost to 1 extra row instead of 3.
+            Reordered + Days Worked added 2026-11-03 (sample approved by the
+            user first, see the "My Schedule Stat Grid" mockup) -- until now
+            an employee had no way to see how many days they'd actually
+            worked this month anywhere on the Kiosk. Late/Over Break folded
+            into one merged box (renderMyScheduleMergedStatBox) to make room
+            for it without growing past 2x2. */}
         <View style={styles.statsGrid}>
+          {renderMyScheduleStatBox(
+            'Days Worked / วันทำงาน',
+            `${scheduleData.daysWorked} day${scheduleData.daysWorked === 1 ? '' : 's'}`,
+            ACCENT_DARK
+          )}
           {renderMyScheduleStatBox(
             'Total OT / OT รวม',
             scheduleData.otUnit === 'minutes'
@@ -2419,26 +2456,17 @@ export default function KioskScreen({ navigation }: Props) {
               : `${scheduleData.otQuartersTotal} quarter${scheduleData.otQuartersTotal === 1 ? '' : 's'}`,
             SAGE
           )}
-          {renderMyScheduleStatBox(
-            'Late days / วันมาสาย',
-            `${scheduleData.lateCount} day${scheduleData.lateCount === 1 ? '' : 's'}`,
-            LATE_RED
-          )}
-          {renderMyScheduleStatBox(
-            'Over Break days / วันพักเกิน',
-            `${scheduleData.overCount} day${scheduleData.overCount === 1 ? '' : 's'}`,
-            // BUTTER, not SAGE -- matches calendarDotOverBreak/the legend dot
-            // above (both amber), same reasoning breakStatusOver already uses
-            // this color for. Was SAGE (green) until user feedback pointed out
-            // the mismatch with its own dot.
-            BUTTER
+          {renderMyScheduleMergedStatBox(
+            'Late & Over Break / วันมาสายกับพักเกิน',
+            String(scheduleData.lateCount),
+            String(scheduleData.overCount)
           )}
           {/* Pressable only when there's itemized detail to actually show --
               allowanceDetail is optional (older cached data, or a brief
               deploy-skew window, see its own comment in client.ts) and an
               employee with no allowance entries that month has nothing to
               expand into either way, so this falls back to the same plain,
-              non-interactive box the other 3 stats use. */}
+              non-interactive box the other stats use. */}
           {renderMyScheduleStatBox(
             'Special Allowance / เงินพิเศษ',
             `฿${scheduleData.allowanceTotal.toLocaleString(undefined, { maximumFractionDigits: 2 })}`,
@@ -3635,6 +3663,15 @@ const styles = StyleSheet.create({
   // when empty, is what keeps every box the same total height regardless
   // of which one(s) happen to have a hint this time.
   statsGridTapHint: { color: SCHEDULE_ACCENT_DARK, fontSize: 10, fontFamily: FONT_BODY_SEMIBOLD, marginTop: 4, height: 13 },
+  // Late + Over Break's merged box (renderMyScheduleMergedStatBox) --
+  // added 2026-11-03 alongside Days Worked, to keep the grid at 2x2 instead
+  // of growing to 5 boxes. Two mini-stats side by side under one shared
+  // label, each sized down from otSummaryValue/otSummaryLabel so both fit
+  // comfortably in one 48%-wide statsGridItem.
+  mergedStatRow: { flexDirection: 'row', gap: 18, marginTop: 1 },
+  miniStat: { alignItems: 'center' },
+  miniStatValue: { fontSize: 20, fontFamily: FONT_DISPLAY_EXTRABOLD },
+  miniStatLabel: { fontSize: 10, fontFamily: FONT_BODY_BOLD, marginTop: 1 },
   allowanceModalBackdrop: {
     flex: 1,
     backgroundColor: 'rgba(80, 58, 46, 0.5)', // TEXT at 50% -- a warm dark overlay rather than plain black, consistent with this app's warm palette elsewhere
