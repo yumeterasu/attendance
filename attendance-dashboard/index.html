@@ -722,6 +722,18 @@
        "คัดลอกลิงก์" needs more room than "Close"/"ปิด", so flex:1 alone
        let it claim extra space instead of splitting the row evenly. */
     min-width: 0;
+    /* margin:0 is load-bearing, not cosmetic -- button.primary (the
+       full-width login/submit button further up this stylesheet) sets
+       margin-top:8px, and nothing here overrode margin at all, so that
+       8px leaked onto this modal's "Copy link" button (which also carries
+       the .primary class) with nothing competing on specificity. Inside
+       this flex row's default align-items:stretch, that stray margin-top
+       made the browser shrink the button's own height by exactly 8px to
+       keep its bottom edge level with Close -- a real, measurable height
+       mismatch (confirmed via getComputedStyle: 36px vs 44px), not the
+       optical illusion this looked like at a glance (real feedback with
+       screenshot, 2026-11-04).  */
+    margin: 0;
     border-radius: 9px;
     padding: 9px 12px;
     font-size: 13px;
