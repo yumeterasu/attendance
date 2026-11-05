@@ -315,9 +315,8 @@
     padding: 11px 16px;
     cursor: pointer;
     height: 45px;
-    /* Shared by Refresh ("Refresh"/"更新") and Print ("Print"/"印刷") --
-       one min-width covers the widest of all four (Refresh/en is the
-       widest, measured 102px), so neither button resizes when the
+    /* Shared by both Refresh buttons ("Refresh"/"更新") -- covers the
+       wider of the two (en, measured 102px), so neither resizes when the
        language toggle switches, and both stay the same width as each
        other too. Measured via headless Chrome against this exact CSS
        (real feedback, 2026-11-05), not guessed from character count. */
@@ -326,6 +325,11 @@
   }
   .refresh-btn:hover { background: #E4EBFC; }
   .refresh-btn:disabled { opacity: 0.6; cursor: default; }
+  /* Print buttons dropped their text label (real feedback, 2026-11-05) --
+     a square icon-only button needs a much smaller min-width than the
+     text buttons above, or it'd carry around the same ~110px of mostly
+     empty padding a one-character icon never needs. */
+  .refresh-btn.icon-only { min-width: 0; width: 45px; padding: 11px; gap: 0; }
   .refresh-btn #refreshIcon,
   .refresh-btn #dailyRefreshIcon,
   .refresh-btn #errorRetryIcon,
@@ -1044,23 +1048,28 @@
     table { font-size: 12px; }
   }
 
-  /* Print support for the OT/Special calendar tab (#calendarPrintBtn calls
-     window.print(), no PDF generation of our own -- this just governs how
-     the existing page looks in the browser's native print dialog). A3
-     portrait (see @page below) rather than landscape -- A3's 297mm width
-     is the same as A4 landscape's (A3 is just 2x A4), so the day columns
-     still fit the same budget computed below, but A3 portrait's extra
-     420mm height fits far more employee rows per page before paginating,
-     which matters more here than column width once a month's worth of
-     columns already fits either way. No max-width on main gives that
-     width its full use; everything that isn't the table itself (chrome,
-     toolbar, buttons, banners, loading/error/empty states) is hidden so
-     only the data prints. Whichever tab happens to be on screen when Print
-     is clicked is what prints -- #monthlyView/#dailyView are already
-     display:none while on the Calendar tab, so no separate "only print
-     calendar" rule is needed beyond hiding the chrome shared by all three. */
+  /* Print support for the OT/Special calendar tab AND the Monthly summary
+     tab (#calendarPrintBtn/#monthlyPrintBtn both just call window.print(),
+     no PDF generation of our own -- this just governs how the existing
+     page looks in the browser's native print dialog). A3 portrait (see
+     @page below) rather than landscape -- A3's 297mm width is the same as
+     A4 landscape's (A3 is just 2x A4), so the calendar's day columns still
+     fit the same budget computed below, but A3 portrait's extra 420mm
+     height fits far more employee rows per page before paginating, which
+     matters more here than column width once a month's worth of columns
+     already fits either way. #summaryTable (~1050px wide on screen) fits
+     comfortably within that same ~1032px-after-margin budget without
+     needing its own shrink pass the way #calendarTable does below. No
+     max-width on main gives that width its full use; everything that
+     isn't the table itself (chrome, toolbar, buttons, banners, loading/
+     error/empty states) is hidden so only the data prints. Whichever tab
+     happens to be on screen when its own Print button is clicked is what
+     prints -- the other two views are already display:none while on any
+     given tab, so no separate "only print this one" rule is needed beyond
+     hiding the chrome shared by all three. */
   @media print {
     #updateBanner, header, .controls, .stale-banner,
+    #loadingState, #errorState, #emptyState,
     #calendarLoadingState, #calendarErrorState, #calendarAllMonthsNotice, #calendarEmptyState {
       display: none !important;
     }
@@ -1069,20 +1078,27 @@
     #calendarTableWrap { overflow-x: visible; }
     /* Chrome's print dialog strips background colors by default (its
        "Background graphics" option under More settings, OFF unless the
-       person remembers to turn it on) -- without forcing this, the OT/SP
-       cells' fill and the Saturday/Sunday/Holiday column tints silently
+       person remembers to turn it on) -- without forcing this, the
+       OT/SP cells' fill, the Saturday/Sunday/Holiday column tints, and
+       (for #summaryTable) the OT Pay/Allowance pill colors would silently
        disappear in print, leaving plain text/borders instead of the same
        colored look the Dashboard shows on screen. This forces them to
        print exactly as styled regardless of that toggle. */
-    #calendarTable, #calendarTable * {
+    #calendarTable, #calendarTable *, #summaryTable, #summaryTable * {
       -webkit-print-color-adjust: exact;
       print-color-adjust: exact;
     }
     /* position:sticky has no meaning on a printed/paginated page and can
-       make a browser repeat or misplace the first column across page
-       breaks -- static positioning lets it flow like an ordinary cell. */
+       make a browser repeat or misplace a column/row across page breaks
+       -- static positioning lets it flow like an ordinary cell. Covers
+       #summaryTable's vertically-sticky header (thead th { position:
+       sticky } above only ever applies to this table, per that rule's own
+       comment) as well as #calendarTable's horizontally-sticky first
+       (name) column. */
+    thead th { position: static; }
     #calendarTable th:first-child, #calendarTable td:first-child { position: static; }
-    #calendarTable tbody tr:hover, #calendarTable tbody tr:hover td:first-child { background: inherit; }
+    #calendarTable tbody tr:hover, #calendarTable tbody tr:hover td:first-child,
+    #summaryTable tbody tr:hover { background: inherit; }
     /* The screen sizing (140px name column + 40px x up to 31 day columns,
        ~1380px total) is wider than A3 portrait's printable area (~273mm /
        ~1032px after the @page margin below) -- shrunk here so a full month
@@ -1196,14 +1212,22 @@
       <button class="refresh-btn" id="refreshBtn" type="button" data-i18n-title="reloadTitle" title="Reload from Google Sheet" style="display:none;">
         <span id="refreshIcon">↻</span> <span data-i18n="refresh">Refresh</span>
       </button>
+      <!-- Icon-only (no text label) -- real feedback, 2026-11-05: a plain
+           printer icon reads clearly enough on its own next to a text
+           Refresh button, and takes a lot less toolbar width than
+           "🖨 Print" did. title/data-i18n-title keeps a translated tooltip
+           for anyone who isn't sure what the icon means. -->
+      <button class="refresh-btn icon-only" id="monthlyPrintBtn" type="button" disabled style="display:none;" data-i18n-title="printBtn" title="Print">
+        <span>🖨</span>
+      </button>
       <button class="refresh-btn" id="dailyRefreshBtn" type="button" data-i18n-title="reloadTitle" title="Reload from Google Sheet">
         <span id="dailyRefreshIcon">↻</span> <span data-i18n="refresh">Refresh</span>
       </button>
       <button class="refresh-btn" id="calendarRefreshBtn" type="button" data-i18n-title="reloadTitle" title="Reload from Google Sheet" style="display:none;">
         <span id="calendarRefreshIcon">↻</span> <span data-i18n="refresh">Refresh</span>
       </button>
-      <button class="refresh-btn" id="calendarPrintBtn" type="button" disabled style="display:none;">
-        <span>🖨</span> <span data-i18n="printBtn">Print</span>
+      <button class="refresh-btn icon-only" id="calendarPrintBtn" type="button" disabled style="display:none;" data-i18n-title="printBtn" title="Print">
+        <span>🖨</span>
       </button>
 
       <div class="spacer"></div>
@@ -2438,10 +2462,12 @@
 
     if (data.employees.length === 0) {
       document.getElementById('emptyState').style.display = 'block';
+      document.getElementById('monthlyPrintBtn').disabled = true;
       return;
     }
     applySortAndRender();
     document.getElementById('summaryTable').style.display = 'table';
+    document.getElementById('monthlyPrintBtn').disabled = false;
 
     // Consume the deep link (if any) exactly once, right after the first
     // render it could actually find its target row in -- cleared
@@ -2482,6 +2508,7 @@
     document.getElementById('errorState').style.display = 'none';
     document.getElementById('emptyState').style.display = 'none';
     document.getElementById('summaryTable').style.display = 'none';
+    document.getElementById('monthlyPrintBtn').disabled = true;
     hideStaleBanner('monthlyStaleBanner');
 
     apiGet('dashboardSummary', {
@@ -2584,6 +2611,7 @@
     document.getElementById('yearField'),
     document.getElementById('monthField'),
     document.getElementById('refreshBtn'),
+    document.getElementById('monthlyPrintBtn'),
     fiscalHint // already cached above -- same node, not a fresh lookup
   ];
   var toolbarDailyEls = [
@@ -2819,6 +2847,7 @@
   // preview/PDF generation of our own; this just hands off to the
   // browser's native print dialog (same as any other page).
   document.getElementById('calendarPrintBtn').addEventListener('click', function () { window.print(); });
+  document.getElementById('monthlyPrintBtn').addEventListener('click', function () { window.print(); });
   document.getElementById('calendarErrorRetryBtn').addEventListener('click', loadCalendar);
 
   // ---------- Dashboard: Daily view ----------
