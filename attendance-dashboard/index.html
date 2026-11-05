@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<title>Yume Terasu — Attendance Dashboard</title>
+<title>Yumeterasu — Attendance Dashboard</title>
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <!-- Bump this string on every deploy to this file -- checkForUpdate() polls
      the live page for this tag and shows a "new version available" banner
@@ -164,6 +164,13 @@
     padding: 8px 14px;
     border-radius: 10px;
     cursor: pointer;
+    /* "Log out" (en, 76px) vs "ログアウト" (ja, 95px) -- without this the
+       button visibly grows/shrinks on every language switch. Measured via
+       headless Chrome against this exact CSS (real feedback, 2026-11-05),
+       not guessed from character count -- CJK glyphs render wider per
+       character than Latin ones, so counting characters alone is
+       unreliable here. */
+    min-width: 102px;
   }
   #logoutBtn:hover { background: #F4F7FD; }
 
@@ -308,6 +315,14 @@
     padding: 11px 16px;
     cursor: pointer;
     height: 45px;
+    /* Shared by Refresh ("Refresh"/"更新") and Print ("Print"/"印刷") --
+       one min-width covers the widest of all four (Refresh/en is the
+       widest, measured 102px), so neither button resizes when the
+       language toggle switches, and both stay the same width as each
+       other too. Measured via headless Chrome against this exact CSS
+       (real feedback, 2026-11-05), not guessed from character count. */
+    min-width: 110px;
+    justify-content: center;
   }
   .refresh-btn:hover { background: #E4EBFC; }
   .refresh-btn:disabled { opacity: 0.6; cursor: default; }
@@ -367,6 +382,13 @@
        then stretches .view-tabs' shared height and visibly shoves Monthly/
        Daily down with it. One line always, same box height for all three. */
     white-space: nowrap;
+    text-align: center;
+    /* One shared min-width (the widest of all three EN/JA label pairs --
+       "OT / Special"/"OT・特別出勤" measured 118px in Japanese) so switching
+       language doesn't resize any of the three tabs, and they stay uniform
+       width as a bonus. Measured via headless Chrome against this exact
+       CSS (real feedback, 2026-11-05), not guessed from character count. */
+    min-width: 126px;
   }
   .view-tab.active {
     background: var(--card);
@@ -390,6 +412,12 @@
     display: flex;
     gap: 16px;
     margin-bottom: 24px;
+    /* The four stat-hint sentences wrap to a different number of lines
+       between EN/JA at some widths, which would otherwise shift this
+       whole row (and everything below it on the page) vertically on a
+       language switch. Measured via headless Chrome at the tiles' real
+       width, not guessed (real feedback, 2026-11-05). */
+    min-height: 144px;
   }
   .stat-tile {
     flex: 1;
@@ -584,6 +612,22 @@
      read as worse (real feedback, 2026-10-19): a near-empty page with the
      table stranded in the middle, not actually easier to read. */
   thead th { padding-left: 10px; padding-right: 10px; }
+  /* Pins the 6 columns whose English header is already wider than its
+     Japanese one, so switching language can't shrink (or, switching back,
+     regrow) them -- each value is the EN width measured via headless
+     Chrome against this exact CSS, +buffer (real feedback, 2026-11-05).
+     Deliberately NOT applied to the other 5 columns (Late/Over/OT (min)/
+     OT (qtr)/OT Pay), where Japanese renders WIDER than English: pinning
+     every column to its own cross-language max would force this table
+     ~165px past the ~1030px it fits in today, turning on a horizontal
+     scrollbar that isn't there now even in English -- rejected in favor
+     of these 6 "free" columns, which need no extra table width at all. */
+  thead th[data-sort="name"] { min-width: 104px; }
+  thead th[data-sort="branch"] { min-width: 93px; }
+  thead th[data-sort="department"] { min-width: 124px; }
+  thead th[data-sort="daysWorked"] { min-width: 130px; }
+  thead th[data-sort="specialAllowance"] { min-width: 117px; }
+  thead th[data-sort="leaveTotal"] { min-width: 78px; }
   /* Rounds the corners #monthlyView .card's overflow:hidden used to clip
      for free (see that rule's own comment) -- top corners only need it on
      thead (opaque #F4F7FD background); tbody td itself has no background,
@@ -1069,7 +1113,7 @@
     <div class="brand-badge">📊</div>
     <div class="brand-text">
       <h1 data-i18n="brandTitle">Attendance Dashboard</h1>
-      <p>Yume Terasu</p>
+      <p>Yumeterasu</p>
     </div>
   </div>
   <div class="header-right">

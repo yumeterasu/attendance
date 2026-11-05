@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<title>Yume Terasu — Today's Attendance</title>
+<title>Yumeterasu — Today's Attendance</title>
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <!-- Bump this string on every deploy to this file -- checkForUpdate() polls
      the live page for this tag and shows a "new version available" banner
@@ -147,6 +147,10 @@
     padding: 8px 14px;
     border-radius: 10px;
     cursor: pointer;
+    /* Same fix, same measured value, as index.html's #logoutBtn -- see its
+       own comment (real feedback, 2026-11-05). Keep the two in sync by
+       hand, as with everything else shared between these two files. */
+    min-width: 102px;
   }
   #logoutBtn:hover { background: #F4F7FD; }
 
@@ -287,6 +291,12 @@
     padding: 11px 16px;
     cursor: pointer;
     height: 45px;
+    /* Same fix, same measured value, as index.html's .refresh-btn -- see
+       its own comment (real feedback, 2026-11-05). This file only ever
+       shows "Refresh"/"更新" (no Print button here), but reusing the same
+       110px keeps the two files' buttons visually consistent. */
+    min-width: 110px;
+    justify-content: center;
   }
   .refresh-btn:hover { background: #E4EBFC; }
   .refresh-btn:disabled { opacity: 0.6; cursor: default; }
@@ -311,6 +321,9 @@
     display: flex;
     gap: 16px;
     margin-bottom: 24px;
+    /* Same fix, same measured value, as index.html's .stat-row -- see its
+       own comment (real feedback, 2026-11-05). */
+    min-height: 144px;
   }
   .stat-tile {
     flex: 1;
@@ -515,7 +528,7 @@
     <div class="brand-badge">📅</div>
     <div class="brand-text">
       <h1 data-i18n="brandTitle">Today's Attendance</h1>
-      <p>Yume Terasu</p>
+      <p>Yumeterasu</p>
     </div>
   </div>
   <div class="header-right">
