@@ -612,20 +612,22 @@
      read as worse (real feedback, 2026-10-19): a near-empty page with the
      table stranded in the middle, not actually easier to read. */
   thead th { padding-left: 10px; padding-right: 10px; }
-  /* Pins the 6 columns whose English header is already wider than its
-     Japanese one, so switching language can't shrink (or, switching back,
-     regrow) them -- each value is the EN width measured via headless
-     Chrome against this exact CSS, +buffer (real feedback, 2026-11-05).
-     Deliberately NOT applied to the other 5 columns (Late/Over/OT (min)/
-     OT (qtr)/OT Pay), where Japanese renders WIDER than English: pinning
-     every column to its own cross-language max would force this table
-     ~165px past the ~1030px it fits in today, turning on a horizontal
-     scrollbar that isn't there now even in English -- rejected in favor
-     of these 6 "free" columns, which need no extra table width at all. */
+  /* Pins the 6 columns whose header width doesn't vary enough between
+     languages to matter for the table's overall fit -- each value is
+     max(en, ja) measured via headless Chrome against this exact CSS,
+     +buffer (real feedback, 2026-11-05; daysWorked re-measured 2026-11-05
+     after shortening its EN label from "Days Worked" to "Days", which
+     flipped it from EN-wider to JA-wider). Deliberately NOT applied to
+     the other 5 columns (Late/Over/OT (min)/OT (qtr)/OT Pay), where
+     Japanese renders noticeably WIDER than English: pinning every column
+     to its own cross-language max would force this table ~165px past the
+     ~1030px it fits in today, turning on a horizontal scrollbar that
+     isn't there now even in English -- rejected in favor of these 6
+     columns, which cost little or no extra table width. */
   thead th[data-sort="name"] { min-width: 104px; }
   thead th[data-sort="branch"] { min-width: 93px; }
   thead th[data-sort="department"] { min-width: 124px; }
-  thead th[data-sort="daysWorked"] { min-width: 130px; }
+  thead th[data-sort="daysWorked"] { min-width: 88px; }
   thead th[data-sort="specialAllowance"] { min-width: 117px; }
   thead th[data-sort="leaveTotal"] { min-width: 78px; }
   /* Rounds the corners #monthlyView .card's overflow:hidden used to clip
@@ -1225,7 +1227,7 @@
               <th class="sortable" data-sort="name" data-i18n="tableEmployee">Employee</th>
               <th class="sortable" data-sort="branch" data-i18n="tableBranch">Branch</th>
               <th class="sortable" data-sort="department" data-i18n="tableDepartment">Department</th>
-              <th class="sortable" data-sort="daysWorked" data-i18n="tableDaysWorked">Days Worked</th>
+              <th class="sortable" data-sort="daysWorked" data-i18n="tableDaysWorked">Days</th>
               <th class="sortable" data-sort="lateCount" data-i18n="tableLate">Late</th>
               <th class="sortable" data-sort="overCount" data-i18n="tableOver">Over</th>
               <th class="sortable" data-sort="otMinutes" data-i18n="tableOtMin">OT (min)</th>
@@ -1433,7 +1435,7 @@
       tableEmployee: 'Employee',
       tableBranch: 'Branch',
       tableDepartment: 'Department',
-      tableDaysWorked: 'Days Worked',
+      tableDaysWorked: 'Days',
       tableLate: 'Late',
       tableOver: 'Over',
       tableOtMin: 'OT (min)',
