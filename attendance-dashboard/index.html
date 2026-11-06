@@ -187,28 +187,29 @@
      Only one of #monthlyPrintBtn/#calendarPrintBtn is ever visible at a
      time (Daily tab has neither) -- same show/hide-by-view logic as
      before, now just pointed at a header-right element instead of a
-     toolbar one. */
+     toolbar one. Icon-only didn't last -- a "Print"/"印刷" label was added
+     right after (real feedback, 2026-11-06), so this went back to a
+     bordered pill (like .refresh-btn) sized to #logoutBtn/.lang-toggle's
+     real 36px height; the icon shrank to 24px so its own circular backdrop
+     doesn't collide with the pill's border. */
   .header-print-btn {
     display: inline-flex;
     align-items: center;
-    justify-content: center;
-    width: 36px;
+    gap: 6px;
     height: 36px;
-    border: none;
-    background: transparent;
-    cursor: pointer;
-    padding: 0;
+    padding: 0 14px 0 8px;
+    border: 1px solid var(--border);
+    background: #EEF3FC;
     border-radius: 10px;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--accent-dark);
   }
-  /* The printer glyph (user-supplied icon, 2026-11-06) already carries its
-     own circular backdrop baked into the PNG -- an opaque button background
-     behind it doubled up as a visible square-behind-circle edge, so this
-     button stays transparent and the image itself fills the full 36px
-     slot (matches #logoutBtn/.lang-toggle's measured height, same as
-     before). */
-  .header-print-btn img { width: 36px; height: 36px; display: block; }
-  .header-print-btn:hover { opacity: 0.8; }
-  .header-print-btn:disabled { opacity: 0.4; cursor: default; }
+  .header-print-btn img { width: 24px; height: 24px; display: block; }
+  .header-print-btn:hover { background: #E4EBFC; }
+  .header-print-btn:disabled { opacity: 0.6; cursor: default; }
 
   main {
     max-width: 1100px;
@@ -1175,9 +1176,11 @@
          of the language toggle (real feedback, 2026-11-06). -->
     <button class="header-print-btn" id="monthlyPrintBtn" type="button" disabled style="display:none;" data-i18n-title="printBtn" title="Print">
       <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAADkAAAA9CAYAAAAXicGTAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAAEnQAABJ0Ad5mH3gAAAVdSURBVGhD7ZrPbxVFHMA/M7tvd98zLbagBRqkpSJRSrXyo2iBiEL0qAe8cDfRiycP3rya+A94MR6IMfFA0gTBaCIov6ISMSjQtEaltpRKbRH6fu7OeHg8UrbdX+8HbR79NNOmM/PmfT87uzOzOyu01pomR/ozmpEVyWZhRbJZeCgkRaOmEKUUnqfwlEIpjdblVEEIgRACKQWGlBiGRMrGHPO6SiqlcV0X1/NQKnmzUgpMw8A0TaQU/uKqqYukUopiycV1PX9R1ZimgZUy69K7NUsWiyWKJdefXTeslIllpfzZiahaUilFvlBCKeUvqjtSShw7VXWvViXpuh75QtGf3XAc28I0DX92JIkPzVIJAuQLxaqu+0SSSylYoRrR2JLla3BpBSvkC8VEY0FsyXyh5M9aUpLEE0uyWHwwo2gSlFIUi/FEIyUrE/1ypFhyYx38SMnlKlghTnyh86RSmmwu789ORCnvcWc6x2LfIiS0rE5j2snnvvlk0k7oWje0J103+iiFkZ3LM3zpL0qui+stTKWSy+WLE8zO1nYgo+IMl/SSzUd+PnzvE/6Z+hfPcwPTzGyWD97/yv/RRETFGSip7t4H1sLk3zfxtMJVbmBSyqOQD++JKJTSoQNQoKTnBX8oCUp5C3pvflIqvBfiEhZv4MBTzfJJa82tmdtcPDdCIV/i80+Ps3vvs3R0rsayLaRhgIDyLwFCcGMyy/nzN3j73UEcJ0VX96ryrVXwOLIopmng2JY/G8Iks7lC6CngZ+r6FMOXRmhrbePjj45RyhdBSIQ0QJpg2CBTIA3ALP+VBkLcLRcGGza2cfjwZjKPOKzpbPN/RShSSjJp258NYadrgHsgv/5yBdtySFkWlfmi8lxHa4XWHlqpctJqXlm5utYgpMQteeTmko+2YfHWTbK1JYNt2RjSQIiE59o9NGZKJD5ViYg3UDIphmFimqY/OyGCdNrBqfFxh5+6SUopQ3vw2vQFxmfOMz59hvGbp5iY+s5fBSEEQ0ePcWXkqr+oJgIlwwJelIjqEpO5bJa5XJa5XA4hMv4qaDQv7N3NE50b/EWRhMVbR8mF9W9nZzBb8qzq0Gzd8jQ7+wbY2TfAjr4BtmzupmXVFEKOcuu/sXITwNmTZ7k2Vv4/CWHxBkqGLXjj8OeNYcZv/s7+gzvZd7Cf7Xt62L5nE9sHN7FjsJsdL25k/4Fe9u7byujoccbGfgCgf1c/7Y+2+5uLJCzeQEkj4eM/7ZtSJ6b/IGWmaG9fQ9+2rTz/XP+CtK23l0w6jZEymLj+MxpoPfIl3acv3t9YDMLiDSwxjMCiRVm3di2zM3fwPIVSCtvKIKTEth08rckXCguS1hppmAghSZkOpVwOc+0arttpf/ORhMUbuOIByObyiRbp+VyRsZFJLvw4zPjYONOTM7x+6DU6ux5jamrSX52OjnVcvTzKt9//xMbuLp56socN61rpemb9Ypd4IFIKMmnHn32PUMlatwBOfHGaUsFl/6uD/qJ7DB09wfqex3nplQF/UWyithJCJWt9MvD10DmOHTnNrn192I4JUuDp8qJfobgzN8c3J8/w1jtv8vKB6iWjngyESlLl3ch8hj47xehvY2gUSiju+xGK3r4e3jh00P+x2ITdfVSIlFRKkc0V/NnLhkzajtwICi+9u1yzUrWuSRtD3P3L6BqAZVW/bdYopJShg818Ykfu2PEafFAkiSe2ZHkjNPwCf1A4tpXozIpfM+ZI1miq2YhNJMkSi1YjSJwpJIimf2dgPrUu/aKIWrLFoWZJHob3eObT1G9kLYZq1nfrliuNOXTLjBXJZmFFsllYkWwWHgrJ/wE/8usM1YVBhQAAAABJRU5ErkJggg==" alt="Print">
+      <span data-i18n="printBtn">Print</span>
     </button>
     <button class="header-print-btn" id="calendarPrintBtn" type="button" disabled style="display:none;" data-i18n-title="printBtn" title="Print">
       <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAADkAAAA9CAYAAAAXicGTAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAAEnQAABJ0Ad5mH3gAAAVdSURBVGhD7ZrPbxVFHMA/M7tvd98zLbagBRqkpSJRSrXyo2iBiEL0qAe8cDfRiycP3rya+A94MR6IMfFA0gTBaCIov6ISMSjQtEaltpRKbRH6fu7OeHg8UrbdX+8HbR79NNOmM/PmfT87uzOzOyu01pomR/ozmpEVyWZhRbJZeCgkRaOmEKUUnqfwlEIpjdblVEEIgRACKQWGlBiGRMrGHPO6SiqlcV0X1/NQKnmzUgpMw8A0TaQU/uKqqYukUopiycV1PX9R1ZimgZUy69K7NUsWiyWKJdefXTeslIllpfzZiahaUilFvlBCKeUvqjtSShw7VXWvViXpuh75QtGf3XAc28I0DX92JIkPzVIJAuQLxaqu+0SSSylYoRrR2JLla3BpBSvkC8VEY0FsyXyh5M9aUpLEE0uyWHwwo2gSlFIUi/FEIyUrE/1ypFhyYx38SMnlKlghTnyh86RSmmwu789ORCnvcWc6x2LfIiS0rE5j2snnvvlk0k7oWje0J103+iiFkZ3LM3zpL0qui+stTKWSy+WLE8zO1nYgo+IMl/SSzUd+PnzvE/6Z+hfPcwPTzGyWD97/yv/RRETFGSip7t4H1sLk3zfxtMJVbmBSyqOQD++JKJTSoQNQoKTnBX8oCUp5C3pvflIqvBfiEhZv4MBTzfJJa82tmdtcPDdCIV/i80+Ps3vvs3R0rsayLaRhgIDyLwFCcGMyy/nzN3j73UEcJ0VX96ryrVXwOLIopmng2JY/G8Iks7lC6CngZ+r6FMOXRmhrbePjj45RyhdBSIQ0QJpg2CBTIA3ALP+VBkLcLRcGGza2cfjwZjKPOKzpbPN/RShSSjJp258NYadrgHsgv/5yBdtySFkWlfmi8lxHa4XWHlqpctJqXlm5utYgpMQteeTmko+2YfHWTbK1JYNt2RjSQIiE59o9NGZKJD5ViYg3UDIphmFimqY/OyGCdNrBqfFxh5+6SUopQ3vw2vQFxmfOMz59hvGbp5iY+s5fBSEEQ0ePcWXkqr+oJgIlwwJelIjqEpO5bJa5XJa5XA4hMv4qaDQv7N3NE50b/EWRhMVbR8mF9W9nZzBb8qzq0Gzd8jQ7+wbY2TfAjr4BtmzupmXVFEKOcuu/sXITwNmTZ7k2Vv4/CWHxBkqGLXjj8OeNYcZv/s7+gzvZd7Cf7Xt62L5nE9sHN7FjsJsdL25k/4Fe9u7byujoccbGfgCgf1c/7Y+2+5uLJCzeQEkj4eM/7ZtSJ6b/IGWmaG9fQ9+2rTz/XP+CtK23l0w6jZEymLj+MxpoPfIl3acv3t9YDMLiDSwxjMCiRVm3di2zM3fwPIVSCtvKIKTEth08rckXCguS1hppmAghSZkOpVwOc+0arttpf/ORhMUbuOIByObyiRbp+VyRsZFJLvw4zPjYONOTM7x+6DU6ux5jamrSX52OjnVcvTzKt9//xMbuLp56socN61rpemb9Ypd4IFIKMmnHn32PUMlatwBOfHGaUsFl/6uD/qJ7DB09wfqex3nplQF/UWyithJCJWt9MvD10DmOHTnNrn192I4JUuDp8qJfobgzN8c3J8/w1jtv8vKB6iWjngyESlLl3ch8hj47xehvY2gUSiju+xGK3r4e3jh00P+x2ITdfVSIlFRKkc0V/NnLhkzajtwICi+9u1yzUrWuSRtD3P3L6BqAZVW/bdYopJShg818Ykfu2PEafFAkiSe2ZHkjNPwCf1A4tpXozIpfM+ZI1miq2YhNJMkSi1YjSJwpJIimf2dgPrUu/aKIWrLFoWZJHob3eObT1G9kLYZq1nfrliuNOXTLjBXJZmFFsllYkWwWHgrJ/wE/8usM1YVBhQAAAABJRU5ErkJggg==" alt="Print">
+      <span data-i18n="printBtn">Print</span>
     </button>
     <div class="lang-toggle" id="langToggle">
       <button type="button" class="lang-btn" data-lang="en">EN</button>
