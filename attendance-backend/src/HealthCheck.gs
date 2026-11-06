@@ -175,29 +175,15 @@ function removeDailyHealthCheckTrigger() {
  * execution getting killed outright by Apps Script's own time limit before
  * that finally block runs (a network hiccup on the export fetch, etc.) --
  * finally blocks don't get a chance to run on a hard timeout, unlike a
- * normal thrown error. Also matches the older "_PrintAllReportsTemp_..."
- * prefix an earlier, abandoned version of the "All Employees" report used
- * (one real sheet per employee, before that approach turned out too slow
- * for the full roster) -- kept here so any tabs stuck behind from that
- * version can still be cleaned up the same way. Safe to run any time: only
- * ever touches tabs matching these exact naming prefixes, never anything an
- * admin named themselves. Run once from the editor: select
+ * normal thrown error. Thin wrapper around sweepOrphanedPrintReportTempSheets_
+ * (Report.gs), which is also called automatically by
+ * startAllEmployeesReportJob_'s stale-job recovery -- this manual entry
+ * point stays for an admin who wants to sweep immediately rather than wait
+ * out that 30-minute staleness window. Run once from the editor: select
  * removeOrphanedPrintReportTempSheets in the toolbar dropdown, click Run.
  */
 function removeOrphanedPrintReportTempSheets() {
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var removed = 0;
-  ss.getSheets().forEach(function (s) {
-    var name = s.getName();
-    if (name.indexOf('_PrintReportTemp_') === 0 || name.indexOf('_PrintAllReportsTemp_') === 0) {
-      try {
-        ss.deleteSheet(s);
-        removed++;
-      } catch (e) {
-        Logger.log('Could not remove "' + name + '": ' + e.message);
-      }
-    }
-  });
+  var removed = sweepOrphanedPrintReportTempSheets_();
   Logger.log(removed > 0 ? removed + ' orphaned print-temp sheet(s) removed.' : 'No orphaned print-temp sheets found.');
 }
 
@@ -207,8 +193,13 @@ function removeOrphanedPrintReportTempSheets() {
  * the toolbar dropdown, click Run) after a run of "Print Employee Report -
  * All Employees" failed enough times to strand a pile of them as Disabled
  * (see continueAllEmployeesReportBatch_'s own doc comment in Report.gs for
- * why that used to happen -- fixed going forward, but doesn't clean up
- * triggers that were already stranded before that fix shipped).
+ * why that used to happen -- fixed going forward for an uncaught throw, but
+ * Apps Script's own hard execution-time-limit kill still isn't catchable
+ * and can strand one the same way). Thin wrapper around
+ * sweepStrayAllEmployeesReportTriggers_ (Report.gs), which is also called
+ * automatically by startAllEmployeesReportJob_'s stale-job recovery -- this
+ * manual entry point stays for an admin who wants to sweep immediately
+ * rather than wait out that 30-minute staleness window.
  *
  * ScriptApp.getProjectTriggers() only ever returns triggers owned by
  * whoever RUNS this function -- Apps Script has no API for deleting another
@@ -217,13 +208,7 @@ function removeOrphanedPrintReportTempSheets() {
  * Triggers page, by whoever owns it). This clears your own.
  */
 function removeStrayAllEmployeesReportTriggers() {
-  var removed = 0;
-  ScriptApp.getProjectTriggers().forEach(function (trigger) {
-    if (trigger.getHandlerFunction() === 'continueAllEmployeesReportBatch_') {
-      ScriptApp.deleteTrigger(trigger);
-      removed++;
-    }
-  });
+  var removed = sweepStrayAllEmployeesReportTriggers_();
   Logger.log(removed > 0 ? removed + ' stray continueAllEmployeesReportBatch_ trigger(s) removed.' : 'No stray continueAllEmployeesReportBatch_ triggers found for you.');
 }
 
@@ -245,7 +230,16 @@ var CANONICAL_HEADERS = {
   // column by name (headers.indexOf('ExtraShift')) and simply skips the
   // check when it's absent, the same safe pattern branchCol/otEligibleCol
   // already use -- no need to declare it canonical for that to work.
-  Employees: ['EmployeeID', 'Name', 'Department', 'Active', 'CreatedAt', 'SetupCodeHash', 'SetupCodeSalt', 'SetupCodeUsed', 'IsAdmin', 'Branch', 'KioskPIN', 'OTMaxMinutes', 'Salary', 'LastWorkingDay', 'OTEligible'],
+  // LegalName..WorkPermitDate (personal-info block) and PositionAllowance
+  // were inserted mid-sheet rather than appended -- LegalName/DateOfBirth/
+  // Age/NationalIDOrPassport/SocialSecurityNumber/WorkPermitDate sit right
+  // after Name (grouped identity info, per the admin's own layout request),
+  // and PositionAllowance sits right after Salary (so the two pay figures
+  // are visually adjacent) -- see migrateEmployeesAddPersonalInfoColumns
+  // (Utils.gs), which performed that one-off insert. This array's order
+  // must match the live sheet's physical column order exactly, since the
+  // repair below is POSITIONAL.
+  Employees: ['EmployeeID', 'Name', 'LegalName', 'DateOfBirth', 'Age', 'NationalIDOrPassport', 'SocialSecurityNumber', 'WorkPermitDate', 'Department', 'Active', 'CreatedAt', 'SetupCodeHash', 'SetupCodeSalt', 'SetupCodeUsed', 'IsAdmin', 'Branch', 'KioskPIN', 'OTMaxMinutes', 'Salary', 'PositionAllowance', 'LastWorkingDay', 'OTEligible'],
   // ShiftPicked included here (unlike Employees.ExtraShift, deliberately
   // excluded above) -- AttendanceLog is append-only and entirely
   // code-managed (every column here, including this one, only ever gets
@@ -332,10 +326,87 @@ function checkAndFixCriticalSheets_(findings, dryRun) {
     var headerRange = sheet.getRange(1, 1, 1, lastCol);
     var row = headerRange.getValues()[0];
     var fixed = [];
+    var blocked = [];
+
+    // On Employees ONLY (see the sheetName check inside the loop below),
+    // columns with real data below row 1 are never auto-relabeled, only
+    // reported -- discovered the hard way when CANONICAL_HEADERS.Employees
+    // gained 7 new names (for the personal-info/PositionAllowance columns)
+    // on a sheet that hadn't been migrated to the new layout yet: this loop
+    // would have happily overwritten "Department"'s header cell to
+    // "LegalName" etc., in place, with every Thai/Japanese value still
+    // sitting right underneath -- the header text and the real data
+    // silently stop matching, for every downstream column, with no error.
+    // A genuinely blank column (new sheet, or a column that hasn't been
+    // used yet) is still safe to auto-label, same as before.
+    //
+    // Computed lazily (only the first time some column actually needs it,
+    // not unconditionally for every sheet on every Health Check run, and
+    // never at all for AttendanceLog now that it skips this guard entirely)
+    // -- the common case is every header already matching canonical, which
+    // used to still pay for a full getValues() over the whole sheet
+    // (unbounded for AttendanceLog) for nothing (code review catch,
+    // 2026-11-03).
+    var lastRow = sheet.getLastRow();
+    var hasDataBelowCache = null;
+    var hasDataBelow = function (col) {
+      if (!hasDataBelowCache) {
+        hasDataBelowCache = {};
+        if (lastRow > 1) {
+          var fullDataRange = sheet.getRange(2, 1, lastRow - 1, lastCol).getValues();
+          for (var c = 0; c < lastCol; c++) {
+            hasDataBelowCache[c] = fullDataRange.some(function (r) { return r[c] !== '' && r[c] !== null; });
+          }
+        }
+      }
+      return !!hasDataBelowCache[col];
+    };
 
     for (var i = 0; i < canonical.length; i++) {
       if (row[i] === canonical[i]) continue;
       if (row.indexOf(canonical[i]) !== -1) continue; // present elsewhere in the row -- don't touch
+
+      // The hasDataBelow/looksLikeAnotherRealColumn guards below exist only
+      // for Employees -- the one sheet in CANONICAL_HEADERS that admins
+      // actually hand-edit, where a mismatched header can legitimately mean
+      // "mid-migration, real data sitting under the wrong label" rather than
+      // a simple typo. AttendanceLog is the opposite: append-only and
+      // entirely code-managed (every column, this one included, is only
+      // ever added via ensureColumns_/appendRow_ -- see
+      // CANONICAL_HEADERS.AttendanceLog's own comment above), so its column
+      // order can never legitimately drift the way Employees' can. Guarding
+      // it the same way just left a cleared/typo'd AttendanceLog header
+      // reported-but-unrepaired for no real safety benefit -- changed
+      // 2026-11-06 after an admin asked why Health Check no longer restored
+      // a deleted AttendanceLog!B1 the way it did before the 2026-11-03
+      // guard went in. checkAndFixScheduleHeaders_/checkAndFixSalaryHeaders_/
+      // checkAndFixAllowancesHeaders_ below are code-managed the same way
+      // and were never guarded like this to begin with -- this just brings
+      // AttendanceLog in line with those three.
+      if (sheetName !== 'Employees') {
+        row[i] = canonical[i];
+        fixed.push(canonical[i]);
+        continue;
+      }
+
+      // A cell already labeled with some OTHER name from this sheet's own
+      // canonical list is a real, known column -- just possibly misaligned
+      // -- not blank filler, even with zero data rows right now (a
+      // legitimately sparse field, e.g. LastWorkingDay before anyone's ever
+      // left). hasDataBelow alone can't tell those two cases apart: a
+      // sparse-but-real column reads identically to a genuinely never-used
+      // one. Caught by code review, 2026-11-03 -- without this, the loop
+      // would silently relabel a real field's header just because nothing
+      // happens to be filled in under it yet.
+      var looksLikeAnotherRealColumn = row[i] !== '' && canonical.indexOf(row[i]) !== -1;
+      if (hasDataBelow(i)) {
+        blocked.push({ col: i + 1, wrongHeader: row[i], shouldBe: canonical[i], reason: 'has real data underneath' });
+        continue;
+      }
+      if (looksLikeAnotherRealColumn) {
+        blocked.push({ col: i + 1, wrongHeader: row[i], shouldBe: canonical[i], reason: 'already labeled as another known column' });
+        continue;
+      }
       row[i] = canonical[i];
       fixed.push(canonical[i]);
     }
@@ -347,6 +418,25 @@ function checkAndFixCriticalSheets_(findings, dryRun) {
         a1: null,
         fixable: true,
         message: sheetName + ' header row ' + (dryRun ? 'needs repair' : 'auto-repaired') + ': ' + fixed.join(', ') + (dryRun ? ' missing.' : ' restored.')
+      });
+    }
+
+    if (blocked.length > 0) {
+      // Lists EVERY blocked column, not just the first -- a sheet with
+      // several misaligned columns used to understate the problem down to
+      // one "e.g." example (code review catch, 2026-11-03).
+      var blockedList = blocked.map(function (b) {
+        return 'column ' + b.col + ' is labeled "' + b.wrongHeader + '" (expected "' + b.shouldBe + '", ' + b.reason + ')';
+      }).join('; ');
+      findings.push({
+        sheetName: sheetName,
+        a1: null,
+        fixable: false,
+        message: sheetName + ' header row looks structurally wrong in ' + blocked.length + ' column(s): ' + blockedList + '. ' +
+          'Not auto-fixed -- overwriting the header text alone could relabel real data, or hide a real column that ' +
+          'just has no data yet, without moving anything. This usually means the sheet is missing columns a setup ' +
+          'script needs to insert (e.g. a migration that was never run), not a simple typo. Check the sheet structure ' +
+          'by hand before touching anything.'
       });
     }
   });
