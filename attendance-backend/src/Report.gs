@@ -336,6 +336,19 @@ function writeMonthlyReportData_(sheet, startRow, year, month, precomputedLogsBy
     // it's left as literal text -- the exact same class of bug as Kiosk PINs
     // losing a leading zero. Plain text stops Sheets from ever touching it.
     sheet.getRange(startRow, 1, rows.length, 1).setNumberFormat('@');
+    // Time In/Time Out (columns 3/4) need the exact same treatment, for the
+    // exact same reason -- "07:49" is just as valid a time-literal to Sheets
+    // as a date-literal is, so without this a cell whose number format
+    // happens to still be "Automatic" (inherited from whatever was last
+    // written at that row/column before this refresh -- refreshLiveReportSheet_'s
+    // own clear pass resets content/background/font but never number
+    // format) gets re-parsed into a real time value and redisplayed in
+    // Sheets' own default time format (no leading zero, e.g. "7:40"), while
+    // a neighboring cell that happened to already be Plain Text keeps
+    // showing the literal string exactly as written ("07:49") -- the
+    // inconsistent leading-zero mix an admin actually saw in production on
+    // this very column, 2026-11-06.
+    sheet.getRange(startRow, 3, rows.length, 2).setNumberFormat('@');
     sheet.getRange(startRow, 1, rows.length, COLS).setValues(rows);
     sheet.getRange(startRow, 1, rows.length, COLS).setBackgrounds(backgrounds);
     sheet.getRange(startRow, 1, rows.length, COLS).setFontColors(fontColors);
@@ -506,10 +519,13 @@ function buildEmployeeReportPdfBlob_(employee, year, month, precomputedLogsByEmp
  * Google-infrastructure hiccup, not a bug in the calling code: it has
  * independently struck buildEmployeeReportPdfBlob_, buildSalarySheet_, and
  * guardedMenuCreateScheduleAndSalarySheets_ (Menu.gs) on different days,
- * each succeeding on a plain retry. Any other error is rethrown immediately
- * on the first attempt -- this is deliberately not a general-purpose
- * "retry anything" wrapper, since most errors here (a real data problem, a
- * bad argument) would just fail identically three times slower.
+ * each succeeding on a plain retry -- which is why both builder calls in
+ * menuCreateScheduleAndSalarySheets_ are now wrapped in this directly,
+ * instead of relying on an admin noticing and re-running by hand. Any other
+ * error is rethrown immediately on the first attempt -- this is deliberately
+ * not a general-purpose "retry anything" wrapper, since most errors here (a
+ * real data problem, a bad argument) would just fail identically three
+ * times slower.
  */
 function retryTransientSheetsError_(fn, maxAttempts) {
   maxAttempts = maxAttempts || 3;
@@ -602,6 +618,22 @@ function startAllEmployeesReportJob_(year, month, precomputedLogsByEmployee) {
     // threw, or the trigger never fired). Clean up whatever it left behind
     // and fall through to start fresh, same as a clean start below.
     cleanupAllEmployeesReportJob_(existing);
+    // Also sweep any _PrintReportTemp_... tab and stray
+    // continueAllEmployeesReportBatch_ trigger the dead run might have left
+    // behind -- confirmed in production (2026-11-02) that Apps Script's own
+    // hard 6-minute execution kill can land mid-buildEmployeeReportPdfBlob_,
+    // which skips that function's own finally-block cleanup entirely (a hard
+    // kill isn't a catchable exception, so finally never runs) and also
+    // strands the firing trigger as Disabled, the same way an uncaught throw
+    // used to before continueAllEmployeesReportBatch_'s own try/catch fix.
+    // Only run here, on the already-rare "previous job looks dead" path --
+    // never on every normal batch -- so this doesn't add sheet/trigger
+    // scanning overhead to the happy path. Same sweep logic the manual
+    // removeOrphanedPrintReportTempSheets/removeStrayAllEmployeesReportTriggers
+    // utilities (HealthCheck.gs) expose for an admin who doesn't want to
+    // wait out this 30-minute staleness window first.
+    sweepOrphanedPrintReportTempSheets_();
+    sweepStrayAllEmployeesReportTriggers_();
   }
 
   var logsByEmployee = precomputedLogsByEmployee !== undefined ? precomputedLogsByEmployee : getMonthLogsByEmployee_(year, month);
@@ -684,7 +716,28 @@ function runAllEmployeesReportBatch_(props, job) {
   var scratchFolder = DriveApp.getFolderById(job.scratchFolderId);
   var chunk = employees.slice(job.nextIndex, job.nextIndex + ALL_EMPLOYEES_REPORT_BATCH_SIZE);
 
-  chunk.forEach(function (emp, i) {
+  // Plain for-loop, not chunk.forEach, so it can break out early (see the
+  // time-budget check below) -- forEach has no way to stop partway through.
+  var batchStartedAt = Date.now();
+  // Apps Script hard-kills an execution at 6 minutes with NO catchable
+  // warning -- finally blocks (including buildEmployeeReportPdfBlob_'s own
+  // temp-sheet cleanup) never get a chance to run when that happens, which
+  // is exactly how a "_PrintReportTemp_..." tab and a stranded trigger got
+  // left behind in production (2026-11-02; see sweepOrphanedPrintReportTempSheets_/
+  // sweepStrayAllEmployeesReportTriggers_ above for the automatic recovery
+  // side of that same incident). Rather than trying to survive a kill after
+  // it's already in flight, this stops STARTING new employees once
+  // comfortably under the ceiling -- leaves headroom for this batch's own
+  // fixed overhead (the three getXxxForMonth_ reads above) plus whichever
+  // employee is already mid-build when the check lands. Any employee not
+  // yet started this batch just rolls into the next scheduled batch, via
+  // the exact same "more employees remain" reschedule path below -- not a
+  // separate mechanism.
+  var SAFE_BATCH_BUDGET_MS = 4.5 * 60 * 1000;
+  var processedCount = 0;
+  for (var i = 0; i < chunk.length; i++) {
+    if (Date.now() - batchStartedAt > SAFE_BATCH_BUDGET_MS) break;
+    var emp = chunk[i];
     // Zero-padded index PREFIX, not just the name -- Utilities.zip has no
     // concept of entry order, so this is what lets the finalize step below
     // read the scratch folder back and reconstruct the original roster
@@ -720,9 +773,13 @@ function runAllEmployeesReportBatch_(props, job) {
       );
       scratchFolder.createFile(noteBlob);
     }
-  });
+    processedCount++;
+  }
 
-  job.nextIndex += chunk.length;
+  // processedCount, not chunk.length -- must reflect only what actually ran
+  // if the time-budget check above broke out early, or the next batch would
+  // silently skip every employee this one didn't get to.
+  job.nextIndex += processedCount;
 
   // employees.length (freshly derived just above), not the job's own
   // totalCount snapshot from when it started -- if attendance data were
@@ -793,6 +850,77 @@ function cleanupAllEmployeesReportJob_(job) {
     scratchFolder.setTrashed(true);
   } catch (e) { /* already gone, or never got created -- nothing to clean up */ }
   PropertiesService.getScriptProperties().deleteProperty(ALL_EMPLOYEES_REPORT_JOB_KEY);
+}
+
+/**
+ * Deletes any leftover "_PrintReportTemp_..." (or the older
+ * "_PrintAllReportsTemp_...") tab -- the throwaway sheet
+ * buildEmployeeReportPdfBlob_ builds while making one employee's PDF,
+ * normally always deleted again in its own finally block once the export
+ * finishes. The one way it survives is Apps Script's own hard 6-minute
+ * execution kill landing mid-build -- a platform kill, not a catchable
+ * exception, so that finally block never gets a chance to run. Single
+ * source of truth for what counts as one of these tabs, shared by the
+ * manual removeOrphanedPrintReportTempSheets (HealthCheck.gs, for an admin
+ * who wants to sweep immediately) and startAllEmployeesReportJob_'s
+ * stale-job recovery (which runs this automatically next time the job is
+ * started, so a hard-kill death self-heals without needing an admin to
+ * notice and run the manual utility). Returns the count removed.
+ */
+function sweepOrphanedPrintReportTempSheets_() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var removed = 0;
+  ss.getSheets().forEach(function (s) {
+    var name = s.getName();
+    if (name.indexOf('_PrintReportTemp_') === 0 || name.indexOf('_PrintAllReportsTemp_') === 0) {
+      try {
+        ss.deleteSheet(s);
+        removed++;
+      } catch (e) {
+        // Logged, not swallowed silently -- a real failure here (not just
+        // "someone already deleted it") would otherwise have no visibility
+        // at all, including for the admin-facing manual utility
+        // (removeOrphanedPrintReportTempSheets, HealthCheck.gs) that calls
+        // this expecting Logger.log output to actually mean something
+        // (code review catch, 2026-11-03).
+        Logger.log('sweepOrphanedPrintReportTempSheets_: could not delete "' + name + '": ' + e.message);
+      }
+    }
+  });
+  return removed;
+}
+
+/**
+ * Deletes every leftover continueAllEmployeesReportBatch_ trigger --
+ * stranded Disabled the same way an uncaught throw used to before
+ * continueAllEmployeesReportBatch_'s own try/catch fix, except this path
+ * (Apps Script's hard execution-kill) still isn't catchable, so a trigger
+ * can still get stranded this way. Single source of truth for this sweep,
+ * shared by the manual removeStrayAllEmployeesReportTriggers (HealthCheck.gs)
+ * and startAllEmployeesReportJob_'s stale-job recovery, same reasoning as
+ * sweepOrphanedPrintReportTempSheets_ just above. ScriptApp.getProjectTriggers()
+ * only ever returns triggers owned by whoever runs this -- Apps Script has
+ * no API for deleting another user's triggers. Returns the count removed.
+ */
+function sweepStrayAllEmployeesReportTriggers_() {
+  var removed = 0;
+  ScriptApp.getProjectTriggers().forEach(function (trigger) {
+    if (trigger.getHandlerFunction() === 'continueAllEmployeesReportBatch_') {
+      try {
+        ScriptApp.deleteTrigger(trigger);
+        removed++;
+      } catch (e) {
+        // Caught per-trigger, not left to propagate -- this now runs
+        // automatically from startAllEmployeesReportJob_'s stale-job
+        // recovery (not just the manual HealthCheck.gs utility anymore), so
+        // one trigger failing to delete must not abort starting the fresh
+        // job that recovery path falls through to right after this call
+        // (code review catch, 2026-11-03).
+        Logger.log('sweepStrayAllEmployeesReportTriggers_: could not delete a stray trigger: ' + e.message);
+      }
+    }
+  });
+  return removed;
 }
 
 /**
@@ -1100,28 +1228,72 @@ function countLeavesForEmployee_(scheduledShiftsForMonth, employeeId) {
 }
 
 /**
- * Whole-fiscal-year version of countLeavesForEmployee_, for the Summary
- * sheet's "All" -- sums across all 12 of the fiscal year's "Schedule
- * YYYY-MM" sheets. Unlike aggregateYearSummary_ (one AttendanceLog to read
- * in a single pass) there's no way around reading each month's Schedule
- * sheet separately -- they're 12 different sheets.
+ * Same scan as countLeavesForEmployee_, but keeps WHICH day each leave cell
+ * fell on instead of just the running count -- backs the Dashboard Monthly
+ * view's Leave pill popup (click a nonzero Leave badge to see which dates),
+ * requested right after the Allowance pill got the same click-to-open-modal
+ * treatment (2026-11-03). Returns [{ day, type (one of LEAVE_COUNT_TYPES),
+ * half (true for a Half Day cell, same HALF_DAY_LEAVE_COUNTS_AS_ mapping) }],
+ * sorted by day ascending.
  */
-function countLeavesForYear_(year) {
-  var totalsByEmployee = {}; // { [employeeId]: { [LEAVE_COUNT_TYPES[i]]: count } }
+function leaveDetailForEmployee_(scheduledShiftsForMonth, employeeId) {
+  var detail = [];
+  var byDay = scheduledShiftsForMonth[employeeId];
+  if (!byDay) return detail;
+  for (var day in byDay) {
+    var shift = byDay[day];
+    if (LEAVE_COUNT_TYPES.indexOf(shift) !== -1) {
+      detail.push({ day: Number(day), type: shift, half: false });
+    } else if (HALF_DAY_LEAVE_COUNTS_AS_[shift]) {
+      detail.push({ day: Number(day), type: HALF_DAY_LEAVE_COUNTS_AS_[shift], half: true });
+    }
+  }
+  detail.sort(function (a, b) { return a.day - b.day; });
+  return detail;
+}
+
+/**
+ * Whole-fiscal-year version of countLeavesForEmployee_ + leaveDetailForEmployee_
+ * combined into one pass, for the Summary sheet's "All" AND the Dashboard
+ * Monthly view's "All (fiscal year)" Leave popup -- sums/collects across all
+ * 12 of the fiscal year's "Schedule YYYY-MM" sheets. Unlike aggregateYearSummary_
+ * (one AttendanceLog to read in a single pass) there's no way around reading
+ * each month's Schedule sheet separately -- they're 12 different sheets.
+ * Combined into one function (rather than a separate detail-only pass
+ * alongside countLeavesForYear_) so the Dashboard's "All" view, which needs
+ * both, doesn't read all 12 Schedule sheets twice over.
+ */
+function leaveCountsAndDetailForYear_(year) {
+  var countsByEmployee = {}; // { [employeeId]: { [LEAVE_COUNT_TYPES[i]]: count } }
+  var detailByEmployee = {}; // { [employeeId]: [{ day, type, half, month, year }] }
   for (var i = 0; i < 12; i++) {
     var monthIndex0 = (FISCAL_YEAR_START_MONTH + i) % 12;
     var calendarYear = year + Math.floor((FISCAL_YEAR_START_MONTH + i) / 12);
-    var scheduledShiftsForMonth = getScheduledShiftsForMonth_(calendarYear, monthIndex0 + 1);
+    var calMonth = monthIndex0 + 1;
+    var scheduledShiftsForMonth = getScheduledShiftsForMonth_(calendarYear, calMonth);
     for (var employeeId in scheduledShiftsForMonth) {
       var monthCounts = countLeavesForEmployee_(scheduledShiftsForMonth, employeeId);
-      if (!totalsByEmployee[employeeId]) {
-        totalsByEmployee[employeeId] = {};
-        LEAVE_COUNT_TYPES.forEach(function (t) { totalsByEmployee[employeeId][t] = 0; });
+      if (!countsByEmployee[employeeId]) {
+        countsByEmployee[employeeId] = {};
+        LEAVE_COUNT_TYPES.forEach(function (t) { countsByEmployee[employeeId][t] = 0; });
       }
-      LEAVE_COUNT_TYPES.forEach(function (t) { totalsByEmployee[employeeId][t] += monthCounts[t]; });
+      LEAVE_COUNT_TYPES.forEach(function (t) { countsByEmployee[employeeId][t] += monthCounts[t]; });
+
+      var monthDetail = leaveDetailForEmployee_(scheduledShiftsForMonth, employeeId);
+      if (monthDetail.length) {
+        if (!detailByEmployee[employeeId]) detailByEmployee[employeeId] = [];
+        monthDetail.forEach(function (d) {
+          detailByEmployee[employeeId].push({ day: d.day, type: d.type, half: d.half, month: calMonth, year: calendarYear });
+        });
+      }
     }
   }
-  return totalsByEmployee;
+  return { counts: countsByEmployee, detail: detailByEmployee };
+}
+
+/** Thin wrapper kept for the Summary sheet's existing call site (writeYearlySummaryData_), which only ever needed the counts half of leaveCountsAndDetailForYear_. */
+function countLeavesForYear_(year) {
+  return leaveCountsAndDetailForYear_(year).counts;
 }
 
 /**
@@ -1192,7 +1364,19 @@ function sumMonthTotals_(dayLogs, scheduledShiftsForEmployee, daysInMonth) {
       continue;
     }
     if (entry) {
-      if (entry.timeIn) daysWorked++;
+      // A day the Schedule sheet marks as a full-day Leave type (Annual/Sick/
+      // Unpaid/Paid Special/Substitutional/Maternity Leave, or Holiday) never
+      // counts as a Day Worked here even with a real punch -- e.g. someone who
+      // tapped IN briefly then went home sick and had the whole day marked
+      // Sick Leave used to count as BOTH a Day Worked AND a Sick Leave day,
+      // with no reconciliation (countLeavesForEmployee_ tallies Sick Leave
+      // purely from this same Schedule cell, totally independent of this
+      // function). Leave wins over the punch for Days Worked purposes only --
+      // deliberately NOT extended to Late/OT below (isNoLateNoOtShift_ stays
+      // Event/Special-only), so a late or OT-eligible punch on a Leave day
+      // still counts toward Late/OT exactly as before; confirmed with the user
+      // this is intentional, not an oversight (2026-10-30).
+      if (entry.timeIn && FULL_DAY_OFF_SHIFTS.indexOf(scheduledShift) === -1) daysWorked++;
       // Every other Late/OT view (Report tab, Dashboard Daily, Recompute,
       // the Summary sheet's own yearly "All" rollup) exempts both Event AND
       // Special days via isNoLateNoOtShift_ -- this monthly Summary used to
@@ -1596,8 +1780,6 @@ function aggregateYearSummary_(values, year) {
     var entry = byDate[key];
     if (!result[entry.employeeId]) result[entry.employeeId] = { daysWorked: 0, lateCount: 0, overCount: 0, otMinutesTotal: 0, otQuartersTotal: 0, otByMonth: {} };
     var totals = result[entry.employeeId];
-    if (entry.timeIn) totals.daysWorked++;
-    if (entry.breakMinutes > DAILY_BREAK_BUDGET_MINUTES) totals.overCount++;
 
     // Every other Late/OT view (per-month Report, per-month Summary,
     // Dashboard Daily) re-derives this live from the current Schedule sheet
@@ -1607,9 +1789,21 @@ function aggregateYearSummary_(values, year) {
     // the AttendanceLog row, which only reflects that override AFTER
     // Recompute has actually run for that month. Matching the other views
     // here means the "All" total is correct immediately too, not just after
-    // a Recompute.
+    // a Recompute. Looked up here (before the daysWorked check right below,
+    // not just before the Late/OT check it was originally added for) since
+    // daysWorked now needs the same per-day schedule string too -- see its
+    // own comment just below.
     var byDayForEntry = scheduleCache[scheduleCacheKey_(entry.year, entry.month0 + 1)];
     var scheduledShiftForEntry = (byDayForEntry && byDayForEntry[entry.employeeId] && byDayForEntry[entry.employeeId][entry.day]) || '';
+
+    // Same Leave-wins-over-a-real-punch rule as sumMonthTotals_'s single-
+    // month equivalent (see its own comment) -- a day marked as a full-day
+    // Leave type never counts as a Day Worked here either, even with a real
+    // timeIn, so the "All" (fiscal year) rollup can't disagree with any
+    // single month's own Summary about the same employee/day.
+    if (entry.timeIn && FULL_DAY_OFF_SHIFTS.indexOf(scheduledShiftForEntry) === -1) totals.daysWorked++;
+    if (entry.breakMinutes > DAILY_BREAK_BUDGET_MINUTES) totals.overCount++;
+
     var isNoLateOtDay = isNoLateNoOtShift_(scheduledShiftForEntry);
 
     if (entry.late && !isNoLateOtDay) totals.lateCount++;
@@ -1828,7 +2022,25 @@ function buildScheduleSheet_(year, month) {
   });
 
   var existing = ss.getSheetByName(sheetName);
-  if (existing) {
+  // A tab that already exists but has zero data rows (getLastRow() === 0)
+  // means a PREVIOUS run got as far as ss.insertSheet(sheetName) below but
+  // was interrupted before writing anything into it -- most likely the
+  // transient "Service Spreadsheets timed out" error retryTransientSheetsError_
+  // (this file) is built to retry past: its own doc comment names
+  // buildSalarySheet_ as a function this has actually struck in production,
+  // and buildScheduleSheet_ runs the exact same insertSheet-then-write shape
+  // right below. On retry, buildScheduleSheet_ gets called again, finds the
+  // now-existing-but-empty tab, and used to take the branch below as if it
+  // already had a real header row -- `values[0]` on a truly empty sheet is
+  // just [''], so `headers.length` (1) then disagreed with each new row's
+  // real width (2 + daysInMonth columns) the moment it tried to write them,
+  // throwing "number of columns... does not match the number of columns in
+  // the range" instead of just finishing the job. Treating an empty existing
+  // tab the same as "doesn't exist yet" -- reusing it below instead of a
+  // fresh insertSheet, since the name is already taken -- routes this case
+  // through the clean first-time-build path instead.
+  var existingIsEmpty = !!(existing && existing.getLastRow() === 0);
+  if (existing && !existingIsEmpty) {
     var values = existing.getDataRange().getValues();
     var headers = values[0];
     var idCol = headers.indexOf('EmployeeID');
@@ -1896,7 +2108,12 @@ function buildScheduleSheet_(year, month) {
     rows.push(row);
   });
 
-  var sheet = ss.insertSheet(sheetName);
+  // existingIsEmpty: reuse the already-created-but-blank tab from an
+  // interrupted earlier run instead of insertSheet, which would otherwise
+  // throw "A sheet with this name already exists" -- see the doc comment on
+  // existingIsEmpty's declaration above for why this tab can exist yet be
+  // empty in the first place.
+  var sheet = existingIsEmpty ? existing : ss.insertSheet(sheetName);
   sheet.getRange(1, 1, rows.length, header.length).setValues(rows);
   sheet.setFrozenRows(1);
   sheet.setFrozenColumns(2);
@@ -1977,7 +2194,20 @@ function buildSalarySheet_(year, month) {
   }
 
   var existing = ss.getSheetByName(sheetName);
-  if (existing) {
+  // Same existing-but-empty case as buildScheduleSheet_'s identical check
+  // just above in this file -- see that one's doc comment for the full
+  // story. Here it's silent rather than a thrown error: `startRow` below
+  // computes as existing.getLastRow() + 1 = 0 + 1 = 1 on a blank tab, so the
+  // first batch of real employee rows landed directly on row 1 -- the row
+  // meant to be the header -- with nothing ever pointing at why a brand new
+  // Salary sheet's header read "EMP004 | SHUNYA | ..." instead of
+  // "EmployeeID | Name | Salary" (confirmed 2026-11-06 from a live sheet
+  // showing exactly that). Column D's header text still looked fine either
+  // way, since that's written separately below via an unconditional
+  // getRange(1, 4).setValue(...) that always targets row 1 regardless of
+  // what row 1 actually holds.
+  var existingIsEmpty = !!(existing && existing.getLastRow() === 0);
+  if (existing && !existingIsEmpty) {
     var values = existing.getDataRange().getValues();
     var headers = values[0];
     var idCol = headers.indexOf('EmployeeID');
@@ -2063,8 +2293,14 @@ function buildSalarySheet_(year, month) {
     // self-healing spirit as checkAndFixSalaryHeaders_ for a sheet built
     // before this column existed.
     if (existing.getRange(1, 4).getValue() !== 'OT per Quarter (Baht)') {
-      existing.getRange(1, 4).setValue('OT per Quarter (Baht)').setFontWeight('bold');
+      existing.getRange(1, 4).setValue('OT per Quarter (Baht)');
     }
+    // Header row styling (red fill, bold white text) -- cosmetic only, so
+    // it's safe to reapply unconditionally on every run, same reasoning as
+    // the dropdown/color/number-format refreshes elsewhere in this
+    // function -- a Salary sheet built before this style existed picks it
+    // up too, without needing a one-off migration pass.
+    existing.getRange(1, 1, 1, 4).setBackground('#ff0000').setFontColor('#ffffff').setFontWeight('bold');
     if (existing.getLastRow() > 1) {
       var otQuarterFormulas = [];
       for (var r = 2; r <= existing.getLastRow(); r++) {
@@ -2082,9 +2318,13 @@ function buildSalarySheet_(year, month) {
   var rows = [header];
   employees.forEach(function (emp) { rows.push([emp.EmployeeID, emp.Name, seedSalary_(emp), '']); });
 
-  var sheet = ss.insertSheet(sheetName);
+  // existingIsEmpty: reuse the already-created-but-blank tab from an
+  // interrupted earlier run instead of insertSheet, which would otherwise
+  // throw "A sheet with this name already exists" -- see existingIsEmpty's
+  // own doc comment above for why this tab can exist yet be empty.
+  var sheet = existingIsEmpty ? existing : ss.insertSheet(sheetName);
   sheet.getRange(1, 1, rows.length, 4).setValues(rows);
-  sheet.getRange(1, 1, 1, 4).setFontWeight('bold');
+  sheet.getRange(1, 1, 1, 4).setBackground('#ff0000').setFontColor('#ffffff').setFontWeight('bold');
   sheet.setFrozenRows(1);
   if (rows.length > 1) {
     sheet.getRange(2, 3, rows.length - 1, 1).setNumberFormat('#,##0.00');
@@ -2597,7 +2837,7 @@ function getDashboardSummaryData_(year, month) {
   // filter), no need to re-read the Employees sheet each time.
   var allEmployees = getAllEmployees_();
 
-  var totalsByEmployee, leaveCountsByEmployee, sortGroupFor;
+  var totalsByEmployee, leaveCountsByEmployee, leaveDetailByEmployee, sortGroupFor;
   // Same two Allowances.gs readers the Summary sheet uses for its own
   // "Special Allowance (Baht)" column (writeYearlySummaryData_/
   // writeMonthlySummaryData_, both above) -- one read of the whole
@@ -2613,7 +2853,13 @@ function getDashboardSummaryData_(year, month) {
   if (isAllMonths) {
     var logSheet = getSheet_('AttendanceLog');
     totalsByEmployee = aggregateYearSummary_(logSheet.getDataRange().getValues(), year);
-    leaveCountsByEmployee = countLeavesForYear_(year);
+    // Combined counts+detail pass (leaveCountsAndDetailForYear_ above) --
+    // the Leave pill popup needs the detail half too, and splitting it into
+    // a second call would mean reading all 12 "Schedule YYYY-MM" sheets
+    // twice for every "All (fiscal year)" Dashboard load.
+    var leaveYearResult = leaveCountsAndDetailForYear_(year);
+    leaveCountsByEmployee = leaveYearResult.counts;
+    leaveDetailByEmployee = leaveYearResult.detail;
     // getAllowanceEntriesForYear_ (not aggregateSpecialAllowancesForYear_)
     // -- this function needs the itemized entries, for the Allowance
     // column's hover tooltip below, not just the totals that function
@@ -2647,8 +2893,16 @@ function getDashboardSummaryData_(year, month) {
       }
     });
     leaveCountsByEmployee = {};
+    leaveDetailByEmployee = {};
     allEmployees.forEach(function (emp) {
       leaveCountsByEmployee[emp.EmployeeID] = countLeavesForEmployee_(scheduledShiftsForMonth, emp.EmployeeID);
+      // month/year stamped onto every entry (even though they're constant
+      // here, unlike the isAllMonths branch) so the Dashboard's Leave popup
+      // can format a date the same way regardless of which branch produced
+      // this employee's data, with no isAllMonths branching on that side.
+      leaveDetailByEmployee[emp.EmployeeID] = leaveDetailForEmployee_(scheduledShiftsForMonth, emp.EmployeeID).map(function (d) {
+        return { day: d.day, type: d.type, half: d.half, month: month, year: year };
+      });
     });
     allowancesByEmployee = getAllowancesForMonth_(year, month);
     sortGroupFor = function (emp) { return reportSortGroup_(emp, logsByEmployee[emp.EmployeeID]); };
@@ -2738,9 +2992,22 @@ function getDashboardSummaryData_(year, month) {
     // writeYearlyReportData_ uses (monthIndex0 = (FISCAL_YEAR_START_MONTH +
     // i) % 12) to walk a fiscal year's months in order, inverted here to
     // rank a calendar month (1-12) by its position within the fiscal year.
+    // Leave-detail counterpart of specialAllowanceDetail just above -- same
+    // "not present at all means nothing this period" default as
+    // zeroLeaveCounts (leaveDetailByEmployee only ever gets a key when at
+    // least one leave day was found, leaveDetailForEmployee_/
+    // leaveCountsAndDetailForYear_ above).
+    var leaveDetail = leaveDetailByEmployee[emp.EmployeeID] || [];
     if (isAllMonths) {
       var fiscalRank = function (month) { return (month - 1 - FISCAL_YEAR_START_MONTH + 12) % 12; };
       specialAllowanceDetail.sort(function (a, b) { return fiscalRank(a.month) - fiscalRank(b.month); });
+      // Sort by fiscal-month order first (same reasoning as specialAllowanceDetail
+      // above), then by day within that month, so the popup reads as one
+      // chronological list across the whole fiscal year.
+      leaveDetail = leaveDetail.slice().sort(function (a, b) {
+        var rankDiff = fiscalRank(a.month) - fiscalRank(b.month);
+        return rankDiff !== 0 ? rankDiff : a.day - b.day;
+      });
     }
     return {
       employeeId: emp.EmployeeID,
@@ -2762,7 +3029,8 @@ function getDashboardSummaryData_(year, month) {
         substitutional: leaveCounts['Substitutional Leave'],
         unpaid: leaveCounts['Unpaid Leave'],
         maternity: leaveCounts['Maternity Leave']
-      }
+      },
+      leaveDetail: leaveDetail
     };
   });
 }
@@ -2978,37 +3246,51 @@ function handleDashboardCalendar_(params) {
  * admin can tell apart, at a glance: didn't come at all vs. came late vs.
  * already on leave vs. came on time -- instead of everyone who tapped in
  * reading as one undifferentiated "present":
- *   - onTime / late: tapped IN today, regardless of what (if anything) was
- *     scheduled -- a real IN is never excluded just because nothing was
- *     scheduled, being present is unambiguous evidence either way. Which of
- *     the two comes straight from that IN row's own Late column (already
- *     computed at check-in time / by recomputeLateAndOt_ -- see isLate_),
- *     EXCEPT when the day is currently scheduled as an "Event ..." shift --
- *     that always overrides to onTime regardless of the stored flag (see
- *     the Event paragraph below), so a stale Late=TRUE left over from
- *     before a day got relabeled Event can't leak into this endpoint
- *     without waiting on a recompute run first. Both listed with the
- *     person's check-in time (earliest IN of the day, if more than one).
- *   - absent: never tapped in, and the day's shift is NOT one of
- *     FULL_DAY_OFF_SHIFTS -- this includes a genuine scheduled shift the
- *     employee skipped AND a blank Schedule cell, since admins no longer
- *     pre-fill normal work shifts ahead of time (employees pick their own
- *     shift at the Kiosk when they check in -- see getScheduledShift_'s
- *     ShiftPicked fallback in Attendance.gs). A blank cell today means
- *     "an ordinary work day, nothing marked off", not "not scheduled yet";
- *     an intentional day off is only ever a real FULL_DAY_OFF_SHIFTS value
- *     an admin wrote in.
- *   - onLeave: no tap in, and the day's shift IS one of FULL_DAY_OFF_SHIFTS
- *     (Annual/Sick/Unpaid/Paid Special/Substitutional Leave, or Holiday).
+ *   - onLeave: the day's shift IS one of FULL_DAY_OFF_SHIFTS (Annual/Sick/
+ *     Unpaid/Paid Special/Substitutional/Maternity Leave, or Holiday) --
+ *     checked FIRST, before even looking for a real punch, so a day marked
+ *     full-day Leave always reads as onLeave even if the employee tapped IN
+ *     briefly before going home (e.g. came in, felt sick, left -- the whole
+ *     day is still marked Sick Leave). This used to be the opposite -- a
+ *     real IN always won and showed as onTime/late no matter what was
+ *     scheduled -- but that let this endpoint disagree with the Monthly/
+ *     Summary "Days Worked" figures, which also now treat a full-day Leave
+ *     cell as not-worked regardless of a punch (see sumMonthTotals_'s own
+ *     comment). Confirmed with the user (2026-10-30): Leave wins here too,
+ *     for consistency, even though it means a punch on a Leave day no
+ *     longer surfaces its check-in/out time on this view (it's still a real
+ *     row in AttendanceLog, just not shown in this bucket).
+ *   - onTime / late: tapped IN today and the day is NOT a full-day Leave --
+ *     a real IN is never excluded just because nothing was scheduled, being
+ *     present is unambiguous evidence either way, only Leave itself
+ *     overrides that. Which of the two comes straight from that IN row's
+ *     own Late column (already computed at check-in time / by
+ *     recomputeLateAndOt_ -- see isLate_), EXCEPT when the day is currently
+ *     scheduled as an "Event ..." shift -- that always overrides to onTime
+ *     regardless of the stored flag (see the Event paragraph below), so a
+ *     stale Late=TRUE left over from before a day got relabeled Event can't
+ *     leak into this endpoint without waiting on a recompute run first.
+ *     Both listed with the person's check-in time (earliest IN of the day,
+ *     if more than one).
+ *   - absent: never tapped in, and the day's shift is NOT a full-day Leave
+ *     type -- this includes a genuine scheduled shift the employee skipped
+ *     AND a blank Schedule cell, since admins no longer pre-fill normal work
+ *     shifts ahead of time (employees pick their own shift at the Kiosk when
+ *     they check in -- see getScheduledShift_'s ShiftPicked fallback in
+ *     Attendance.gs). A blank cell today means "an ordinary work day,
+ *     nothing marked off", not "not scheduled yet"; an intentional day off
+ *     is only ever a real FULL_DAY_OFF_SHIFTS value an admin wrote in.
  *
- * An "Event ..." shift is a fifth case, checked before absent/onLeave and
- * overriding onTime/late above: no matter whether the person taps IN, taps
- * OUT only, taps both, or never taps at all, and no matter whether the day
- * was scheduled Event from the start or relabeled Event afterward, it
- * always reads as onTime, immediately, with no recompute needed first --
- * same "counts as a full day worked, never late/absent" rule
- * sumMonthTotals_ and the Report grid already apply unconditionally from
- * the current schedule (see isEventShift_), kept in parity with this
+ * An "Event ..." shift is a fifth case, checked before absent and
+ * overriding onTime/late above (never reached for a day already claimed by
+ * the onLeave check, since Event/Special shift strings and
+ * FULL_DAY_OFF_SHIFTS strings never overlap): no matter whether the person
+ * taps IN, taps OUT only, taps both, or never taps at all, and no matter
+ * whether the day was scheduled Event from the start or relabeled Event
+ * afterward, it always reads as onTime, immediately, with no recompute
+ * needed first -- same "counts as a full day worked, never late/absent"
+ * rule sumMonthTotals_ and the Report grid already apply unconditionally
+ * from the current schedule (see isEventShift_), kept in parity with this
  * endpoint on purpose so the Daily and Monthly views can never disagree
  * about the same employee/day.
  */
@@ -3148,6 +3430,18 @@ function handleDashboardDaily_(params) {
   var onLeave = [];
   activeEmployees.forEach(function (emp) {
     var shift = (scheduledShiftsForMonth[emp.EmployeeID] && scheduledShiftsForMonth[emp.EmployeeID][day]) || '';
+
+    // Checked first, before even looking for a real punch -- a full-day
+    // Leave cell wins outright now, same precedence sumMonthTotals_ /
+    // aggregateYearSummary_ apply to "Days Worked" (see their own comments).
+    // Means a brief IN tap on a day marked e.g. Sick Leave shows up here as
+    // onLeave, not onTime/late -- that punch is still a real AttendanceLog
+    // row, just not surfaced by this endpoint's bucket for that day.
+    if (FULL_DAY_OFF_SHIFTS.indexOf(shift) !== -1) {
+      onLeave.push({ employeeId: emp.EmployeeID, name: emp.Name, department: emp.Department, branch: emp.Branch || '', shift: shift });
+      return;
+    }
+
     var inRow = inRowByEmployee[emp.EmployeeID];
 
     if (inRow) {
@@ -3230,12 +3524,9 @@ function handleDashboardDaily_(params) {
       });
       return;
     }
-    var entry = { employeeId: emp.EmployeeID, name: emp.Name, department: emp.Department, branch: emp.Branch || '', shift: shift };
-    if (FULL_DAY_OFF_SHIFTS.indexOf(shift) !== -1) {
-      onLeave.push(entry);
-    } else {
-      absent.push(entry);
-    }
+    // FULL_DAY_OFF_SHIFTS already handled above, so whatever reaches here
+    // with no real IN and no Event/Special override is a genuine no-show.
+    absent.push({ employeeId: emp.EmployeeID, name: emp.Name, department: emp.Department, branch: emp.Branch || '', shift: shift });
   });
 
   return ok_({
