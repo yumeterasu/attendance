@@ -190,13 +190,16 @@
      toolbar one. Icon-only didn't last -- a "Print"/"印刷" label was added
      right after (real feedback, 2026-11-06), so this went back to a
      bordered pill (like .refresh-btn) sized to #logoutBtn/.lang-toggle's
-     real 36px height; the icon shrank to 24px so its own circular backdrop
-     doesn't collide with the pill's border. The user-supplied PNG originally
-     carried its own opaque white/light-gray circular backdrop baked in --
-     keyed it out by hand (chroma-based matte removal + edge decontamination,
-     real feedback, 2026-11-06, since no image editor was available in this
+     real 36px height. The user-supplied PNG originally carried its own
+     opaque white/light-gray circular backdrop baked in -- keyed it out by
+     hand (chroma-based matte removal + edge decontamination, real
+     feedback, 2026-11-06, since no image editor was available in this
      environment) so just the printer glyph remains and the pill's own
-     #EEF3FC background shows through cleanly instead of a double frame. */
+     #EEF3FC background shows through cleanly instead of a double frame.
+     With the backdrop gone the icon read too small next to "Print"/"印刷"
+     at the original 24px (real feedback, 2026-11-06) -- sized up to 32px,
+     close to the 36px pill height, since there's no circular edge left to
+     collide with the border. */
   .header-print-btn {
     display: inline-flex;
     align-items: center;
@@ -212,7 +215,7 @@
     font-weight: 700;
     color: var(--accent-dark);
   }
-  .header-print-btn img { width: 24px; height: 24px; display: block; }
+  .header-print-btn img { width: 32px; height: 32px; display: block; }
   .header-print-btn:hover { background: #E4EBFC; }
   .header-print-btn:disabled { opacity: 0.6; cursor: default; }
 
