@@ -174,16 +174,20 @@
   }
   #logoutBtn:hover { background: #F4F7FD; }
 
-  /* Lives in the header next to the language toggle now, not the toolbar
-     (real feedback, 2026-11-06 -- moved out of .controls so it's reachable
-     without switching tabs/scrolling, and reads as "page-level action" next
-     to EN/日本語 rather than a per-table control). Sized to match
-     #logoutBtn/.lang-toggle's real rendered height (36px, headless-Chrome
-     measured against this exact header, not guessed) so the header row
-     doesn't grow on the side the print button is active. Only one of
-     #monthlyPrintBtn/#calendarPrintBtn is ever visible at a time (Daily tab
-     has neither) -- same show/hide-by-view logic as before, now just
-     pointed at a header-right element instead of a toolbar one. */
+  /* Lives in the header to the left of the language toggle now, not the
+     toolbar (real feedback, 2026-11-06 -- moved out of .controls so it's
+     reachable without switching tabs/scrolling, and reads as "page-level
+     action" next to EN/日本語 rather than a per-table control). Sized to
+     match #logoutBtn/.lang-toggle's real rendered height (36px,
+     headless-Chrome measured against this exact header, not guessed) so
+     the header row doesn't grow on the side the print button is active.
+     Reuses .refresh-btn's accent-blue-on-tint treatment (not the muted
+     #logoutBtn look) -- first version used the muted style and read as
+     near-invisible against the white header (real feedback, 2026-11-06).
+     Only one of #monthlyPrintBtn/#calendarPrintBtn is ever visible at a
+     time (Daily tab has neither) -- same show/hide-by-view logic as
+     before, now just pointed at a header-right element instead of a
+     toolbar one. */
   .header-print-btn {
     display: inline-flex;
     align-items: center;
@@ -191,14 +195,14 @@
     width: 36px;
     height: 36px;
     border: 1px solid var(--border);
-    background: var(--card);
-    color: var(--text-muted);
+    background: #EEF3FC;
+    color: var(--accent-dark);
     border-radius: 10px;
     cursor: pointer;
-    font-size: 15px;
+    font-size: 18px;
     padding: 0;
   }
-  .header-print-btn:hover { background: #F4F7FD; }
+  .header-print-btn:hover { background: #E4EBFC; }
   .header-print-btn:disabled { opacity: 0.6; cursor: default; }
 
   main {
@@ -1157,22 +1161,23 @@
     </div>
   </div>
   <div class="header-right">
-    <div class="lang-toggle" id="langToggle">
-      <button type="button" class="lang-btn" data-lang="en">EN</button>
-      <button type="button" class="lang-btn" data-lang="ja">日本語</button>
-    </div>
     <!-- Icon-only (no text label) -- real feedback, 2026-11-05: a plain
          printer icon reads clearly enough on its own. title/data-i18n-title
          keeps a translated tooltip for anyone who isn't sure what the icon
          means. Only one of these two is ever visible -- setDashboardView's
          toolbarEls show/hide logic (below, in <script>) picks whichever
-         matches the active tab; Daily tab shows neither. -->
+         matches the active tab; Daily tab shows neither. Sits to the left
+         of the language toggle (real feedback, 2026-11-06). -->
     <button class="header-print-btn" id="monthlyPrintBtn" type="button" disabled style="display:none;" data-i18n-title="printBtn" title="Print">
       <span>🖨</span>
     </button>
     <button class="header-print-btn" id="calendarPrintBtn" type="button" disabled style="display:none;" data-i18n-title="printBtn" title="Print">
       <span>🖨</span>
     </button>
+    <div class="lang-toggle" id="langToggle">
+      <button type="button" class="lang-btn" data-lang="en">EN</button>
+      <button type="button" class="lang-btn" data-lang="ja">日本語</button>
+    </div>
     <div id="whoami" style="display:none;">
       <span id="whoamiName"></span>
       <button id="logoutBtn" data-i18n="logout">Log out</button>
