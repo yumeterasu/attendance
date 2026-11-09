@@ -317,3 +317,51 @@ function ensureColumns_(sheetName, columnNames) {
     if (haveLock) lock.releaseLock();
   }
 }
+
+/**
+ * One-off reversal of the personal-info columns (LegalName, DateOfBirth,
+ * Age, NationalIDOrPassport, SocialSecurityNumber, WorkPermitDate,
+ * PositionAllowance) added 2026-11-06 and never actually used anywhere in
+ * OT calc or the Dashboard -- admin decided (2026-11-09) they're
+ * unnecessary and asked for them removed, Sheet columns included.
+ *
+ * DESTRUCTIVE: deletes each named column and everything in it, including
+ * already-entered real data (confirmed before writing this: at least two
+ * employees had real NationalIDOrPassport/SocialSecurityNumber values
+ * filled in). Run once from the editor -- select
+ * removeEmployeesPersonalInfoColumns in the toolbar dropdown, click Run --
+ * only after the admin has confirmed they're fine losing that data; there
+ * is no undo once a column is deleted beyond Sheets' own built-in
+ * Edit > Undo history.
+ *
+ * Re-fetches the header row fresh before each individual deletion (rather
+ * than computing all 7 indices once up front) so an earlier deletion
+ * shifting every later column's index can never cause this to delete the
+ * wrong column -- also makes this safe to re-run: a name no longer found
+ * (already removed, or never existed on this sheet) is just skipped.
+ *
+ * Deliberately named WITHOUT a trailing underscore, unlike nearly every
+ * other helper in this file -- the Apps Script editor's own Run/Debug
+ * function dropdown silently excludes any function whose name ends in "_"
+ * (its usual meaning here is "private, never call this directly"), so a
+ * trailing underscore would make this impossible to select and run from
+ * the toolbar at all. Same reason setupCacheWarmerTrigger above has none.
+ */
+function removeEmployeesPersonalInfoColumns() {
+  var sheet = getSheet_('Employees');
+  var columnsToRemove = ['LegalName', 'DateOfBirth', 'Age', 'NationalIDOrPassport', 'SocialSecurityNumber', 'WorkPermitDate', 'PositionAllowance'];
+  var removed = [];
+
+  columnsToRemove.forEach(function (name) {
+    var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+    var col = headers.indexOf(name);
+    if (col === -1) return; // already removed (or never existed) -- safe to re-run
+    sheet.deleteColumn(col + 1);
+    removed.push(name);
+  });
+
+  invalidateEmployeesCache_();
+  Logger.log(removed.length > 0
+    ? 'Removed Employees columns: ' + removed.join(', ')
+    : 'Nothing to remove -- none of the personal-info columns were present.');
+}

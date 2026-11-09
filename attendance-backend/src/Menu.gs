@@ -350,19 +350,6 @@ function menuAddNewEmployee_() {
   var newRow = sheet.getLastRow();
   sheet.getRange(newRow, pinCol + 1).setNumberFormat('@').setValue(newPin);
 
-  // Age (see migrateEmployeesAddPersonalInfoColumns, Utils.gs) is a live
-  // formula, not something this prompt flow asks for -- set it on every new
-  // hire immediately so it's already working the moment someone later types
-  // in a Date of Birth, instead of staying a permanently-blank cell until an
-  // admin remembers to add the formula by hand. Guarded by indexOf so this
-  // flow still works unmodified on a sheet the migration hasn't reached yet.
-  var ageCol = headers.indexOf('Age');
-  var dobCol = headers.indexOf('DateOfBirth');
-  if (ageCol !== -1 && dobCol !== -1) {
-    var dobA1 = sheet.getRange(newRow, dobCol + 1).getA1Notation();
-    sheet.getRange(newRow, ageCol + 1).setFormula('=IF(' + dobA1 + '="","",DATEDIF(' + dobA1 + ',TODAY(),"Y"))');
-  }
-
   invalidateEmployeesCache_();
 
   ui.alert(

@@ -246,16 +246,7 @@ var CANONICAL_HEADERS = {
   // column by name (headers.indexOf('ExtraShift')) and simply skips the
   // check when it's absent, the same safe pattern branchCol/otEligibleCol
   // already use -- no need to declare it canonical for that to work.
-  // LegalName..WorkPermitDate (personal-info block) and PositionAllowance
-  // were inserted mid-sheet rather than appended -- LegalName/DateOfBirth/
-  // Age/NationalIDOrPassport/SocialSecurityNumber/WorkPermitDate sit right
-  // after Name (grouped identity info, per the admin's own layout request),
-  // and PositionAllowance sits right after Salary (so the two pay figures
-  // are visually adjacent) -- see migrateEmployeesAddPersonalInfoColumns
-  // (Utils.gs), which performed that one-off insert. This array's order
-  // must match the live sheet's physical column order exactly, since the
-  // repair below is POSITIONAL.
-  Employees: ['EmployeeID', 'Name', 'LegalName', 'DateOfBirth', 'Age', 'NationalIDOrPassport', 'SocialSecurityNumber', 'WorkPermitDate', 'Department', 'Active', 'CreatedAt', 'SetupCodeHash', 'SetupCodeSalt', 'SetupCodeUsed', 'IsAdmin', 'Branch', 'KioskPIN', 'OTMaxMinutes', 'Salary', 'PositionAllowance', 'LastWorkingDay', 'OTEligible'],
+  Employees: ['EmployeeID', 'Name', 'Department', 'Active', 'CreatedAt', 'SetupCodeHash', 'SetupCodeSalt', 'SetupCodeUsed', 'IsAdmin', 'Branch', 'KioskPIN', 'OTMaxMinutes', 'Salary', 'LastWorkingDay', 'OTEligible'],
   // ShiftPicked included here (unlike Employees.ExtraShift, deliberately
   // excluded above) -- AttendanceLog is append-only and entirely
   // code-managed (every column here, including this one, only ever gets
