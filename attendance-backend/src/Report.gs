@@ -47,9 +47,19 @@ function getSortedReportEmployees_(logsByEmployee, onlyEmployeeId) {
  * as the Kiosk's own My Schedule stat boxes and the Dashboard, so "OT" means
  * the same thing and uses the same unit everywhere an admin or employee
  * might compare the two.
+ *
+ * Uses getEffectiveMonthTotals_ (HistoricalSummary.gs), not sumMonthTotals_
+ * directly, so a month with no real AttendanceLog/Schedule data for this
+ * employee falls back to their Historical Summary row -- see that
+ * function's own doc comment for the precedence rule. The day-by-day table
+ * below this line (writeMonthlyReportData_) is NOT similarly backfilled --
+ * Historical Summary has no day-level detail -- so a backfilled month's PDF
+ * shows real totals here but a blank table underneath, same as any other
+ * data-free month looks today. Special Allowance stays untouched by this --
+ * always from the Allowances sheet only, same as every other view.
  */
-function buildEmployeeReportSummaryLine_(emp, dayLogs, scheduledShiftsForEmployee, daysInMonth, allowances) {
-  var totals = sumMonthTotals_(dayLogs, scheduledShiftsForEmployee, daysInMonth);
+function buildEmployeeReportSummaryLine_(emp, dayLogs, scheduledShiftsForEmployee, daysInMonth, allowances, salaryForMonth, scheduledShiftsForMonth, historicalByEmployee) {
+  var totals = getEffectiveMonthTotals_(emp, dayLogs, scheduledShiftsForEmployee, daysInMonth, salaryForMonth, scheduledShiftsForMonth, historicalByEmployee);
   var otUnit = otUnitForDepartment_(emp.Department);
   var otText = otUnit === 'minutes'
     ? totals.otMinutesTotal + ' min'
@@ -436,10 +446,11 @@ function reportSortGroup_(emp, dayLogs) {
  * read" reasoning as writeMonthlyReportData_'s own precomputed params.
  * continueAllEmployeesReportBatch_ calls this once per employee in its
  * batch and would otherwise re-read the whole AttendanceLog/Schedule/
- * Allowances sheets from scratch every single time; generateEmployeeReportPdf_
- * (one person) omits them and lets this read fresh, same as always.
+ * Allowances/Salary/Historical Summary sheets from scratch every single
+ * time; generateEmployeeReportPdf_ (one person) omits them and lets this
+ * read fresh, same as always.
  */
-function buildEmployeeReportPdfBlob_(employee, year, month, precomputedLogsByEmployee, precomputedScheduledShiftsForMonth, precomputedAllowancesByEmployee) {
+function buildEmployeeReportPdfBlob_(employee, year, month, precomputedLogsByEmployee, precomputedScheduledShiftsForMonth, precomputedAllowancesByEmployee, precomputedSalaryByEmployee, precomputedHistoricalByEmployee) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   // Random suffix, not just the timestamp -- continueAllEmployeesReportBatch_
   // calls this in a tight loop where two calls can land in the same
@@ -460,6 +471,8 @@ function buildEmployeeReportPdfBlob_(employee, year, month, precomputedLogsByEmp
     var logsByEmployee = precomputedLogsByEmployee !== undefined ? precomputedLogsByEmployee : getMonthLogsByEmployee_(year, month);
     var scheduledShiftsForMonth = precomputedScheduledShiftsForMonth !== undefined ? precomputedScheduledShiftsForMonth : getScheduledShiftsForMonth_(year, month);
     var allowancesByEmployee = precomputedAllowancesByEmployee !== undefined ? precomputedAllowancesByEmployee : getAllowancesForMonth_(year, month);
+    var salaryByEmployee = precomputedSalaryByEmployee !== undefined ? precomputedSalaryByEmployee : getSalaryForMonth_(year, month);
+    var historicalByEmployee = precomputedHistoricalByEmployee !== undefined ? precomputedHistoricalByEmployee : getHistoricalSummaryForMonth_(year, month);
     var daysInMonth = new Date(year, month, 0).getDate();
     // Summary line (Late/OT/Over Break/Special Allowance) goes ABOVE the
     // bordered day table, row 2, not as a row inside it -- see
@@ -469,7 +482,10 @@ function buildEmployeeReportPdfBlob_(employee, year, month, precomputedLogsByEmp
       logsByEmployee[employee.EmployeeID] || {},
       scheduledShiftsForMonth[employee.EmployeeID],
       daysInMonth,
-      allowancesByEmployee[employee.EmployeeID] || []
+      allowancesByEmployee[employee.EmployeeID] || [],
+      salaryByEmployee[employee.EmployeeID],
+      scheduledShiftsForMonth,
+      historicalByEmployee
     );
     // setWrap -- same reasoning as the title row above.
     sheet.getRange(2, 1, 1, 10).merge().setValue(summaryLine).setFontWeight('bold').setBackground('#fff2cc').setWrap(true); // light amber -- distinct "at a glance" caption line, outside the table's own border
@@ -706,6 +722,8 @@ function runAllEmployeesReportBatch_(props, job) {
   var logsByEmployee = getMonthLogsByEmployee_(job.year, job.month);
   var scheduledShiftsForMonth = getScheduledShiftsForMonth_(job.year, job.month);
   var allowancesByEmployee = getAllowancesForMonth_(job.year, job.month);
+  var salaryByEmployee = getSalaryForMonth_(job.year, job.month);
+  var historicalByEmployee = getHistoricalSummaryForMonth_(job.year, job.month);
   // Re-derived fresh every batch rather than serialized into Properties --
   // deterministic given the same year/month, and much simpler than storing
   // the whole roster as JSON. Assumes attendance data isn't being actively
@@ -753,7 +771,7 @@ function runAllEmployeesReportBatch_(props, job) {
       // every other employee's already-successful PDF sitting in this same
       // scratch folder) the way it did in production on 2026-10-27.
       var blob = retryTransientSheetsError_(function () {
-        return buildEmployeeReportPdfBlob_(emp, job.year, job.month, logsByEmployee, scheduledShiftsForMonth, allowancesByEmployee);
+        return buildEmployeeReportPdfBlob_(emp, job.year, job.month, logsByEmployee, scheduledShiftsForMonth, allowancesByEmployee, salaryByEmployee, historicalByEmployee);
       });
       blob.setName(Utilities.formatString('%03d', index) + ' - ' + emp.Name + '.pdf');
       scratchFolder.createFile(blob);
@@ -1167,7 +1185,7 @@ function refreshLiveSummarySheet_() {
  * (no embedded time) that older "Schedule YYYY-MM" sheets from before
  * 2026-10-02 may still have written in -- dropping the legacy keys would
  * silently stop counting historical half-day leave that's already on the
- * books. Deliberately NOT keyed by isHalfDayLeaveShift_'s prefix match --
+ * books. Deliberately NOT keyed by a generic "Half Day " prefix match --
  * this needs to know WHICH full leave type each variant counts toward, not
  * just "is this a Half Day cell at all".
  */
@@ -1266,11 +1284,18 @@ function leaveDetailForEmployee_(scheduledShiftsForMonth, employeeId) {
 function leaveCountsAndDetailForYear_(year) {
   var countsByEmployee = {}; // { [employeeId]: { [LEAVE_COUNT_TYPES[i]]: count } }
   var detailByEmployee = {}; // { [employeeId]: [{ day, type, half, month, year }] }
+  // Every employee, not just Object.keys(scheduledShiftsForMonth) below --
+  // needed so a fiscal month with no real Schedule tab at all can still
+  // check each employee's Historical Summary row (HistoricalSummary.gs) for
+  // that month, same "real data wins, Historical Summary fills the rest"
+  // rule every other merge in this feature follows.
+  var allEmployees = getAllEmployees_();
   for (var i = 0; i < 12; i++) {
     var monthIndex0 = (FISCAL_YEAR_START_MONTH + i) % 12;
     var calendarYear = year + Math.floor((FISCAL_YEAR_START_MONTH + i) / 12);
     var calMonth = monthIndex0 + 1;
     var scheduledShiftsForMonth = getScheduledShiftsForMonth_(calendarYear, calMonth);
+    var historicalForMonth = getHistoricalSummaryForMonth_(calendarYear, calMonth);
     for (var employeeId in scheduledShiftsForMonth) {
       var monthCounts = countLeavesForEmployee_(scheduledShiftsForMonth, employeeId);
       if (!countsByEmployee[employeeId]) {
@@ -1287,6 +1312,21 @@ function leaveCountsAndDetailForYear_(year) {
         });
       }
     }
+
+    // Historical Summary fallback, only for employees with NO real Schedule
+    // data this fiscal month at all -- no detail entries added (Historical
+    // Summary has no day-level data), so a backfilled month contributes to
+    // the Dashboard Leave popup's total count but not its per-day list.
+    allEmployees.forEach(function (emp) {
+      if (scheduledShiftsForMonth[emp.EmployeeID]) return; // real data already counted above
+      var historical = historicalForMonth[emp.EmployeeID];
+      if (!historical) return;
+      if (!countsByEmployee[emp.EmployeeID]) {
+        countsByEmployee[emp.EmployeeID] = {};
+        LEAVE_COUNT_TYPES.forEach(function (t) { countsByEmployee[emp.EmployeeID][t] = 0; });
+      }
+      LEAVE_COUNT_TYPES.forEach(function (t) { countsByEmployee[emp.EmployeeID][t] += historical.leaveCounts[t] || 0; });
+    });
   }
   return { counts: countsByEmployee, detail: detailByEmployee };
 }
@@ -1417,11 +1457,18 @@ function writeMonthlySummaryData_(sheet, startRow, year, month) {
   // instead of each employee's (possibly stale, possibly since-changed)
   // Employees.Salary value.
   var salaryByEmployee = getSalaryForMonth_(year, month);
+  // One read of the whole Historical Summary sheet for this month, not one
+  // per employee -- getEffectiveMonthTotals_ (HistoricalSummary.gs) uses
+  // this to fall back to a backfilled record for an employee with no real
+  // data this month.
+  var historicalByEmployee = getHistoricalSummaryForMonth_(year, month);
 
   // Same rule as the Report sheet: Active, or has data this month -- PLUS a
-  // Special Allowance entry this month, so a deactivated employee given one
-  // final backdated allowance still shows up here instead of it silently
-  // existing in the Allowances sheet but never appearing on any Summary view.
+  // Special Allowance entry this month, PLUS a Historical Summary row this
+  // month, so a deactivated employee given one final backdated allowance
+  // (or who only ever has a backfilled pre-launch record) still shows up
+  // here instead of it silently existing but never appearing on any Summary
+  // view.
   var employees = getAllEmployees_().filter(function (emp) {
     // `in`, same presence check as the yearly path's allowanceTotalsByEmployee
     // (writeYearlySummaryData_/getDashboardSummaryData_ above) -- getAllowancesForMonth_
@@ -1429,7 +1476,7 @@ function writeMonthlySummaryData_(sheet, startRow, year, month) {
     // equivalent to the old `!!` here, but keeping one idiom everywhere
     // avoids relying on "this map happens to never store an empty array" to
     // stay true as a separate, undocumented invariant.
-    return isTrue_(emp.Active) || !!logsByEmployee[emp.EmployeeID] || (emp.EmployeeID in allowancesByEmployee);
+    return isTrue_(emp.Active) || !!logsByEmployee[emp.EmployeeID] || (emp.EmployeeID in allowancesByEmployee) || (emp.EmployeeID in historicalByEmployee);
   });
 
   employees = employees.slice().sort(function (a, b) {
@@ -1450,21 +1497,24 @@ function writeMonthlySummaryData_(sheet, startRow, year, month) {
 
   employees.forEach(function (emp) {
     var dayLogs = logsByEmployee[emp.EmployeeID] || {};
-    var totals = sumMonthTotals_(dayLogs, scheduledShiftsForMonth[emp.EmployeeID], daysInMonth);
+    // getEffectiveMonthTotals_ (HistoricalSummary.gs) returns this
+    // employee's real computed totals, or their Historical Summary row's
+    // totals if they have no real AttendanceLog/Schedule data this month --
+    // see its own doc comment for the full precedence rule.
+    var totals = getEffectiveMonthTotals_(emp, dayLogs, scheduledShiftsForMonth[emp.EmployeeID], daysInMonth, salaryByEmployee[emp.EmployeeID], scheduledShiftsForMonth, historicalByEmployee);
     var daysWorked = totals.daysWorked, lateCount = totals.lateCount, overCount = totals.overCount;
     var otMinutesTotal = totals.otMinutesTotal, otQuartersTotal = totals.otQuartersTotal;
+    var otPay = totals.otPay;
 
-    // computeOtPay_ and allowancesByEmployee (Allowances.gs) are two
-    // completely independent reads/calculations -- allowance totals never
-    // feed into or adjust OT pay, by design, so that column keeps meaning
-    // exactly what it always has.
-    var otPay = computeOtPay_(emp, otMinutesTotal, otQuartersTotal, salaryByEmployee[emp.EmployeeID]);
     // sumRoundedAllowances_ (Allowances.gs) owns the "round each entry,
     // then sum" rule in exactly one place -- see its own doc comment for
     // why that matters (keeps this figure, the PDF's, and the Dashboard's
     // from ever quietly disagreeing by a cent on the same employee/month).
+    // Independent of Historical Summary too -- Special Allowance always
+    // comes from the Allowances sheet only, even for a backfilled month
+    // (see getEffectiveMonthTotals_'s own doc comment).
     var specialAllowance = sumRoundedAllowances_(allowancesByEmployee[emp.EmployeeID]);
-    var leaveCounts = countLeavesForEmployee_(scheduledShiftsForMonth, emp.EmployeeID);
+    var leaveCounts = totals.leaveCounts;
     var leaveCountValues = LEAVE_COUNT_TYPES.map(function (t) { return leaveCounts[t]; });
     rows.push([emp.Name + ' (' + emp.EmployeeID + ')', emp.Department, daysWorked, lateCount, overCount, otMinutesTotal, otQuartersTotal, otPay, specialAllowance].concat(leaveCountValues));
     if (lateCount > 0) lateHighlightRows.push(startRow + rows.length - 1);
@@ -1518,15 +1568,24 @@ function writeMonthlySummaryData_(sheet, startRow, year, month) {
  */
 function writeYearlySummaryData_(sheet, startRow, year) {
   var logSheet = getSheet_('AttendanceLog');
-  var totalsByEmployee = aggregateYearSummary_(logSheet.getDataRange().getValues(), year);
+  var aggregated = aggregateYearSummary_(logSheet.getDataRange().getValues(), year);
+  var totalsByEmployee = aggregated.totals;
+  var monthsWithRealData = aggregated.monthsWithRealData;
   var leaveCountsByEmployee = countLeavesForYear_(year);
   // One Salary-sheet read per fiscal month (12 total), not per employee --
-  // see computeYearlyOtPay_'s own doc comment for why this has to be priced
-  // month-by-month rather than against one whole-year salary.
+  // see getEffectiveYearTotals_'s own doc comment (HistoricalSummary.gs)
+  // for why a Thai employee's OT pay has to be priced month-by-month rather
+  // than against one whole-year salary.
   var fiscalMonths = getFiscalMonths_(year);
   var salaryCache = {};
   fiscalMonths.forEach(function (fm) {
     salaryCache[fm.calYear + '-' + fm.calMonth] = getSalaryForMonth_(fm.calYear, fm.calMonth);
+  });
+  // One Historical Summary read per fiscal month, not per employee -- same
+  // "read once" reasoning as salaryCache just above (HistoricalSummary.gs).
+  var historicalByMonth = {};
+  fiscalMonths.forEach(function (fm) {
+    historicalByMonth[fm.calYear + '-' + fm.calMonth] = getHistoricalSummaryForMonth_(fm.calYear, fm.calMonth);
   });
   // One read of the whole Allowances sheet for every employee's yearly
   // total, not one per employee -- see aggregateSpecialAllowancesForYear_'s
@@ -1536,9 +1595,10 @@ function writeYearlySummaryData_(sheet, startRow, year) {
   var allowanceTotalsByEmployee = aggregateSpecialAllowancesForYear_(year);
 
   // Same rule as the monthly view, just "has data this YEAR" instead of
-  // this month -- PLUS a Special Allowance entry this fiscal year, same
-  // "a deactivated employee with a late allowance entry must still show up"
-  // reasoning as the monthly path (writeMonthlySummaryData_) just above.
+  // this month -- PLUS a Special Allowance entry this fiscal year, PLUS a
+  // Historical Summary row in any fiscal month, same "a deactivated
+  // employee with a late allowance entry must still show up" reasoning as
+  // the monthly path (writeMonthlySummaryData_) just above.
   // Checked with `in`, not `!!...[id]` -- aggregateSpecialAllowancesForYear_
   // only ever sets a key when at least one real entry matched, but that
   // entry's rounded total can legitimately be exactly 0 (e.g. two entries
@@ -1546,7 +1606,10 @@ function writeYearlySummaryData_(sheet, startRow, year) {
   // which would wrongly drop that employee from this filter despite real
   // rows existing for them.
   var employees = getAllEmployees_().filter(function (emp) {
-    return isTrue_(emp.Active) || !!totalsByEmployee[emp.EmployeeID] || (emp.EmployeeID in allowanceTotalsByEmployee);
+    var hasHistorical = fiscalMonths.some(function (fm) {
+      return !!(historicalByMonth[fm.calYear + '-' + fm.calMonth] || {})[emp.EmployeeID];
+    });
+    return isTrue_(emp.Active) || !!totalsByEmployee[emp.EmployeeID] || (emp.EmployeeID in allowanceTotalsByEmployee) || hasHistorical;
   });
 
   employees = employees.slice().sort(function (a, b) {
@@ -1569,8 +1632,12 @@ function writeYearlySummaryData_(sheet, startRow, year) {
   LEAVE_COUNT_TYPES.forEach(function (t) { zeroLeaveCounts[t] = 0; });
 
   employees.forEach(function (emp) {
-    var totals = totalsByEmployee[emp.EmployeeID] || { daysWorked: 0, lateCount: 0, overCount: 0, otMinutesTotal: 0, otQuartersTotal: 0, otByMonth: {} };
-    var otPay = computeYearlyOtPay_(emp, fiscalMonths, totals.otByMonth, salaryCache);
+    // getEffectiveYearTotals_ (HistoricalSummary.gs) sums real numbers for
+    // any fiscal month this employee has real data in, that employee's
+    // Historical Summary row for any month they don't -- see its own doc
+    // comment for the full precedence rule.
+    var totals = getEffectiveYearTotals_(emp, fiscalMonths, totalsByEmployee[emp.EmployeeID], monthsWithRealData, salaryCache, historicalByMonth);
+    var otPay = totals.otPay;
     var specialAllowance = allowanceTotalsByEmployee[emp.EmployeeID] || 0;
     var leaveCounts = leaveCountsByEmployee[emp.EmployeeID] || zeroLeaveCounts;
     var leaveCountValues = LEAVE_COUNT_TYPES.map(function (t) { return leaveCounts[t]; });
@@ -1618,17 +1685,18 @@ function reportSortGroupFromTotal_(emp, totals) {
 }
 
 /**
- * Fiscal-year version of aggregateMonthLogs_ -- returns pre-summed totals
- * per employee ({ daysWorked, lateCount, otMinutesTotal, otQuartersTotal,
- * otByMonth }) instead of a day-keyed structure, since that's all
- * writeYearlySummaryData_/getDashboardSummaryData_'s "All" path need and it
- * lets one pass over AttendanceLog cover the whole fiscal year. "Year" here
- * means the fiscal year starting in it: `year` = 2026 covers April 1, 2026
- * through March 31, 2027 (not the calendar year), to match the school's
- * actual year boundary. Same IN/OUT reconciliation rules as
- * aggregateMonthLogs_ (earliest IN of the day wins for the late flag,
- * latest OUT wins for OT), just keyed by exact date instead of
- * day-of-month so different months don't collide on day number.
+ * Fiscal-year version of aggregateMonthLogs_ -- returns `{ totals:
+ * { [employeeId]: { daysWorked, lateCount, otMinutesTotal, otQuartersTotal,
+ * otByMonth, monthlyTotals } }, monthsWithRealData }` instead of a
+ * day-keyed structure, since that's all writeYearlySummaryData_/
+ * getDashboardSummaryData_'s "All" path need and it lets one pass over
+ * AttendanceLog cover the whole fiscal year. "Year" here means the fiscal
+ * year starting in it: `year` = 2026 covers April 1, 2026 through March 31,
+ * 2027 (not the calendar year), to match the school's actual year boundary.
+ * Same IN/OUT reconciliation rules as aggregateMonthLogs_ (earliest IN of
+ * the day wins for the late flag, latest OUT wins for OT), just keyed by
+ * exact date instead of day-of-month so different months don't collide on
+ * day number.
  *
  * otByMonth: { '<calYear>-<calMonth>': { otMinutes, otQuarters } }, one
  * entry per fiscal month that had any OT -- exposed alongside the plain
@@ -1640,6 +1708,17 @@ function reportSortGroupFromTotal_(emp, totals) {
  * Department/Salary-agnostic itself (same as always) -- it only exposes
  * the raw per-month numbers; computeOtPay_ remains the one place the
  * actual Japanese/Thai pay formula lives.
+ *
+ * monthlyTotals: { '<calYear>-<calMonth>': { daysWorked, lateCount,
+ * overCount } }, same per-month breakdown idea as otByMonth, just for the
+ * other three flat totals. monthsWithRealData: top-level map (not nested
+ * per employee, since every employee is checked against the same key
+ * format) of '<employeeId>|<calYear>-<calMonth>' -> true for every
+ * employee/month that has real AttendanceLog activity OR real Schedule
+ * data this fiscal year. Both exist purely to let getEffectiveYearTotals_
+ * (HistoricalSummary.gs) decide, per employee per fiscal month, whether to
+ * use this function's real numbers or fall back to that employee's
+ * Historical Summary row -- see that function's own doc comment.
  */
 var FISCAL_YEAR_START_MONTH = 3; // April -- 0-indexed like Date.getMonth()
 
@@ -1691,6 +1770,15 @@ function aggregateYearSummary_(values, year) {
   // requires a break to straddle exactly midnight on Mar 31/Apr 1, and only
   // affects the yearly/"All" rollup, not any single month's data.
   var breakEventsByEmployee = {};
+  // Marks '<employeeId>|<calYear>-<calMonth>' true whenever this employee
+  // has ANY real AttendanceLog activity that calendar month (set below) or
+  // any real Schedule entry that month (set further down, once scheduleCache
+  // is populated) -- the signal getEffectiveYearTotals_ (HistoricalSummary.gs)
+  // uses to decide, per employee per fiscal month, whether to use this
+  // function's real numbers or fall back to that employee's Historical
+  // Summary row instead. A top-level map (not nested per-employee) since
+  // it's checked by every employee against the same shared key format.
+  var monthsWithRealData = {};
   for (var i = 1; i < values.length; i++) {
     var ts = new Date(values[i][tsCol]);
     if (ts < fiscalStart || ts >= fiscalEndExclusive) continue;
@@ -1710,6 +1798,11 @@ function aggregateYearSummary_(values, year) {
     // from fiscal-month arithmetic.
     if (!byDate[key]) byDate[key] = { employeeId: employeeId, timeIn: null, timeOut: null, late: false, otMinutes: 0, otQuarters: 0, breakMinutes: 0, year: ts.getFullYear(), month0: ts.getMonth(), day: ts.getDate() };
     var entry = byDate[key];
+    // Marked for every row type (IN/OUT/break), not just the ones that
+    // affect daysWorked -- "this employee has SOME real activity logged
+    // this month" is the question, independent of whether that activity
+    // happens to net to a day worked (e.g. a lone forgotten-checkout row).
+    monthsWithRealData[employeeId + '|' + entry.year + '-' + (entry.month0 + 1)] = true;
 
     if (type === 'IN') {
       if (!entry.timeIn || ts < entry.timeIn) {
@@ -1775,10 +1868,30 @@ function aggregateYearSummary_(values, year) {
     scheduleCache[scheduleCacheKey_(fm.calYear, fm.calMonth)] = getScheduledShiftsForMonth_(fm.calYear, fm.calMonth);
   });
 
+  // Every employee, fetched once here and reused by both this presence pass
+  // and the Event-day second pass further down.
+  var employees = getAllEmployees_();
+
+  // Marks monthsWithRealData from real SCHEDULE presence too, not just
+  // AttendanceLog activity (set in the main loop above) -- a month whose
+  // only real data is e.g. a Leave day nobody punched would otherwise look
+  // exactly like a month with nothing on file at all, wrongly falling back
+  // to that employee's Historical Summary row even though real Schedule
+  // data for that employee/month genuinely exists.
+  fiscalMonths.forEach(function (fm) {
+    var key = scheduleCacheKey_(fm.calYear, fm.calMonth);
+    var shiftsForMonth = scheduleCache[key];
+    employees.forEach(function (emp) {
+      if (shiftsForMonth[emp.EmployeeID] && Object.keys(shiftsForMonth[emp.EmployeeID]).length > 0) {
+        monthsWithRealData[emp.EmployeeID + '|' + key] = true;
+      }
+    });
+  });
+
   var result = {};
   for (var key in byDate) {
     var entry = byDate[key];
-    if (!result[entry.employeeId]) result[entry.employeeId] = { daysWorked: 0, lateCount: 0, overCount: 0, otMinutesTotal: 0, otQuartersTotal: 0, otByMonth: {} };
+    if (!result[entry.employeeId]) result[entry.employeeId] = { daysWorked: 0, lateCount: 0, overCount: 0, otMinutesTotal: 0, otQuartersTotal: 0, otByMonth: {}, monthlyTotals: {} };
     var totals = result[entry.employeeId];
 
     // Every other Late/OT view (per-month Report, per-month Summary,
@@ -1796,17 +1909,27 @@ function aggregateYearSummary_(values, year) {
     var byDayForEntry = scheduleCache[scheduleCacheKey_(entry.year, entry.month0 + 1)];
     var scheduledShiftForEntry = (byDayForEntry && byDayForEntry[entry.employeeId] && byDayForEntry[entry.employeeId][entry.day]) || '';
 
+    // Per-fiscal-month daysWorked/lateCount/overCount, parallel to
+    // otByMonth below -- getEffectiveYearTotals_ (HistoricalSummary.gs)
+    // needs these broken out by month (not just summed into the flat
+    // totals below) so it can swap in a Historical Summary row for just the
+    // months this employee has no real data in, month by month, rather
+    // than an all-or-nothing choice for the whole year.
+    var monthKey = entry.year + '-' + (entry.month0 + 1);
+    if (!totals.monthlyTotals[monthKey]) totals.monthlyTotals[monthKey] = { daysWorked: 0, lateCount: 0, overCount: 0 };
+    var monthTotals = totals.monthlyTotals[monthKey];
+
     // Same Leave-wins-over-a-real-punch rule as sumMonthTotals_'s single-
     // month equivalent (see its own comment) -- a day marked as a full-day
     // Leave type never counts as a Day Worked here either, even with a real
     // timeIn, so the "All" (fiscal year) rollup can't disagree with any
     // single month's own Summary about the same employee/day.
-    if (entry.timeIn && FULL_DAY_OFF_SHIFTS.indexOf(scheduledShiftForEntry) === -1) totals.daysWorked++;
-    if (entry.breakMinutes > DAILY_BREAK_BUDGET_MINUTES) totals.overCount++;
+    if (entry.timeIn && FULL_DAY_OFF_SHIFTS.indexOf(scheduledShiftForEntry) === -1) { totals.daysWorked++; monthTotals.daysWorked++; }
+    if (entry.breakMinutes > DAILY_BREAK_BUDGET_MINUTES) { totals.overCount++; monthTotals.overCount++; }
 
     var isNoLateOtDay = isNoLateNoOtShift_(scheduledShiftForEntry);
 
-    if (entry.late && !isNoLateOtDay) totals.lateCount++;
+    if (entry.late && !isNoLateOtDay) { totals.lateCount++; monthTotals.lateCount++; }
     if (!isNoLateOtDay) {
       totals.otMinutesTotal += entry.otMinutes;
       totals.otQuartersTotal += entry.otQuarters;
@@ -1815,7 +1938,6 @@ function aggregateYearSummary_(values, year) {
       // function's doc block) for why: OT PAY needs to price each month's
       // quarters at that month's own salary, not the whole year's quarters
       // at one salary.
-      var monthKey = entry.year + '-' + (entry.month0 + 1);
       if (!totals.otByMonth[monthKey]) totals.otByMonth[monthKey] = { otMinutes: 0, otQuarters: 0 };
       totals.otByMonth[monthKey].otMinutes += entry.otMinutes;
       totals.otByMonth[monthKey].otQuarters += entry.otQuarters;
@@ -1833,11 +1955,11 @@ function aggregateYearSummary_(values, year) {
   // punch already has entry.timeIn forced to the shift's own start time
   // (see eventShiftOverrideTimestamp_) and was already counted by the first
   // pass, so this never double-counts that case.
-  var employees = getAllEmployees_();
   fiscalMonths.forEach(function (fm) {
     var calYear = fm.calYear, calMonth = fm.calMonth;
     var daysInThisMonth = new Date(calYear, calMonth, 0).getDate();
     var shiftsForMonth = scheduleCache[scheduleCacheKey_(calYear, calMonth)];
+    var monthKey = scheduleCacheKey_(calYear, calMonth);
 
     employees.forEach(function (emp) {
       var byDay = shiftsForMonth[emp.EmployeeID];
@@ -1846,13 +1968,15 @@ function aggregateYearSummary_(values, year) {
         if (!isEventShift_(byDay[d])) continue;
         var dateKey = emp.EmployeeID + '|' + (calMonth - 1) + '|' + d; // 0-indexed month, matching the `key` format above
         if (byDate[dateKey] && byDate[dateKey].timeIn) continue;
-        if (!result[emp.EmployeeID]) result[emp.EmployeeID] = { daysWorked: 0, lateCount: 0, overCount: 0, otMinutesTotal: 0, otQuartersTotal: 0, otByMonth: {} };
+        if (!result[emp.EmployeeID]) result[emp.EmployeeID] = { daysWorked: 0, lateCount: 0, overCount: 0, otMinutesTotal: 0, otQuartersTotal: 0, otByMonth: {}, monthlyTotals: {} };
         result[emp.EmployeeID].daysWorked++;
+        if (!result[emp.EmployeeID].monthlyTotals[monthKey]) result[emp.EmployeeID].monthlyTotals[monthKey] = { daysWorked: 0, lateCount: 0, overCount: 0 };
+        result[emp.EmployeeID].monthlyTotals[monthKey].daysWorked++;
       }
     });
   });
 
-  return result;
+  return { totals: result, monthsWithRealData: monthsWithRealData };
 }
 
 /**
@@ -1878,63 +2002,6 @@ function computeOtPay_(emp, otMinutesTotal, otQuartersTotal, salaryForMonth) {
   var salary = Number(salaryForMonth);
   if (!(salary > 0)) return ''; // no salary on file for this month -> not eligible for OT pay
   return round2_(otQuartersTotal * (salary / THAI_OT_QUARTER_DIVISOR));
-}
-
-/**
- * Whole-fiscal-year OT pay for one employee, used by writeYearlySummaryData_
- * and getDashboardSummaryData_'s "All" path instead of pricing a whole
- * year's summed OT quarters at a single salary (wrong the moment a Thai
- * employee's salary changes partway through the fiscal year). Prices each
- * fiscal month's own OT at that month's own salary (computeOtPay_ again,
- * just called once per month instead of once for the whole year) and sums
- * the results.
- *
- * otByMonth: aggregateYearSummary_'s per-employee `otByMonth` map (its own
- * doc comment explains the key format). salaryCache: { '<calYear>-<calMonth>':
- * { [employeeId]: salaryNumber } }, one entry per fiscalMonths entry --
- * build it once per call (not per employee) via getSalaryForMonth_, same
- * "read each month's sheet exactly once" reasoning aggregateYearSummary_'s
- * own scheduleCache already follows.
- *
- * Returns '' (not 0) when the employee was never eligible in ANY fiscal
- * month -- e.g. a Thai employee who never had a salary on file all year --
- * matching computeOtPay_'s own "blank means not eligible" convention
- * instead of showing a misleading 0. A partial year (eligible for some
- * months, not others -- salary only entered starting partway through)
- * sums just the eligible months' pay, which is the correct total.
- *
- * Japanese OT pay is handled as a special case, bypassing the per-month
- * loop entirely: it never depends on Salary (flat per-minute rate, same
- * every month), so splitting it into 12 pieces and summing them would just
- * mean 12 independent round2_ calls instead of one -- rounding error can
- * accumulate across months and drift the final total by a fraction of a
- * baht from what a single whole-year computeOtPay_ call would have given
- * (caught in review). Only Thai OT pay actually needs month-by-month
- * pricing, since only Thai depends on a salary that can change mid-year.
- */
-function computeYearlyOtPay_(emp, fiscalMonths, otByMonth, salaryCache) {
-  if (emp.Department === 'Japanese') {
-    var yearlyOtMinutes = 0;
-    fiscalMonths.forEach(function (fm) {
-      var monthOt = otByMonth[fm.calYear + '-' + fm.calMonth];
-      if (monthOt) yearlyOtMinutes += monthOt.otMinutes;
-    });
-    return computeOtPay_(emp, yearlyOtMinutes, 0, undefined);
-  }
-
-  var sum = 0;
-  var anyEligible = false;
-  fiscalMonths.forEach(function (fm) {
-    var key = fm.calYear + '-' + fm.calMonth;
-    var monthOt = otByMonth[key] || { otMinutes: 0, otQuarters: 0 };
-    var salaryForMonth = (salaryCache[key] || {})[emp.EmployeeID];
-    var monthPay = computeOtPay_(emp, monthOt.otMinutes, monthOt.otQuarters, salaryForMonth);
-    if (monthPay !== '') {
-      sum += monthPay;
-      anyEligible = true;
-    }
-  });
-  return anyEligible ? round2_(sum) : '';
 }
 
 function round2_(n) {
@@ -2392,12 +2459,6 @@ function applyLeaveHolidayConditionalFormat_(sheet, startRow, numRows, daysInMon
   sheet.setConditionalFormatRules(rules);
 }
 
-// Cells this far or more off the scheduled shift's start time, where some
-// other shift option matches the actual check-in better, get highlighted --
-// see highlightShiftMismatches_.
-var SHIFT_MISMATCH_MINUTES_THRESHOLD = 15;
-var SHIFT_MISMATCH_COLOR = '#f9a825';
-
 /** First "H:MM" found in a shift/event string, as minutes since midnight. Null for blank/Leave/Holiday/Half Day Annual Leave/anything unparseable. Same "first match = start" rule as isLate_. */
 function getShiftStartMinutes_(shiftOrEvent) {
   var match = String(shiftOrEvent || '').match(/(\d{1,2}):(\d{2})/);
@@ -2405,243 +2466,10 @@ function getShiftStartMinutes_(shiftOrEvent) {
   return Number(match[1]) * 60 + Number(match[2]);
 }
 
-/** Last "H:MM" found in a shift/event string, as minutes since midnight -- the end time. Null for blank/Leave/Holiday/Half Day Annual Leave/a single-time string with no end (same cases getShiftEndTime_ itself returns null for). */
-function getShiftEndMinutes_(shiftOrEvent) {
-  var end = getShiftEndTime_(String(shiftOrEvent || ''));
-  return end ? end.hour * 60 + end.minute : null;
-}
-
-// Candidate-side predicates for findCloserShift_ below -- a candidate shift
-// only counts if it's on the correct side of the SCHEDULED value: later
-// starts for the IN check (does a later shift explain an on-time arrival),
-// earlier ends for the OUT check (does an earlier-ending shift explain an
-// on-time departure). Named instead of inlined so both call sites in
-// highlightShiftMismatches_ read as "which direction" at a glance.
-function isLaterThan_(candidateMinutes, scheduledMinutes) { return candidateMinutes > scheduledMinutes; }
-function isEarlierThan_(candidateMinutes, scheduledMinutes) { return candidateMinutes < scheduledMinutes; }
-
-/**
- * Shared by highlightShiftMismatches_'s IN and OUT checks -- scans
- * `timedShifts` for the option whose relevant time (start, via
- * getShiftStartMinutes_, for the IN check; end, via getShiftEndMinutes_,
- * for the OUT check) is closer to `actualMinutes` than `currentDistance`,
- * considering only candidates where `isCandidateBeyondScheduled(candidate,
- * scheduledMinutes)` holds (isLaterThan_ for IN, isEarlierThan_ for OUT --
- * see their own comments for why only that one direction is ever a
- * meaningful "did you mean this instead" candidate). Returns the closer
- * shift string, or null if nothing beats `currentDistance`. Extracted
- * 2026-10-01 when the OUT check was added as a near-exact mirror of the IN
- * check -- two copies of this exact scan, differing only in which getter
- * and which direction predicate they used, is exactly the kind of
- * duplication this codebase has already been burned by drifting apart
- * (e.g. the Thai OT eligibility formula's own history, Attendance.gs) --
- * a future third dimension (e.g. a break-time mismatch check) should call
- * this too, not copy the loop a third time.
- */
-function findCloserShift_(actualMinutes, scheduledMinutes, currentDistance, timedShifts, getCandidateMinutes, isCandidateBeyondScheduled) {
-  var closerShift = null;
-  var closerDistance = currentDistance;
-  timedShifts.forEach(function (s) {
-    var candidateMinutes = getCandidateMinutes(s);
-    if (candidateMinutes === null || !isCandidateBeyondScheduled(candidateMinutes, scheduledMinutes)) return;
-    var dist = Math.abs(actualMinutes - candidateMinutes);
-    if (dist < closerDistance) { closerDistance = dist; closerShift = s; }
-  });
-  return closerShift;
-}
-
 function minutesToHHMM_(totalMinutes) {
   var h = Math.floor(totalMinutes / 60);
   var m = totalMinutes % 60;
   return (h < 10 ? '0' + h : h) + ':' + (m < 10 ? '0' + m : m);
-}
-
-/**
- * Highlights Schedule cells where the actual recorded check-in OR check-out
- * is a noticeably better match for a DIFFERENT shift option than the one
- * currently entered -- usually means the real agreed shift changed but this
- * particular cell never got updated, so what looks like "Late" (or an early
- * departure) is really just a stale schedule entry. A cell is flagged when
- * EITHER side finds a better-fitting shift:
- *   - IN side: the actual check-in is more than SHIFT_MISMATCH_MINUTES_THRESHOLD
- *     minutes AFTER the scheduled shift's start, and some LATER-starting
- *     SHIFTS option's start is closer to the actual time.
- *   - OUT side: the actual check-out is more than SHIFT_MISMATCH_MINUTES_THRESHOLD
- *     minutes BEFORE the scheduled shift's end, and some EARLIER-ending
- *     SHIFTS option's end is closer to the actual time. Added 2026-10-01 --
- *     mirrors the IN side exactly, just checking the other end of the day
- *     (leaving early instead of arriving late).
- * Leave/Holiday never match anything on either side, having no real time
- * to compare. Event shifts (e.g. "Event Full Day 8:00-17:00") are skipped entirely,
- * both as a day to check and as a candidate "closer" match on either
- * side -- they're one-off/irregular by nature, not a stale entry that
- * should get flagged or "corrected" back into the normal rotation. Half
- * Day Leave (see isHalfDayLeaveShift_) is also skipped entirely, even
- * though its AM/PM variants DO have a real parseable time since
- * 2026-10-02 -- unlike a genuinely stale entry, the admin always sets Half
- * Day on a cell well AFTER the employee's own check-in already happened
- * against whatever shift they originally picked, so the real tap time
- * routinely "mismatches" it on purpose, not by staleness.
- *
- * Snapshot check, not live -- resets every day-cell background (then
- * re-applies the weekend tint) before highlighting, so a mismatch fixed
- * since the last run doesn't stay highlighted forever.
- */
-function highlightShiftMismatches_(sheet, year, month) {
-  var daysInMonth = new Date(year, month, 0).getDate();
-  // Event AND Half Day Leave shifts are excluded both as a scheduled value
-  // to check (see the loop below) and as a candidate "did you mean this
-  // instead" match here -- neither is part of the normal shift rotation a
-  // stale entry would actually get corrected to (see this function's own
-  // doc comment for why Half Day specifically needs this despite now
-  // having a real time). Shared by both the IN and OUT checks below (every
-  // real SHIFTS entry is "H:MM-H:MM", so has both a start and an end -- no
-  // separate filter needed for the OUT side).
-  var timedShifts = SHIFTS.filter(function (s) { return getShiftStartMinutes_(s) !== null && !isEventShift_(s) && !isHalfDayLeaveShift_(s); });
-
-  var values = sheet.getDataRange().getValues();
-  var headers = values[0];
-  var idCol = headers.indexOf('EmployeeID');
-  var nameCol = headers.indexOf('Name');
-  var lastRow = sheet.getLastRow();
-  var numDataRows = lastRow - 1;
-
-  if (numDataRows > 0) {
-    sheet.getRange(2, 3, numDataRows, daysInMonth).setBackground(null);
-  }
-  applyWeekendColors_(sheet, 1, lastRow, year, month, daysInMonth);
-
-  // Actual IN/OUT time (local minutes-since-midnight) per employeeId|day,
-  // read once instead of once per cell. Earliest IN wins and LATEST OUT
-  // wins on a day with more than one of either (offline-sync duplicate,
-  // etc.) -- same "earliest IN" rule getMonthLogsByEmployee_ already uses,
-  // and the same "latest OUT is the real end-of-day departure" rule
-  // handleDashboardDaily_ already uses.
-  //
-  // Known future limitation: keyed by the OUT event's OWN calendar date
-  // (ts.getDate() below), same as the IN side -- fine today since no SHIFTS
-  // entry crosses midnight, so an IN and its matching OUT always share a
-  // date. If an overnight shift (e.g. "22:00-6:00") is ever added to
-  // SHIFTS, its real OUT would land on the NEXT day's key and silently
-  // never match that day's Schedule cell -- the OUT check would just stop
-  // firing for that shift, no error. Not fixed here (no overnight shift
-  // exists to need it yet); if one's added, this needs the same kind of
-  // cross-midnight handling MAX_SHIFT_LOOKBACK_HOURS/currentShiftBreakState_
-  // (Attendance.gs) already went through for the live check-in path.
-  var logSheet = getSheet_('AttendanceLog');
-  var logValues = logSheet.getDataRange().getValues();
-  var logHeaders = logValues[0];
-  var logIdCol = logHeaders.indexOf('EmployeeID');
-  var logTsCol = logHeaders.indexOf('Timestamp');
-  var logTypeCol = logHeaders.indexOf('Type');
-  var logShiftPickedCol = logHeaders.indexOf('ShiftPicked'); // -1 on a sheet from before this column existed -- pickedKeys just stays empty, same as always
-  var actualInMinutesByKey = {};
-  var actualOutMinutesByKey = {};
-  // Days the employee picked their own shift at the Kiosk -- never flagged
-  // below on EITHER side, no matter how the actual time compares to any
-  // SHIFTS option. This heuristic exists to catch a STALE schedule entry
-  // (nobody updated it, so it drifted out of sync with reality); a picked
-  // shift is already exactly what the employee intended, by definition
-  // never stale, so "closer to a different shift" just means an ordinary
-  // early/late punch within the shift they genuinely chose -- not a wrong
-  // entry to suggest fixing. Keyed off the IN row only (ShiftPicked is only
-  // ever written there -- see recordAttendance_/recordOfflineSyncedAttendance_)
-  // and shared by the OUT check below, since both describe the same chosen
-  // shift for that employee/day either way.
-  // Set/overwritten IN THE SAME BRANCH as actualInMinutesByKey below, not
-  // independently -- on a day with more than one IN row for the same
-  // employee (offline-sync duplicate, admin backdated fix alongside a real
-  // Kiosk tap, etc.), this must track whether the SPECIFIC row that ends
-  // up as the earliest-so-far (the one actualInMinutes below is compared
-  // against) was picked, not "was ANY row for this key picked" -- those
-  // can disagree when the earliest row and the picked row aren't the same
-  // one, which would wrongly suppress a genuinely stale entry.
-  var pickedKeys = {};
-  for (var i = 1; i < logValues.length; i++) {
-    var rowType = logValues[i][logTypeCol];
-    if (rowType !== 'IN' && rowType !== 'OUT') continue;
-    var ts = new Date(logValues[i][logTsCol]);
-    if (ts.getFullYear() !== year || ts.getMonth() + 1 !== month) continue;
-    var key = String(logValues[i][logIdCol]) + '|' + ts.getDate();
-    var minutes = ts.getHours() * 60 + ts.getMinutes();
-    if (rowType === 'IN') {
-      if (!(key in actualInMinutesByKey) || minutes < actualInMinutesByKey[key]) {
-        actualInMinutesByKey[key] = minutes;
-        pickedKeys[key] = logShiftPickedCol !== -1 && isTrue_(logValues[i][logShiftPickedCol]);
-      }
-    } else if (!(key in actualOutMinutesByKey) || minutes > actualOutMinutesByKey[key]) {
-      actualOutMinutesByKey[key] = minutes;
-    }
-  }
-
-  // See resolveScheduleDayColumns_'s own doc comment (Attendance.gs) for why
-  // this isn't headers.indexOf(d) -- a manually-retyped header cell would
-  // silently fail that exact-type match and skip every check for that day.
-  var dayCols = resolveScheduleDayColumns_(headers);
-  var flaggedA1 = [];
-  var lines = [];
-  for (var r = 1; r < values.length; r++) {
-    var employeeId = String(values[r][idCol]);
-    for (var d = 1; d <= daysInMonth; d++) {
-      var dayCol = dayCols.hasOwnProperty(d) ? dayCols[d] : -1;
-      if (dayCol === -1) continue;
-      var scheduledShift = String(values[r][dayCol] || '').trim();
-      if (isNoLateNoOtShift_(scheduledShift)) continue; // Event or Special -- one-off/irregular by nature, not a normal recurring shift to flag as "wrong"
-      if (isHalfDayLeaveShift_(scheduledShift)) continue; // admin always sets this well after the real check-in happened -- see this function's own doc comment
-      var key = employeeId + '|' + d;
-      if (pickedKeys[key]) continue; // employee's own Kiosk pick -- see pickedKeys above, shared by both checks below
-      var flaggedThisCell = false;
-
-      var scheduledStart = getShiftStartMinutes_(scheduledShift);
-      if (scheduledStart !== null && key in actualInMinutesByKey) {
-        var actualInMinutes = actualInMinutesByKey[key];
-        // Arriving early never causes a false Late flag (isLate_ only fires
-        // when actual > scheduled start), so it's never worth flagging here
-        // -- only look at check-ins AFTER the scheduled start, which is
-        // exactly what a stale (too-early) schedule entry would cause.
-        var inDistance = actualInMinutes - scheduledStart;
-        if (inDistance > SHIFT_MISMATCH_MINUTES_THRESHOLD) {
-          var closerStartShift = findCloserShift_(actualInMinutes, scheduledStart, inDistance, timedShifts, getShiftStartMinutes_, isLaterThan_);
-          if (closerStartShift) {
-            flaggedThisCell = true;
-            lines.push(
-              values[r][nameCol] + ', day ' + d + ': scheduled "' + scheduledShift + '" but checked in ' +
-              minutesToHHMM_(actualInMinutes) + ' -- closer to "' + closerStartShift + '"'
-            );
-          }
-        }
-      }
-
-      var scheduledEnd = getShiftEndMinutes_(scheduledShift);
-      if (scheduledEnd !== null && key in actualOutMinutesByKey) {
-        var actualOutMinutes = actualOutMinutesByKey[key];
-        // Mirror of the IN check above: leaving LATE never causes a false
-        // "stale schedule" read here (a genuinely later departure just
-        // means real OT, a separate concern already handled elsewhere) --
-        // only look at check-outs BEFORE the scheduled end, which is
-        // exactly what a stale (too-late) schedule entry would cause.
-        var outDistance = scheduledEnd - actualOutMinutes;
-        if (outDistance > SHIFT_MISMATCH_MINUTES_THRESHOLD) {
-          var closerEndShift = findCloserShift_(actualOutMinutes, scheduledEnd, outDistance, timedShifts, getShiftEndMinutes_, isEarlierThan_);
-          if (closerEndShift) {
-            flaggedThisCell = true;
-            lines.push(
-              values[r][nameCol] + ', day ' + d + ': scheduled "' + scheduledShift + '" but checked out ' +
-              minutesToHHMM_(actualOutMinutes) + ' -- closer to "' + closerEndShift + '"'
-            );
-          }
-        }
-      }
-
-      if (flaggedThisCell) flaggedA1.push(sheet.getRange(r + 1, dayCol + 1).getA1Notation());
-    }
-  }
-
-  if (flaggedA1.length > 0) {
-    sheet.getRangeList(flaggedA1).setBackground(SHIFT_MISMATCH_COLOR);
-  }
-
-  return { flaggedCount: flaggedA1.length, lines: lines };
 }
 
 /**
@@ -2843,16 +2671,24 @@ function getDashboardSummaryData_(year, month) {
   // writeMonthlySummaryData_, both above) -- one read of the whole
   // Allowances sheet covers every employee, not a per-employee lookup.
   var allowancesByEmployee, allowanceEntriesByEmployee;
-  // Salary lookups for OT Pay below -- see computeOtPay_/computeYearlyOtPay_'s
-  // own doc comments (Report.gs) for why this reads the month-specific
+  // Salary lookups for OT Pay below -- see computeOtPay_'s (Report.gs) and
+  // getEffectiveYearTotals_'s (HistoricalSummary.gs) own doc comments for
+  // why this reads the month-specific
   // "Salary YYYY-MM" sheet(s) instead of the Employees sheet's Salary
   // column. fiscalMonths/salaryCache are only used in the isAllMonths
   // branch (one Salary-sheet read per fiscal month, not per employee);
   // salaryByEmployee is only used in the single-month branch.
   var fiscalMonths, salaryCache, salaryByEmployee;
+  // Both branches: one Historical Summary read per relevant calendar month,
+  // not per employee -- getEffectiveMonthTotals_/getEffectiveYearTotals_
+  // (HistoricalSummary.gs) use this to fall back to a backfilled record for
+  // an employee with no real data that month.
+  var historicalByEmployee, historicalByMonth, monthsWithRealData;
   if (isAllMonths) {
     var logSheet = getSheet_('AttendanceLog');
-    totalsByEmployee = aggregateYearSummary_(logSheet.getDataRange().getValues(), year);
+    var aggregated = aggregateYearSummary_(logSheet.getDataRange().getValues(), year);
+    totalsByEmployee = aggregated.totals;
+    monthsWithRealData = aggregated.monthsWithRealData;
     // Combined counts+detail pass (leaveCountsAndDetailForYear_ above) --
     // the Leave pill popup needs the detail half too, and splitting it into
     // a second call would mean reading all 12 "Schedule YYYY-MM" sheets
@@ -2870,36 +2706,48 @@ function getDashboardSummaryData_(year, month) {
     sortGroupFor = function (emp) { return reportSortGroupFromTotal_(emp, totalsByEmployee[emp.EmployeeID]); };
     fiscalMonths = getFiscalMonths_(year);
     salaryCache = {};
+    historicalByMonth = {};
     fiscalMonths.forEach(function (fm) {
       salaryCache[fm.calYear + '-' + fm.calMonth] = getSalaryForMonth_(fm.calYear, fm.calMonth);
+      historicalByMonth[fm.calYear + '-' + fm.calMonth] = getHistoricalSummaryForMonth_(fm.calYear, fm.calMonth);
     });
   } else {
     var logsByEmployee = getMonthLogsByEmployee_(year, month);
     var scheduledShiftsForMonth = getScheduledShiftsForMonth_(year, month);
     var daysInMonth = new Date(year, month, 0).getDate();
     salaryByEmployee = getSalaryForMonth_(year, month);
+    historicalByEmployee = getHistoricalSummaryForMonth_(year, month);
     totalsByEmployee = {};
-    // Every employee, not just Object.keys(logsByEmployee) -- someone whose
-    // only activity this month was an Event day nobody happened to clock
-    // (see sumMonthTotals_) would otherwise never get a totals entry at all.
-    // Only keep a real (non-all-zero) entry, though -- an inactive employee
-    // with truly nothing this month must stay excluded by the "Active OR
-    // has data" filter just below, same as before.
-    allEmployees.forEach(function (emp) {
-      var dayLogs = logsByEmployee[emp.EmployeeID] || {};
-      var totals = sumMonthTotals_(dayLogs, scheduledShiftsForMonth[emp.EmployeeID], daysInMonth);
-      if (totals.daysWorked || totals.lateCount || totals.overCount || totals.otMinutesTotal || totals.otQuartersTotal) {
-        totalsByEmployee[emp.EmployeeID] = totals;
-      }
-    });
     leaveCountsByEmployee = {};
     leaveDetailByEmployee = {};
+    // Every employee, not just Object.keys(logsByEmployee) -- someone whose
+    // only activity this month was an Event day nobody happened to clock
+    // (see sumMonthTotals_), or whose only record this month is a
+    // Historical Summary row, would otherwise never get an entry at all.
+    // Only keep a real (non-all-zero, or Historical-sourced) entry, though
+    // -- an inactive employee with truly nothing this month must stay
+    // excluded by the "Active OR has data" filter just below, same as
+    // before.
     allEmployees.forEach(function (emp) {
-      leaveCountsByEmployee[emp.EmployeeID] = countLeavesForEmployee_(scheduledShiftsForMonth, emp.EmployeeID);
+      var dayLogs = logsByEmployee[emp.EmployeeID] || {};
+      // Stored for EVERY employee (not just those with non-zero numbers) --
+      // this object now carries otPay/leaveCounts too (getEffectiveMonthTotals_,
+      // HistoricalSummary.gs), and an employee eligible for OT Pay = '' vs 0
+      // needs that distinction preserved even when every count is zero.
+      // "Does this employee have data this month" is tracked separately,
+      // just below, for the visibility filter further down.
+      totalsByEmployee[emp.EmployeeID] = getEffectiveMonthTotals_(emp, dayLogs, scheduledShiftsForMonth[emp.EmployeeID], daysInMonth, salaryByEmployee[emp.EmployeeID], scheduledShiftsForMonth, historicalByEmployee);
+      var totals = totalsByEmployee[emp.EmployeeID];
+      leaveCountsByEmployee[emp.EmployeeID] = totals.leaveCounts;
       // month/year stamped onto every entry (even though they're constant
       // here, unlike the isAllMonths branch) so the Dashboard's Leave popup
       // can format a date the same way regardless of which branch produced
       // this employee's data, with no isAllMonths branching on that side.
+      // Historical Summary has no day-level detail, so a backfilled
+      // employee's leaveDetail here stays empty even though their leave
+      // counts above are non-zero -- same "total only, no per-day list"
+      // limitation leaveCountsAndDetailForYear_'s own Historical fallback
+      // has for the yearly path.
       leaveDetailByEmployee[emp.EmployeeID] = leaveDetailForEmployee_(scheduledShiftsForMonth, emp.EmployeeID).map(function (d) {
         return { day: d.day, type: d.type, half: d.half, month: month, year: year };
       });
@@ -2929,7 +2777,19 @@ function getDashboardSummaryData_(year, month) {
     // so checking presence on the entries map itself is exactly equivalent
     // -- without needing a separate totals map just for this check.
     var hasAllowance = isAllMonths ? (emp.EmployeeID in allowanceEntriesByEmployee) : (emp.EmployeeID in allowancesByEmployee);
-    return (isTrue_(emp.Active) || !!totalsByEmployee[emp.EmployeeID] || hasAllowance) && !isDashboardExcludedEmployee_(emp);
+    // "Has data" -- totalsByEmployee now stores an entry for EVERY employee
+    // in the monthly branch (see the loop above), so presence alone no
+    // longer signals real activity there; check the actual numbers instead.
+    // The yearly branch's totalsByEmployee (aggregateYearSummary_'s raw
+    // per-employee result) is still only ever present for someone with real
+    // activity, so `!!` still works for that half -- PLUS a Historical
+    // Summary row in any fiscal month, same reasoning writeYearlySummaryData_'s
+    // identical filter already follows.
+    var t = totalsByEmployee[emp.EmployeeID];
+    var hasData = isAllMonths
+      ? (!!t || fiscalMonths.some(function (fm) { return !!(historicalByMonth[fm.calYear + '-' + fm.calMonth] || {})[emp.EmployeeID]; }))
+      : !!(t && (t.daysWorked || t.lateCount || t.overCount || t.otMinutesTotal || t.otQuartersTotal || (emp.EmployeeID in historicalByEmployee)));
+    return (isTrue_(emp.Active) || hasData || hasAllowance) && !isDashboardExcludedEmployee_(emp);
   });
 
   employees = employees.slice().sort(function (a, b) {
@@ -2940,14 +2800,20 @@ function getDashboardSummaryData_(year, month) {
 
   var zeroLeaveCounts = {};
   LEAVE_COUNT_TYPES.forEach(function (t) { zeroLeaveCounts[t] = 0; });
-  var zeroTotals = { daysWorked: 0, lateCount: 0, overCount: 0, otMinutesTotal: 0, otQuartersTotal: 0, otByMonth: {} };
 
   return employees.map(function (emp) {
-    var totals = totalsByEmployee[emp.EmployeeID] || zeroTotals;
+    // getEffectiveYearTotals_/getEffectiveMonthTotals_ (HistoricalSummary.gs)
+    // -- real numbers for a period this employee has real data in, their
+    // Historical Summary row otherwise; see those functions' own doc
+    // comments for the full precedence rule. The monthly branch's
+    // totalsByEmployee already holds this shape directly (computed once per
+    // employee in the loop above, including for an employee with nothing on
+    // file -- getEffectiveMonthTotals_ never returns undefined).
+    var totals = isAllMonths
+      ? getEffectiveYearTotals_(emp, fiscalMonths, totalsByEmployee[emp.EmployeeID], monthsWithRealData, salaryCache, historicalByMonth)
+      : totalsByEmployee[emp.EmployeeID];
     var leaveCounts = leaveCountsByEmployee[emp.EmployeeID] || zeroLeaveCounts;
-    var otPay = isAllMonths
-      ? computeYearlyOtPay_(emp, fiscalMonths, totals.otByMonth || {}, salaryCache)
-      : computeOtPay_(emp, totals.otMinutesTotal, totals.otQuartersTotal, salaryByEmployee[emp.EmployeeID]);
+    var otPay = totals.otPay;
     // One source list feeds both the total and its itemized breakdown below
     // -- so they can never read from two different maps and drift apart
     // (a prior version picked the total from a separately-summed map and

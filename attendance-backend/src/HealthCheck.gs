@@ -12,7 +12,12 @@
  */
 function menuHealthCheck_() {
   var ui = SpreadsheetApp.getUi();
-  var findings = runHealthCheck_();
+  // true: let a blocked Employees header mismatch (real data sitting under
+  // the wrong label -- see checkAndFixCriticalSheets_'s blockReason comment)
+  // ask Yes/No per column and fix it immediately on Yes, instead of only
+  // ever reporting it and leaving the admin to retype the header cell by
+  // hand. Safe only here, where an admin is actually watching this dialog.
+  var findings = runHealthCheck_(true);
 
   if (findings.length === 0) {
     ui.alert('Health Check', 'No issues found. Everything checks out.', ui.ButtonSet.OK);
@@ -41,17 +46,26 @@ function jumpToFirstFinding_(findings) {
   sheet.setActiveRangeList(sheet.getRangeList(sameSheetRanges));
 }
 
-function runHealthCheck_() {
+// confirmBlocked (optional, defaults falsy): forwarded to
+// checkAndFixCriticalSheets_ -- see that function's own doc comment. Passed
+// as true only by menuHealthCheck_; runHealthCheckAndEmail_ omits it since
+// it runs unattended (no admin to answer a Yes/No dialog).
+function runHealthCheck_(confirmBlocked) {
   var findings = [];
 
   // Run first: if a critical sheet's tab name or header row got
   // fat-fingered, every check below needs to find it by exact name to run
   // at all. Fixing (or at least detecting) that first means the rest of the
-  // scan runs against a working sheet instead of the whole thing crashing.
-  checkAndFixCriticalSheets_(findings);
+  // scan runs against a working sheet instead of the whole thing crashing --
+  // and, now that confirmBlocked can resolve an Employees header mismatch
+  // right here, means getAllEmployees_() below already sees the corrected
+  // headers too, so a confirmed fix stops the SAME run's Schedule/Attendance
+  // checks from also misreading employee names as undefined.
+  checkAndFixCriticalSheets_(findings, false, confirmBlocked);
   checkAndFixScheduleHeaders_(findings);
   checkAndFixSalaryHeaders_(findings);
   checkAndFixAllowancesHeaders_(findings);
+  checkAndFixHistoricalSummaryHeaders_(findings);
   checkDashboardPasswordCollision_(findings);
 
   var ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -97,6 +111,7 @@ function preflightHeaderCheck_() {
   checkAndFixScheduleHeaders_(findings, true);
   checkAndFixSalaryHeaders_(findings, true);
   checkAndFixAllowancesHeaders_(findings, true);
+  checkAndFixHistoricalSummaryHeaders_(findings, true);
 
   if (findings.length === 0) return true;
 
@@ -124,6 +139,7 @@ function preflightHeaderCheck_() {
   checkAndFixScheduleHeaders_(fixedFindings);
   checkAndFixSalaryHeaders_(fixedFindings);
   checkAndFixAllowancesHeaders_(fixedFindings);
+  checkAndFixHistoricalSummaryHeaders_(fixedFindings);
   return true;
 }
 
@@ -285,7 +301,14 @@ var CANONICAL_HEADERS = {
 // found and let them click OK before anything is actually changed. Every
 // existing caller (runHealthCheck_, runHealthCheckAndEmail_) omits the
 // argument and keeps today's detect-and-repair-immediately behavior.
-function checkAndFixCriticalSheets_(findings, dryRun) {
+//
+// confirmBlocked (optional, defaults falsy): when true, a column that would
+// otherwise just get reported as blocked (see the blockReason logic below)
+// instead asks the admin Yes/No, column by column, and fixes it immediately
+// on Yes. Only menuHealthCheck_ passes this -- it's the one caller with an
+// admin actually watching the screen to answer; see the confirmBlocked
+// comment inline below for why no other caller may.
+function checkAndFixCriticalSheets_(findings, dryRun, confirmBlocked) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
 
   Object.keys(CANONICAL_HEADERS).forEach(function (sheetName) {
@@ -399,14 +422,42 @@ function checkAndFixCriticalSheets_(findings, dryRun) {
       // would silently relabel a real field's header just because nothing
       // happens to be filled in under it yet.
       var looksLikeAnotherRealColumn = row[i] !== '' && canonical.indexOf(row[i]) !== -1;
-      if (hasDataBelow(i)) {
-        blocked.push({ col: i + 1, wrongHeader: row[i], shouldBe: canonical[i], reason: 'has real data underneath' });
+      var blockReason = hasDataBelow(i) ? 'has real data underneath' : (looksLikeAnotherRealColumn ? 'already labeled as another known column' : null);
+
+      if (blockReason) {
+        // confirmBlocked -- set only by menuHealthCheck_'s interactive run,
+        // never dryRun's preflightHeaderCheck_ pass and never the unattended
+        // runHealthCheckAndEmail_ trigger (which has no admin at the keyboard
+        // for SpreadsheetApp.getUi() to show a dialog to -- it would just
+        // throw) -- turns this guard's old dead end (report-only, forcing the
+        // admin to retype the header cell by hand) into a per-column Yes/No
+        // an admin who's actually looking at the sheet can approve, added
+        // 2026-11-06 after an admin asked for exactly that instead of hand-
+        // editing cells. A Yes here only overwrites the header TEXT in row 1,
+        // the same single-cell change the unguarded auto-fix path just below
+        // would have made -- it never touches, moves, or deletes any data
+        // below row 1, so confirming can't cause the data-relabeling damage
+        // this guard exists to prevent; it just lets a human stand in for the
+        // judgment call the code can't safely make alone.
+        if (confirmBlocked && !dryRun) {
+          var confirmUi = SpreadsheetApp.getUi();
+          var confirmResponse = confirmUi.alert(
+            'Health Check -- confirm header fix',
+            sheetName + ' column ' + (i + 1) + ' is labeled "' + row[i] + '" but should be "' + canonical[i] + '" (' + blockReason + ').\n\n' +
+              'Fix the header label to "' + canonical[i] + '"? This only changes the header text in row 1 -- it never moves, edits, or deletes any data below it.\n\n' +
+              'Click No if you\'re not sure this column really is "' + canonical[i] + '" data.',
+            confirmUi.ButtonSet.YES_NO
+          );
+          if (confirmResponse === confirmUi.Button.YES) {
+            row[i] = canonical[i];
+            fixed.push(canonical[i]);
+            continue;
+          }
+        }
+        blocked.push({ col: i + 1, wrongHeader: row[i], shouldBe: canonical[i], reason: blockReason });
         continue;
       }
-      if (looksLikeAnotherRealColumn) {
-        blocked.push({ col: i + 1, wrongHeader: row[i], shouldBe: canonical[i], reason: 'already labeled as another known column' });
-        continue;
-      }
+
       row[i] = canonical[i];
       fixed.push(canonical[i]);
     }
@@ -544,6 +595,44 @@ function checkAndFixAllowancesHeaders_(findings, dryRun) {
 
   ALLOWANCES_HEADERS.forEach(function (canonical, i) {
     if (row[i] !== canonical) { row[i] = canonical; fixed.push(canonical); }
+  });
+
+  if (fixed.length > 0) {
+    if (!dryRun) headerRange.setValues([row]);
+    findings.push({
+      sheetName: sheet.getName(),
+      a1: null,
+      fixable: true,
+      message: sheet.getName() + ' header row ' + (dryRun ? 'needs repair' : 'auto-repaired') + ': ' + fixed.join(', ') + (dryRun ? ' missing.' : ' restored.')
+    });
+  }
+}
+
+/**
+ * Same idea as checkAndFixAllowancesHeaders_ just above, for the "Historical
+ * Summary" tab (HistoricalSummary.gs) -- reuses getHistoricalSummaryHeaders_
+ * rather than a second, independent copy of the column list, so the two can
+ * never drift apart. Every reader of that sheet (an admin reading it
+ * directly -- it has no code-side reader, by design, see its own top-of-file
+ * comment) finds columns by name/position from that same header row, so a
+ * typo'd/overwritten header cell here would otherwise silently mislabel
+ * every backfilled month's numbers with nothing pointing at the cause --
+ * the exact failure class the Employees!A1 incident already demonstrated.
+ *
+ * dryRun: see checkAndFixCriticalSheets_.
+ */
+function checkAndFixHistoricalSummaryHeaders_(findings, dryRun) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName(HISTORICAL_SUMMARY_SHEET_NAME);
+  var canonical = getHistoricalSummaryHeaders_();
+  if (!sheet || sheet.getLastColumn() < canonical.length) return; // not created yet (no month ever seeded) -- nothing to check
+
+  var headerRange = sheet.getRange(1, 1, 1, canonical.length);
+  var row = headerRange.getValues()[0];
+  var fixed = [];
+
+  canonical.forEach(function (c, i) {
+    if (row[i] !== c) { row[i] = c; fixed.push(c); }
   });
 
   if (fixed.length > 0) {

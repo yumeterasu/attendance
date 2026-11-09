@@ -17,9 +17,14 @@ function onOpen() {
     .addItem('Add Backdated Check-in/Check-out', 'guardedMenuAddBackdatedAttendance_')
     .addItem('Bulk Mark Attendance for a Day', 'guardedMenuBulkMarkAttendance_')
     .addItem('Allowancer', 'guardedMenuAddSpecialAllowance_')
+    .addItem('Add Historical Summary Month', 'guardedMenuAddHistoricalSummaryRows_')
     .addItem('Create / Update Schedule + Salary Sheet', 'guardedMenuCreateScheduleAndSalarySheets_')
-    .addItem('Highlight Shift Mismatches', 'guardedMenuHighlightShiftMismatches_')
-    .addItem('Recompute Late/OT for One Month', 'guardedMenuRecomputeLateOtOneMonth_')
+    // Starred -- easy to overlook among the other menu items, but editing or
+    // rebuilding a month's Schedule sheet does NOT auto-recompute Late/OT
+    // (see menuRecomputeLateOtOneMonth_'s own doc comment); this is the one
+    // step an admin has to remember to re-run by hand afterward. Cosmetic
+    // only, no behavior change -- admin request, 2026-11-06.
+    .addItem('⭐ Recompute Late/OT for One Month', 'guardedMenuRecomputeLateOtOneMonth_')
     .addItem('Print Employee Report (Choose Person/Month/Year)', 'guardedMenuPrintEmployeeReport_')
     .addItem('Print Employee Report - All Employees', 'guardedMenuPrintAllEmployeeReports_')
     .addSeparator()
@@ -44,8 +49,8 @@ function guardedMenuDeactivateEmployee_() { if (preflightHeaderCheck_()) menuDea
 function guardedMenuAddBackdatedAttendance_() { if (preflightHeaderCheck_()) menuAddBackdatedAttendance_(); }
 function guardedMenuBulkMarkAttendance_() { if (preflightHeaderCheck_()) menuBulkMarkAttendance_(); }
 function guardedMenuAddSpecialAllowance_() { if (preflightHeaderCheck_()) menuAddSpecialAllowance_(); }
+function guardedMenuAddHistoricalSummaryRows_() { if (preflightHeaderCheck_()) menuAddHistoricalSummaryRows_(); }
 function guardedMenuCreateScheduleAndSalarySheets_() { if (preflightHeaderCheck_()) menuCreateScheduleAndSalarySheets_(); }
-function guardedMenuHighlightShiftMismatches_() { if (preflightHeaderCheck_()) menuHighlightShiftMismatches_(); }
 function guardedMenuRecomputeLateOtOneMonth_() { if (preflightHeaderCheck_()) menuRecomputeLateOtOneMonth_(); }
 function guardedMenuPrintEmployeeReport_() { if (preflightHeaderCheck_()) menuPrintEmployeeReport_(); }
 function guardedMenuPrintAllEmployeeReports_() { if (preflightHeaderCheck_()) menuPrintAllEmployeeReports_(); }
@@ -344,6 +349,20 @@ function menuAddNewEmployee_() {
   // uses.
   var newRow = sheet.getLastRow();
   sheet.getRange(newRow, pinCol + 1).setNumberFormat('@').setValue(newPin);
+
+  // Age (see migrateEmployeesAddPersonalInfoColumns, Utils.gs) is a live
+  // formula, not something this prompt flow asks for -- set it on every new
+  // hire immediately so it's already working the moment someone later types
+  // in a Date of Birth, instead of staying a permanently-blank cell until an
+  // admin remembers to add the formula by hand. Guarded by indexOf so this
+  // flow still works unmodified on a sheet the migration hasn't reached yet.
+  var ageCol = headers.indexOf('Age');
+  var dobCol = headers.indexOf('DateOfBirth');
+  if (ageCol !== -1 && dobCol !== -1) {
+    var dobA1 = sheet.getRange(newRow, dobCol + 1).getA1Notation();
+    sheet.getRange(newRow, ageCol + 1).setFormula('=IF(' + dobA1 + '="","",DATEDIF(' + dobA1 + ',TODAY(),"Y"))');
+  }
+
   invalidateEmployeesCache_();
 
   ui.alert(
@@ -502,12 +521,39 @@ function menuCreateScheduleAndSalarySheets_() {
   var monthText = monthResp.getResponseText().trim();
 
   if (monthText === '' || monthText.toLowerCase() === 'all') {
+    var fiscalMonths = getFiscalMonths_(year);
     var sheetNames = [];
-    getFiscalMonths_(year).forEach(function (fm) {
-      sheetNames.push(buildScheduleSheet_(fm.calYear, fm.calMonth));
-      sheetNames.push(buildSalarySheet_(fm.calYear, fm.calMonth));
+    var failedMonths = [];
+    // Each month's pair of builder calls gets its OWN try/catch -- a single
+    // month exhausting retryTransientSheetsError_'s retries must not abort
+    // every LATER fiscal month the way one unguarded exception used to
+    // (2026-11-05: a mid-loop "Service Spreadsheets timed out" left the
+    // rest of the fiscal year never even attempted). Both builders are
+    // safe to re-run from scratch for a given month -- see their own doc
+    // comments -- so a failed month here just needs the admin to run this
+    // same command again for that one month (or "All" again) later.
+    fiscalMonths.forEach(function (fm) {
+      var monthLabel = fm.calYear + '-' + (fm.calMonth < 10 ? '0' + fm.calMonth : fm.calMonth);
+      try {
+        sheetNames.push(retryTransientSheetsError_(function () { return buildScheduleSheet_(fm.calYear, fm.calMonth); }));
+        sheetNames.push(retryTransientSheetsError_(function () { return buildSalarySheet_(fm.calYear, fm.calMonth); }));
+      } catch (e) {
+        failedMonths.push(monthLabel + ' -- ' + ((e && e.message) || e));
+      }
     });
-    ui.alert('Done', 'Fiscal year ' + year + ' ready: ' + sheetNames.join(', ') + '. Fill in each day\'s shift from the dropdown; each Salary row is seeded from the previous month (or the Employees sheet, for the current calendar month only) -- only edit a cell when something actually changed.', ui.ButtonSet.OK);
+
+    if (failedMonths.length === 0) {
+      ui.alert('Done', 'Fiscal year ' + year + ' ready: ' + sheetNames.join(', ') + '. Fill in each day\'s shift from the dropdown; each Salary row is seeded from the previous month (or the Employees sheet, for the current calendar month only) -- only edit a cell when something actually changed.', ui.ButtonSet.OK);
+    } else {
+      var okCount = fiscalMonths.length - failedMonths.length;
+      ui.alert(
+        'Done, with some months skipped',
+        'Fiscal year ' + year + ': ' + okCount + ' of ' + fiscalMonths.length + ' month(s) built/updated successfully (' + sheetNames.join(', ') + ').\n\n' +
+          'These month(s) hit an error even after retrying and were skipped:\n' + failedMonths.join('\n') + '\n\n' +
+          'Both builders are safe to re-run -- just run "Create / Update Schedule + Salary Sheet" again for the affected month (or "All" again) once ready; it will only top up what\'s missing, never duplicate what already built.',
+        ui.ButtonSet.OK
+      );
+    }
     return;
   }
 
@@ -517,58 +563,9 @@ function menuCreateScheduleAndSalarySheets_() {
     return;
   }
 
-  var scheduleSheetName = buildScheduleSheet_(year, month);
-  var salarySheetName = buildSalarySheet_(year, month);
+  var scheduleSheetName = retryTransientSheetsError_(function () { return buildScheduleSheet_(year, month); });
+  var salarySheetName = retryTransientSheetsError_(function () { return buildSalarySheet_(year, month); });
   ui.alert('Done', '"' + scheduleSheetName + '" and "' + salarySheetName + '" are ready. Fill in each day\'s shift from the dropdown; each Salary row is seeded from last month (or the Employees sheet, if this is the current month) -- only edit a cell when something actually changed.', ui.ButtonSet.OK);
-}
-
-/**
- * Highlights Schedule cells where the actual check-in OR check-out looks
- * like it belongs to a different shift than what's entered -- see
- * highlightShiftMismatches_ in Report.gs for the matching rule (checks both
- * sides: arriving late past the scheduled start, or leaving early before
- * the scheduled end). Run this first to see what needs fixing, fix those
- * cells, then run "Recompute Late/OT for One Month" for that month to
- * update the Late/OT numbers to match.
- */
-function menuHighlightShiftMismatches_() {
-  var ui = SpreadsheetApp.getUi();
-  var title = 'Highlight Shift Mismatches';
-  var now = new Date();
-
-  var yearResp = ui.prompt(title, 'Year (e.g. ' + now.getFullYear() + '):', ui.ButtonSet.OK_CANCEL);
-  if (yearResp.getSelectedButton() !== ui.Button.OK) return;
-  var year = Number(yearResp.getResponseText().trim());
-
-  var monthResp = ui.prompt(title, 'Month (1-12):', ui.ButtonSet.OK_CANCEL);
-  if (monthResp.getSelectedButton() !== ui.Button.OK) return;
-  var month = Number(monthResp.getResponseText().trim());
-
-  if (!year || !month || month < 1 || month > 12) {
-    ui.alert('Enter a valid year and a month between 1 and 12.');
-    return;
-  }
-
-  var sheetName = 'Schedule ' + year + '-' + (month < 10 ? '0' + month : month);
-  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
-  if (!sheet) {
-    ui.alert('No "' + sheetName + '" sheet found.');
-    return;
-  }
-
-  var result = highlightShiftMismatches_(sheet, year, month);
-
-  ui.alert(
-    'Done',
-    result.flaggedCount === 0
-      ? 'No mismatches found -- every scheduled shift is within ' + SHIFT_MISMATCH_MINUTES_THRESHOLD + ' minutes of the actual check-in/check-out (or has no closer match among the other shift options).'
-      // flaggedCount counts CELLS, not lines -- a cell can produce two lines
-      // below (a check-in mismatch AND a check-out mismatch the same day),
-      // so the two numbers deliberately don't have to match; worded loosely
-      // ("the following") rather than "N cell(s):" to not imply they would.
-      : 'Highlighted ' + result.flaggedCount + ' cell(s) in ' + sheetName + ' -- the following check-ins/check-outs look closer to a different shift:\n\n' + result.lines.join('\n'),
-    ui.ButtonSet.OK
-  );
 }
 
 /**
@@ -1190,6 +1187,56 @@ function menuAddSpecialAllowance_() {
   if (failures.length > 0) {
     summary += '\n\nFailed (' + failures.length + ') -- these were NOT added, try again for just these:\n' + failures.join('\n');
   }
+  ui.alert(title, summary, ui.ButtonSet.OK);
+}
+
+/**
+ * Seeds one blank row per Active employee into the "Historical Summary"
+ * sheet (HistoricalSummary.gs) for an admin-chosen Year/Month -- the record
+ * for months BEFORE this system went live and started tracking real
+ * AttendanceLog/Schedule/Salary data, typed in by hand from whatever old
+ * record the admin already has instead of computed from logs. See
+ * HistoricalSummary.gs's own top-of-file comment for the full reasoning,
+ * but the short version: once filled in, these numbers DO appear on the
+ * Dashboard/Summary/"All"/Print Report -- but only for an employee/month
+ * with no real AttendanceLog/Schedule data at all; real data always wins.
+ *
+ * This menu item only SEEDS the rows (EmployeeID/Name/Department filled in,
+ * every number blank) -- the admin still has to open the sheet afterward
+ * and type the actual Days Worked/Late/OT/Leave numbers in by hand, same as
+ * correcting any other sheet in this project directly. Safe to run again
+ * for a month already started (e.g. after adding a new employee) --
+ * seedHistoricalSummaryRows_ skips anyone who already has a row for that
+ * exact Year/Month rather than duplicating it.
+ *
+ * Reuses promptForAllowanceYearMonth_ (above) for the Year/Month prompt --
+ * despite its name, it's already generic (just takes `ui`/`title`), so
+ * there's no reason for this to duplicate the same two prompts and the same
+ * validation rules.
+ */
+function menuAddHistoricalSummaryRows_() {
+  var ui = SpreadsheetApp.getUi();
+  var title = 'Add Historical Summary Month'; // matches the menu label (onOpen above) -- every dialog in this flow shares this one title string
+
+  var yearMonth = promptForAllowanceYearMonth_(ui, title);
+  if (!yearMonth) return;
+  var year = yearMonth.year, month = yearMonth.month;
+
+  var result = seedHistoricalSummaryRows_(year, month);
+
+  var summary = 'Historical Summary for ' + month + '/' + year + ':\n' +
+    'Added ' + result.added.length + ' new row(s)' + (result.added.length > 0 ? ' (' + result.added.join(', ') + ')' : '') + '.';
+  if (result.skipped.length > 0) {
+    summary += '\nSkipped ' + result.skipped.length + ' who already had a row for this month.';
+  }
+  // Explicit about Special Allowance/OT(min)/OT(Quarter) being
+  // reference-only -- this is exactly the kind of silent mismatch that
+  // caused real confusion the first time this feature was tested (an admin
+  // typed a number expecting it to show up and it didn't, for a different
+  // reason -- see getEffectiveMonthTotals_'s own doc comment,
+  // HistoricalSummary.gs). Worth repeating here every time, not just in a
+  // code comment nobody but a developer will ever read.
+  summary += '\n\nOpen the "Historical Summary" sheet and type in each employee\'s numbers by hand -- nothing is calculated automatically for this sheet. Days Worked/Late/Over/OT Pay (Baht)/Leave columns DO show up on the Dashboard/Summary/Print Report for a month with no real data. "Special Allowance (Baht)" and "OT (min)"/"OT (Quarter)" are reference-only and never show up anywhere live -- for a real backdated allowance, use the Allowancer menu item instead.';
   ui.alert(title, summary, ui.ButtonSet.OK);
 }
 
