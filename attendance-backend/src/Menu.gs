@@ -522,8 +522,15 @@ function menuCreateScheduleAndSalarySheets_() {
     fiscalMonths.forEach(function (fm) {
       var monthLabel = fm.calYear + '-' + (fm.calMonth < 10 ? '0' + fm.calMonth : fm.calMonth);
       try {
-        sheetNames.push(retryTransientSheetsError_(function () { return buildScheduleSheet_(fm.calYear, fm.calMonth); }));
-        sheetNames.push(retryTransientSheetsError_(function () { return buildSalarySheet_(fm.calYear, fm.calMonth); }));
+        // Collected into locals first, only pushed into sheetNames together
+        // once BOTH calls succeed -- pushing the Schedule name immediately
+        // after its own call used to mean a month whose Schedule build
+        // succeeded but whose Salary build then threw got listed in BOTH
+        // the "built successfully" and the "skipped" dialogs below, for the
+        // same month (caught in review).
+        var scheduleName = retryTransientSheetsError_(function () { return buildScheduleSheet_(fm.calYear, fm.calMonth); });
+        var salaryName = retryTransientSheetsError_(function () { return buildSalarySheet_(fm.calYear, fm.calMonth); });
+        sheetNames.push(scheduleName, salaryName);
       } catch (e) {
         failedMonths.push(monthLabel + ' -- ' + ((e && e.message) || e));
       }
@@ -1216,14 +1223,17 @@ function menuAddHistoricalSummaryRows_() {
   if (result.skipped.length > 0) {
     summary += '\nSkipped ' + result.skipped.length + ' who already had a row for this month.';
   }
-  // Explicit about Special Allowance/OT(min)/OT(Quarter) being
+  // Explicit about Special Allowance being the one column that stays
   // reference-only -- this is exactly the kind of silent mismatch that
   // caused real confusion the first time this feature was tested (an admin
-  // typed a number expecting it to show up and it didn't, for a different
-  // reason -- see getEffectiveMonthTotals_'s own doc comment,
-  // HistoricalSummary.gs). Worth repeating here every time, not just in a
-  // code comment nobody but a developer will ever read.
-  summary += '\n\nOpen the "Historical Summary" sheet and type in each employee\'s numbers by hand -- nothing is calculated automatically for this sheet. Days Worked/Late/Over/OT Pay (Baht)/Leave columns DO show up on the Dashboard/Summary/Print Report for a month with no real data. "Special Allowance (Baht)" and "OT (min)"/"OT (Quarter)" are reference-only and never show up anywhere live -- for a real backdated allowance, use the Allowancer menu item instead.';
+  // typed a number expecting it to show up and it didn't). OT (min)/
+  // OT (Quarter) DO show up alongside everything else (see
+  // getEffectiveMonthTotals_'s own doc comment, HistoricalSummary.gs) --
+  // only Special Allowance is excluded, since the Allowances sheet already
+  // owns that figure for any month, backfilled or not. Worth repeating
+  // here every time, not just in a code comment nobody but a developer
+  // will ever read.
+  summary += '\n\nOpen the "Historical Summary" sheet and type in each employee\'s numbers by hand -- nothing is calculated automatically for this sheet. Days Worked/Late/Over/OT (min)/OT (Quarter)/OT Pay (Baht)/Leave columns all show up on the Dashboard/Summary/Print Report for a month with no real data -- OT Pay (Baht) is the figure that actually counts for pay, OT (min)/OT (Quarter) are shown alongside it for reference. "Special Allowance (Baht)" is the one column that never shows up anywhere live -- for a real backdated allowance, use the Allowancer menu item instead.';
   ui.alert(title, summary, ui.ButtonSet.OK);
 }
 

@@ -21,17 +21,19 @@
  * wants this data to feed into those too, that's a deliberate product
  * decision to make then, not something to extend quietly here.
  *
- * Special Allowance is the one column that stays reference-only even after
- * this extension: the `Allowances` sheet already supports backdating an
- * allowance to any Year/Month with no Schedule/AttendanceLog tab required
- * (`getAllowanceEntriesForYear_`/`getAllowancesForMonth_`, Allowances.gs,
- * have no tab-existence gate), so a real pre-launch allowance belongs there
- * via the Allowancer menu item, not here -- typing a value into this
- * sheet's "Special Allowance (Baht)" column does NOT make it appear
- * anywhere live. Likewise "OT (min)"/"OT (Quarter)" stay reference-only;
- * the authoritative figure for a historical month is always the
- * directly-typed "OT Pay (Baht)" cell (blank = not eligible, matching
- * computeOtPay_'s own convention -- never recomputed from quarters ×
+ * Special Allowance is the one column that stays out of the live merge
+ * even after this extension: the `Allowances` sheet already supports
+ * backdating an allowance to any Year/Month with no Schedule/AttendanceLog
+ * tab required (`getAllowanceEntriesForYear_`/`getAllowancesForMonth_`,
+ * Allowances.gs, have no tab-existence gate), so a real pre-launch
+ * allowance belongs there via the Allowancer menu item, not here -- typing
+ * a value into this sheet's "Special Allowance (Baht)" column does NOT
+ * make it appear anywhere live. "OT (min)"/"OT (Quarter)" are different:
+ * they DO get passed through to the Dashboard/Summary/PDF same as every
+ * other column, just never authoritative for pay -- the figure actually
+ * used for OT Pay is always the directly-typed "OT Pay (Baht)" cell
+ * (blank = not eligible, matching computeOtPay_'s own convention -- never
+ * recomputed from quarters ×
  * salary, since a historical month has no guaranteed "Salary YYYY-MM" tab
  * to price against).
  *
@@ -189,9 +191,10 @@ function seedHistoricalSummaryRows_(year, month) {
  * individual cell reads as 0, except "OT Pay (Baht)" which reads as '' when
  * blank -- matching computeOtPay_'s own "blank means not eligible"
  * convention, since a historical month's OT Pay is taken directly from this
- * column, never recomputed from OT (min)/OT (Quarter) (those two stay
- * reference-only -- a historical month has no guaranteed "Salary YYYY-MM"
- * tab to price them against). No "did the admin actually type something in"
+ * column, never recomputed from OT (min)/OT (Quarter) -- a historical month
+ * has no guaranteed "Salary YYYY-MM" tab to price them against; those two
+ * still display live alongside everything else, just never drive the pay
+ * figure. No "did the admin actually type something in"
  * guard -- every row for this Year/Month is used as-is, trusting whatever
  * is in it.
  */

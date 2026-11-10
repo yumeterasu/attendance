@@ -622,11 +622,22 @@ function startAllEmployeesReportJob_(year, month, precomputedLogsByEmployee) {
   var existingRaw = props.getProperty(ALL_EMPLOYEES_REPORT_JOB_KEY);
   if (existingRaw) {
     var existing = JSON.parse(existingRaw);
-    var ageMinutes = (Date.now() - existing.startedAt) / 60000;
+    // Time since the job last made PROGRESS, not time since it started --
+    // a real run needing several retried batches can legitimately take
+    // ~46 minutes worst case (8 batches x 4.5 min budget + ~90s gaps
+    // between them), well past a 30-minute "since start" threshold while
+    // still genuinely alive. lastBatchAt is stamped by
+    // runAllEmployeesReportBatch_ every time it finishes a batch; the
+    // `|| existing.startedAt` fallback keeps this safe for a job already
+    // in flight from before this field existed. Confirmed in review: the
+    // old "since start" check could treat a still-running job as dead and
+    // sweep away its own pending continuation trigger below, permanently
+    // stranding it with no error.
+    var ageMinutes = (Date.now() - (existing.lastBatchAt || existing.startedAt)) / 60000;
     if (ageMinutes < 30) {
       return {
         started: false,
-        message: 'A report is already being generated (started ' + Math.round(ageMinutes) + ' minute(s) ago, for ' +
+        message: 'A report is already being generated (last progress ' + Math.round(ageMinutes) + ' minute(s) ago, for ' +
           existing.month + '/' + existing.year + '). Check the "Attendance Reports" Drive folder in a few minutes, or wait for it to finish before starting another.'
       };
     }
@@ -798,6 +809,13 @@ function runAllEmployeesReportBatch_(props, job) {
   // if the time-budget check above broke out early, or the next batch would
   // silently skip every employee this one didn't get to.
   job.nextIndex += processedCount;
+  // Stamped on every batch that actually makes it here (even a 0-progress
+  // one that immediately hit the time-budget break above still proves the
+  // trigger itself is alive) -- startAllEmployeesReportJob_'s staleness
+  // check reads this instead of job.startedAt, so a long-but-genuinely-alive
+  // run (several retried batches can add up to ~46 minutes) is never
+  // mistaken for a dead one just because it's been running a while.
+  job.lastBatchAt = Date.now();
 
   // employees.length (freshly derived just above), not the job's own
   // totalCount snapshot from when it started -- if attendance data were
@@ -1280,8 +1298,19 @@ function leaveDetailForEmployee_(scheduledShiftsForMonth, employeeId) {
  * Combined into one function (rather than a separate detail-only pass
  * alongside countLeavesForYear_) so the Dashboard's "All" view, which needs
  * both, doesn't read all 12 Schedule sheets twice over.
+ *
+ * monthsWithRealData: aggregateYearSummary_'s per-employee-per-month
+ * presence map (see its own doc comment), passed in by the caller (which
+ * already computed it via aggregateYearSummary_ for the Days/OT merge) --
+ * reused here as the SAME "has real data this month" signal for the
+ * Historical Summary leave fallback below, rather than this function
+ * deriving its own from Schedule presence alone. The two merges disagreeing
+ * (e.g. an employee with real AttendanceLog punches this month but no
+ * Schedule row yet) used to let one Summary row show real Days Worked/OT
+ * next to Historical-sourced Leave counts for the very same month --
+ * sharing one signal makes that impossible.
  */
-function leaveCountsAndDetailForYear_(year) {
+function leaveCountsAndDetailForYear_(year, monthsWithRealData) {
   var countsByEmployee = {}; // { [employeeId]: { [LEAVE_COUNT_TYPES[i]]: count } }
   var detailByEmployee = {}; // { [employeeId]: [{ day, type, half, month, year }] }
   // Every employee, not just Object.keys(scheduledShiftsForMonth) below --
@@ -1313,12 +1342,15 @@ function leaveCountsAndDetailForYear_(year) {
       }
     }
 
-    // Historical Summary fallback, only for employees with NO real Schedule
-    // data this fiscal month at all -- no detail entries added (Historical
-    // Summary has no day-level data), so a backfilled month contributes to
-    // the Dashboard Leave popup's total count but not its per-day list.
+    // Historical Summary fallback, only for employees with NO real data
+    // this fiscal month at all (monthsWithRealData -- see this function's
+    // own doc comment for why that's the right test here, not just
+    // Schedule presence) -- no detail entries added (Historical Summary
+    // has no day-level data), so a backfilled month contributes to the
+    // Dashboard Leave popup's total count but not its per-day list.
+    var monthKey = calendarYear + '-' + calMonth;
     allEmployees.forEach(function (emp) {
-      if (scheduledShiftsForMonth[emp.EmployeeID]) return; // real data already counted above
+      if (monthsWithRealData[emp.EmployeeID + '|' + monthKey]) return; // real data already counted above
       var historical = historicalForMonth[emp.EmployeeID];
       if (!historical) return;
       if (!countsByEmployee[emp.EmployeeID]) {
@@ -1332,8 +1364,8 @@ function leaveCountsAndDetailForYear_(year) {
 }
 
 /** Thin wrapper kept for the Summary sheet's existing call site (writeYearlySummaryData_), which only ever needed the counts half of leaveCountsAndDetailForYear_. */
-function countLeavesForYear_(year) {
-  return leaveCountsAndDetailForYear_(year).counts;
+function countLeavesForYear_(year, monthsWithRealData) {
+  return leaveCountsAndDetailForYear_(year, monthsWithRealData).counts;
 }
 
 /**
@@ -1571,7 +1603,7 @@ function writeYearlySummaryData_(sheet, startRow, year) {
   var aggregated = aggregateYearSummary_(logSheet.getDataRange().getValues(), year);
   var totalsByEmployee = aggregated.totals;
   var monthsWithRealData = aggregated.monthsWithRealData;
-  var leaveCountsByEmployee = countLeavesForYear_(year);
+  var leaveCountsByEmployee = countLeavesForYear_(year, monthsWithRealData);
   // One Salary-sheet read per fiscal month (12 total), not per employee --
   // see getEffectiveYearTotals_'s own doc comment (HistoricalSummary.gs)
   // for why a Thai employee's OT pay has to be priced month-by-month rather
@@ -2693,7 +2725,7 @@ function getDashboardSummaryData_(year, month) {
     // the Leave pill popup needs the detail half too, and splitting it into
     // a second call would mean reading all 12 "Schedule YYYY-MM" sheets
     // twice for every "All (fiscal year)" Dashboard load.
-    var leaveYearResult = leaveCountsAndDetailForYear_(year);
+    var leaveYearResult = leaveCountsAndDetailForYear_(year, monthsWithRealData);
     leaveCountsByEmployee = leaveYearResult.counts;
     leaveDetailByEmployee = leaveYearResult.detail;
     // getAllowanceEntriesForYear_ (not aggregateSpecialAllowancesForYear_)
