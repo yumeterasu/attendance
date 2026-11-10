@@ -57,6 +57,13 @@ function getSortedReportEmployees_(logsByEmployee, onlyEmployeeId) {
  * shows real totals here but a blank table underneath, same as any other
  * data-free month looks today. Special Allowance stays untouched by this --
  * always from the Allowances sheet only, same as every other view.
+ *
+ * The OT segment also shows the priced Baht figure in parentheses (same
+ * totals.otPay the Summary tab's "OT Pay (Baht)" column uses, so the two
+ * can never disagree for the same employee/month) -- omitted entirely when
+ * otPay is '' (not eligible, e.g. Thai staff with no Salary on file for
+ * this month), same "blank means not eligible" convention as everywhere
+ * else OT Pay is shown.
  */
 function buildEmployeeReportSummaryLine_(emp, dayLogs, scheduledShiftsForEmployee, daysInMonth, allowances, salaryForMonth, scheduledShiftsForMonth, historicalByEmployee) {
   var totals = getEffectiveMonthTotals_(emp, dayLogs, scheduledShiftsForEmployee, daysInMonth, salaryForMonth, scheduledShiftsForMonth, historicalByEmployee);
@@ -64,6 +71,7 @@ function buildEmployeeReportSummaryLine_(emp, dayLogs, scheduledShiftsForEmploye
   var otText = otUnit === 'minutes'
     ? totals.otMinutesTotal + ' min'
     : totals.otQuartersTotal + ' quarter' + (totals.otQuartersTotal === 1 ? '' : 's');
+  if (totals.otPay !== '') otText += ' (' + totals.otPay + ' Baht)';
   return 'Late ' + totals.lateCount + ' day' + (totals.lateCount === 1 ? '' : 's') +
     '   |   OT ' + otText +
     '   |   Over Break ' + totals.overCount + ' day' + (totals.overCount === 1 ? '' : 's') +
