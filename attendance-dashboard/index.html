@@ -710,6 +710,14 @@
 
   tbody tr:last-child td { border-bottom: none; }
   tbody tr:hover { background: #FAFBFF; }
+
+  /* Whole-row tint for the over-budget Annual Leave case (see renderRows) --
+     a small icon alone next to the name turned out too easy to miss while
+     scanning a long roster, so the row itself carries the color instead.
+     Targets td directly (not just tr) since a td's own background always
+     paints over its row's, including on hover. */
+  tbody tr.annual-leave-row-warn td,
+  tbody tr.annual-leave-row-warn:hover td { background: var(--danger-bg); }
   #summaryTable tbody tr:last-child td:first-child { border-bottom-left-radius: 16px; }
   #summaryTable tbody tr:last-child td:last-child { border-bottom-right-radius: 16px; }
 
@@ -2202,6 +2210,8 @@
       var annualLeaveWarnHtml = annualLeaveOverBudget
         ? '<span class="annual-leave-warn">&#9888;</span>'
         : '';
+
+      if (annualLeaveOverBudget) tr.className = 'annual-leave-row-warn';
 
       tr.innerHTML =
         '<td class="name">' + escapeHtml(emp.name) + annualLeaveWarnHtml + '</td>' +
