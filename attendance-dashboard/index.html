@@ -1553,7 +1553,7 @@
       leaveSubstitutional: 'Substitutional',
       leaveUnpaid: 'Unpaid',
       leaveMaternity: 'Maternity',
-      annualLeaveOverBudgetTitle: 'Annual Leave exceeds the 6-day entitlement for this fiscal year — needs a retroactive payroll deduction.',
+      annualLeaveOverBudgetTitle: function (n) { return 'Annual Leave used: ' + n + ' days — exceeds the 6-day entitlement for this fiscal year, needs a retroactive payroll deduction.'; },
       viewerName: 'Viewer',
       updateAvailable: 'A new version of this page is available.',
       updateReload: 'Reload',
@@ -1634,7 +1634,7 @@
       leaveSubstitutional: '代休',
       leaveUnpaid: '無給休暇',
       leaveMaternity: '産休',
-      annualLeaveOverBudgetTitle: '今会計年度の年次有給が6日の上限を超えています — 給与の遡及控除が必要です。',
+      annualLeaveOverBudgetTitle: function (n) { return '取得済みの年次有給: ' + n + '日 — 今会計年度の6日の上限を超えています。給与の遡及控除が必要です。'; },
       viewerName: 'ビューアー',
       updateAvailable: 'このページの新しいバージョンが利用可能です。',
       updateReload: '再読み込み',
@@ -2237,7 +2237,7 @@
       // broken out of by a stray " elsewhere; .title = text can't be parsed
       // as markup regardless of content).
       if (annualLeaveOverBudget) {
-        tr.querySelector('.annual-leave-warn').title = t('annualLeaveOverBudgetTitle');
+        tr.querySelector('.annual-leave-warn').title = t('annualLeaveOverBudgetTitle')(formatLeaveCount(emp.leave.annual));
       }
       body.appendChild(tr);
     });
