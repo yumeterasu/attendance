@@ -723,15 +723,45 @@
 
   td.name { font-weight: 700; }
 
-  /* Hover/long-press title (set as a DOM property in renderRows, same
-     reason as branchTitle above) spells out why -- the symbol alone isn't
-     enough for anyone who can't rely on color (screen reader, print). */
+  /* A real <button> (click opens the shared #annualLeavePopover below,
+     see renderRows) rather than a hover-only title -- a touch-screen
+     tablet has no hover state at all, and a title tooltip is easy to miss
+     even with a mouse. Resets the parts of button's UA stylesheet that
+     would otherwise fight the plain-symbol look (border, background,
+     font, padding), same undo as button.pill above. */
   .annual-leave-warn {
     display: inline-block;
     margin-left: 6px;
     color: var(--danger-text);
-    cursor: help;
+    background: none;
+    border: none;
+    padding: 0;
+    font: inherit;
+    cursor: pointer;
   }
+
+  /* Shared popover opened by any .annual-leave-warn button -- see its own
+     HTML comment for why this is one reused element instead of a modal
+     per row. Positioned in JS (left/top set inline); the shadow/border
+     pairing borrows the modal-card language above but stays small and
+     anchored rather than a centered overlay, since this is a single
+     line, not something to browse. */
+  .annual-leave-popover {
+    position: fixed;
+    z-index: 60;
+    display: none;
+    max-width: 260px;
+    background: var(--card);
+    border: 1px solid var(--danger-border);
+    color: var(--text);
+    font-size: 12.5px;
+    font-weight: 500;
+    line-height: 1.45;
+    padding: 10px 12px;
+    border-radius: 10px;
+    box-shadow: 0 12px 28px rgba(18, 21, 28, 0.18);
+  }
+  .annual-leave-popover.open { display: block; }
   td.dept { color: var(--text-muted); font-weight: 500; }
   td.num { font-variant-numeric: tabular-nums; text-align: right; }
 
@@ -1475,6 +1505,13 @@
   </div>
 </div>
 
+<!-- Annual-leave-over-budget popover -- one shared element reused for
+     whichever row's warning icon was last clicked (not a per-row modal
+     like Allowance/Leave above, since this is a single line of text, not
+     a list to browse). Positioned next to the clicked icon in JS; closed
+     by clicking the icon again, clicking anywhere else, or Escape. -->
+<div class="annual-leave-popover" id="annualLeavePopover"></div>
+
 <script>
   // ---------- Language ----------
   //
@@ -2144,6 +2181,10 @@
   function renderRows(employees) {
     var body = document.getElementById('summaryBody');
     body.innerHTML = '';
+    // A re-render (switching year/month, refreshing) just threw away
+    // whatever button the popover was anchored to -- close it rather than
+    // leave it floating over stale content at a stale position.
+    closeAnnualLeavePopover();
 
     employees.forEach(function (emp) {
       var tr = document.createElement('tr');
@@ -2208,7 +2249,7 @@
       // will end up over budget later in the year.
       var annualLeaveOverBudget = monthSelect.value === 'All' && emp.leave.annual > 6;
       var annualLeaveWarnHtml = annualLeaveOverBudget
-        ? '<span class="annual-leave-warn">&#9888;</span>'
+        ? '<button type="button" class="annual-leave-warn">&#9888;</button>'
         : '';
 
       if (annualLeaveOverBudget) tr.className = 'annual-leave-row-warn';
@@ -2231,17 +2272,62 @@
       if (leaveBadges.length) {
         tr.querySelector('.leave-badges-btn').addEventListener('click', function () { openLeaveModal(emp); });
       }
-      // Set as a DOM property, not concatenated into the innerHTML above --
-      // same discipline as buildNameChip's branchTitle (escapeHtml only
-      // escapes &/</>, not quotes, so a string-built title="..." could be
-      // broken out of by a stray " elsewhere; .title = text can't be parsed
-      // as markup regardless of content).
       if (annualLeaveOverBudget) {
-        tr.querySelector('.annual-leave-warn').title = t('annualLeaveOverBudgetTitle')(formatLeaveCount(emp.leave.annual));
+        tr.querySelector('.annual-leave-warn').addEventListener('click', function (e) {
+          e.stopPropagation();
+          toggleAnnualLeavePopover(e.currentTarget, t('annualLeaveOverBudgetTitle')(formatLeaveCount(emp.leave.annual)));
+        });
       }
       body.appendChild(tr);
     });
   }
+
+  // Shared popover for the Annual-Leave-over-budget warning icon -- see
+  // the #annualLeavePopover element's own HTML comment for why this is one
+  // reused element rather than a modal per row. Toggles closed when the
+  // SAME button is clicked again (anchorBtn tracks which one opened it);
+  // clicking a DIFFERENT row's button just re-anchors it with new text.
+  var annualLeavePopoverAnchor = null;
+  function toggleAnnualLeavePopover(btn, text) {
+    var popover = document.getElementById('annualLeavePopover');
+    if (annualLeavePopoverAnchor === btn) {
+      closeAnnualLeavePopover();
+      return;
+    }
+    popover.textContent = text;
+    popover.classList.add('open');
+    annualLeavePopoverAnchor = btn;
+    // Positioned after adding 'open' (so offsetWidth/Height below reflect
+    // its real rendered size, not the display:none default of 0), and
+    // clamped to the viewport so a row near the right/bottom edge doesn't
+    // push the popover off-screen -- the table can be scrolled horizontally
+    // on a narrow window, same reason punchBranchLabel's mismatch title
+    // needed no clamping (it was a native tooltip the browser positions
+    // itself; this one is hand-positioned, so it has to do that job here).
+    var rect = btn.getBoundingClientRect();
+    var left = Math.min(rect.left, window.innerWidth - popover.offsetWidth - 12);
+    var top = rect.bottom + 6;
+    if (top + popover.offsetHeight > window.innerHeight - 12) top = rect.top - popover.offsetHeight - 6;
+    popover.style.left = Math.max(12, left) + 'px';
+    popover.style.top = Math.max(12, top) + 'px';
+  }
+  function closeAnnualLeavePopover() {
+    document.getElementById('annualLeavePopover').classList.remove('open');
+    annualLeavePopoverAnchor = null;
+  }
+  // Any click outside the popover itself closes it -- the warning buttons'
+  // own click handlers call e.stopPropagation() so clicking one of THEM
+  // doesn't double-fire this and immediately reopen what it just closed/
+  // retarget. Escape closes it too, same as the Allowance/Leave modals'
+  // own dismiss conventions below.
+  document.addEventListener('click', function (e) {
+    if (annualLeavePopoverAnchor && !document.getElementById('annualLeavePopover').contains(e.target)) {
+      closeAnnualLeavePopover();
+    }
+  });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && annualLeavePopoverAnchor) closeAnnualLeavePopover();
+  });
 
   // ---------- Allowance detail modal ----------
   //
