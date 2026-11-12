@@ -556,6 +556,30 @@ function checkAndFixSalaryHeaders_(findings, dryRun) {
         message: sheet.getName() + ' header row ' + (dryRun ? 'needs repair' : 'auto-repaired') + ': ' + fixed.join(', ') + (dryRun ? ' missing.' : ' restored.')
       });
     }
+
+    // Column D, "OT Eligible" -- checked ONLY on a sheet already migrated to
+    // the new 5-column layout (getLastColumn() >= 5). This check runs
+    // automatically before many menu actions (preflightHeaderCheck_), not
+    // just the manual "Health Check" menu item -- an older, not-yet-migrated
+    // sheet is still exactly 4 columns wide (D is the live OT-per-quarter
+    // formula column, not "OT Eligible" yet), and "fixing" its header text
+    // here would relabel that formula column without ever actually moving
+    // it to E first, corrupting the sheet the moment an admin clicks almost
+    // any menu item after this column was introduced -- before they ever
+    // get a chance to run "Create/Update Schedule + Salary Sheet" themselves,
+    // which is the ONLY place the real column-D-to-E migration happens
+    // (buildSalarySheet_, Report.gs). An un-migrated sheet is left
+    // completely untouched by this check, same as before this column
+    // existed, until that migration runs.
+    if (sheet.getLastColumn() >= 5 && sheet.getRange(1, 4).getValue() !== 'OT Eligible') {
+      if (!dryRun) sheet.getRange(1, 4).setValue('OT Eligible');
+      findings.push({
+        sheetName: sheet.getName(),
+        a1: null,
+        fixable: true,
+        message: sheet.getName() + ' header row ' + (dryRun ? 'needs repair' : 'auto-repaired') + ': OT Eligible' + (dryRun ? ' missing.' : ' restored.')
+      });
+    }
   });
 }
 

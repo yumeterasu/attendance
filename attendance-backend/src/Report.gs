@@ -64,9 +64,14 @@ function getSortedReportEmployees_(logsByEmployee, onlyEmployeeId) {
  * otPay is '' (not eligible, e.g. Thai staff with no Salary on file for
  * this month), same "blank means not eligible" convention as everywhere
  * else OT Pay is shown.
+ *
+ * otEligibleThisMonth: this employee's per-month "OT Eligible" value from
+ * the "Salary YYYY-MM" sheet (getOtEligibilityForMonth_, Attendance.gs),
+ * already resolved by the caller -- passed straight through to
+ * getEffectiveMonthTotals_, same as salaryForMonth.
  */
-function buildEmployeeReportSummaryLine_(emp, dayLogs, scheduledShiftsForEmployee, daysInMonth, allowances, salaryForMonth, scheduledShiftsForMonth, historicalByEmployee) {
-  var totals = getEffectiveMonthTotals_(emp, dayLogs, scheduledShiftsForEmployee, daysInMonth, salaryForMonth, scheduledShiftsForMonth, historicalByEmployee);
+function buildEmployeeReportSummaryLine_(emp, dayLogs, scheduledShiftsForEmployee, daysInMonth, allowances, salaryForMonth, scheduledShiftsForMonth, historicalByEmployee, otEligibleThisMonth) {
+  var totals = getEffectiveMonthTotals_(emp, dayLogs, scheduledShiftsForEmployee, daysInMonth, salaryForMonth, scheduledShiftsForMonth, historicalByEmployee, otEligibleThisMonth);
   var otUnit = otUnitForDepartment_(emp.Department);
   var otText = otUnit === 'minutes'
     ? totals.otMinutesTotal + ' min'
@@ -458,7 +463,7 @@ function reportSortGroup_(emp, dayLogs) {
  * time; generateEmployeeReportPdf_ (one person) omits them and lets this
  * read fresh, same as always.
  */
-function buildEmployeeReportPdfBlob_(employee, year, month, precomputedLogsByEmployee, precomputedScheduledShiftsForMonth, precomputedAllowancesByEmployee, precomputedSalaryByEmployee, precomputedHistoricalByEmployee) {
+function buildEmployeeReportPdfBlob_(employee, year, month, precomputedLogsByEmployee, precomputedScheduledShiftsForMonth, precomputedAllowancesByEmployee, precomputedSalaryByEmployee, precomputedHistoricalByEmployee, precomputedOtEligibilityByEmployee) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   // Random suffix, not just the timestamp -- continueAllEmployeesReportBatch_
   // calls this in a tight loop where two calls can land in the same
@@ -481,6 +486,7 @@ function buildEmployeeReportPdfBlob_(employee, year, month, precomputedLogsByEmp
     var allowancesByEmployee = precomputedAllowancesByEmployee !== undefined ? precomputedAllowancesByEmployee : getAllowancesForMonth_(year, month);
     var salaryByEmployee = precomputedSalaryByEmployee !== undefined ? precomputedSalaryByEmployee : getSalaryForMonth_(year, month);
     var historicalByEmployee = precomputedHistoricalByEmployee !== undefined ? precomputedHistoricalByEmployee : getHistoricalSummaryForMonth_(year, month);
+    var otEligibilityByEmployee = precomputedOtEligibilityByEmployee !== undefined ? precomputedOtEligibilityByEmployee : getOtEligibilityForMonth_(year, month);
     var daysInMonth = new Date(year, month, 0).getDate();
     // Summary line (Late/OT/Over Break/Special Allowance) goes ABOVE the
     // bordered day table, row 2, not as a row inside it -- see
@@ -493,7 +499,8 @@ function buildEmployeeReportPdfBlob_(employee, year, month, precomputedLogsByEmp
       allowancesByEmployee[employee.EmployeeID] || [],
       salaryByEmployee[employee.EmployeeID],
       scheduledShiftsForMonth,
-      historicalByEmployee
+      historicalByEmployee,
+      otEligibilityByEmployee[employee.EmployeeID] !== false
     );
     // setWrap -- same reasoning as the title row above.
     sheet.getRange(2, 1, 1, 10).merge().setValue(summaryLine).setFontWeight('bold').setBackground('#fff2cc').setWrap(true); // light amber -- distinct "at a glance" caption line, outside the table's own border
@@ -743,6 +750,7 @@ function runAllEmployeesReportBatch_(props, job) {
   var allowancesByEmployee = getAllowancesForMonth_(job.year, job.month);
   var salaryByEmployee = getSalaryForMonth_(job.year, job.month);
   var historicalByEmployee = getHistoricalSummaryForMonth_(job.year, job.month);
+  var otEligibilityByEmployee = getOtEligibilityForMonth_(job.year, job.month);
   // Re-derived fresh every batch rather than serialized into Properties --
   // deterministic given the same year/month, and much simpler than storing
   // the whole roster as JSON. Assumes attendance data isn't being actively
@@ -790,7 +798,7 @@ function runAllEmployeesReportBatch_(props, job) {
       // every other employee's already-successful PDF sitting in this same
       // scratch folder) the way it did in production on 2026-10-27.
       var blob = retryTransientSheetsError_(function () {
-        return buildEmployeeReportPdfBlob_(emp, job.year, job.month, logsByEmployee, scheduledShiftsForMonth, allowancesByEmployee, salaryByEmployee, historicalByEmployee);
+        return buildEmployeeReportPdfBlob_(emp, job.year, job.month, logsByEmployee, scheduledShiftsForMonth, allowancesByEmployee, salaryByEmployee, historicalByEmployee, otEligibilityByEmployee);
       });
       blob.setName(Utilities.formatString('%03d', index) + ' - ' + emp.Name + '.pdf');
       scratchFolder.createFile(blob);
@@ -1502,6 +1510,10 @@ function writeMonthlySummaryData_(sheet, startRow, year, month) {
   // this to fall back to a backfilled record for an employee with no real
   // data this month.
   var historicalByEmployee = getHistoricalSummaryForMonth_(year, month);
+  // One read of the whole Salary sheet's "OT Eligible" column for this
+  // month -- see getEffectiveMonthTotals_'s own doc comment for how a
+  // FALSE here zeroes this employee's OT for this month.
+  var otEligibilityByEmployee = getOtEligibilityForMonth_(year, month);
 
   // Same rule as the Report sheet: Active, or has data this month -- PLUS a
   // Special Allowance entry this month, PLUS a Historical Summary row this
@@ -1541,7 +1553,7 @@ function writeMonthlySummaryData_(sheet, startRow, year, month) {
     // employee's real computed totals, or their Historical Summary row's
     // totals if they have no real AttendanceLog/Schedule data this month --
     // see its own doc comment for the full precedence rule.
-    var totals = getEffectiveMonthTotals_(emp, dayLogs, scheduledShiftsForMonth[emp.EmployeeID], daysInMonth, salaryByEmployee[emp.EmployeeID], scheduledShiftsForMonth, historicalByEmployee);
+    var totals = getEffectiveMonthTotals_(emp, dayLogs, scheduledShiftsForMonth[emp.EmployeeID], daysInMonth, salaryByEmployee[emp.EmployeeID], scheduledShiftsForMonth, historicalByEmployee, otEligibilityByEmployee[emp.EmployeeID] !== false);
     var daysWorked = totals.daysWorked, lateCount = totals.lateCount, overCount = totals.overCount;
     var otMinutesTotal = totals.otMinutesTotal, otQuartersTotal = totals.otQuartersTotal;
     var otPay = totals.otPay;
@@ -1627,6 +1639,12 @@ function writeYearlySummaryData_(sheet, startRow, year) {
   fiscalMonths.forEach(function (fm) {
     historicalByMonth[fm.calYear + '-' + fm.calMonth] = getHistoricalSummaryForMonth_(fm.calYear, fm.calMonth);
   });
+  // One Salary-sheet "OT Eligible" column read per fiscal month, same
+  // "read once" reasoning as salaryCache/historicalByMonth just above.
+  var otEligibilityCache = {};
+  fiscalMonths.forEach(function (fm) {
+    otEligibilityCache[fm.calYear + '-' + fm.calMonth] = getOtEligibilityForMonth_(fm.calYear, fm.calMonth);
+  });
   // One read of the whole Allowances sheet for every employee's yearly
   // total, not one per employee -- see aggregateSpecialAllowancesForYear_'s
   // doc comment (Allowances.gs), same "read once" reasoning as
@@ -1676,7 +1694,7 @@ function writeYearlySummaryData_(sheet, startRow, year) {
     // any fiscal month this employee has real data in, that employee's
     // Historical Summary row for any month they don't -- see its own doc
     // comment for the full precedence rule.
-    var totals = getEffectiveYearTotals_(emp, fiscalMonths, totalsByEmployee[emp.EmployeeID], monthsWithRealData, salaryCache, historicalByMonth);
+    var totals = getEffectiveYearTotals_(emp, fiscalMonths, totalsByEmployee[emp.EmployeeID], monthsWithRealData, salaryCache, historicalByMonth, otEligibilityCache);
     var otPay = totals.otPay;
     var specialAllowance = allowanceTotalsByEmployee[emp.EmployeeID] || 0;
     var leaveCounts = leaveCountsByEmployee[emp.EmployeeID] || zeroLeaveCounts;
@@ -2299,6 +2317,15 @@ function buildSalarySheet_(year, month) {
     var legacy = Number(String(emp.Salary == null ? '' : emp.Salary).replace(/,/g, '').trim());
     return legacy > 0 ? legacy : '';
   }
+  // "OT Eligible" (column D) is the opposite of Salary -- it NEVER seeds
+  // from last month's sheet, always TRUE for a brand new row (new employee,
+  // or a freshly built month), regardless of what any other month says.
+  // This is deliberate: it's a per-month admin correction (e.g. "this one
+  // employee earned real OT this month but we're not paying it"), not a
+  // standing fact like a salary that should carry forward until changed.
+  // Read getEffectiveMonthTotals_/getEffectiveYearTotals_ (HistoricalSummary.gs)
+  // for how this zeroes OT everywhere it's aggregated once set FALSE.
+  var OT_ELIGIBLE_HEADER_NOTE = 'Per-month override. Set FALSE to make this employee\'s OT for THIS month read as zero everywhere it is aggregated (Summary tab, Dashboard, Print Employee Report PDF, Kiosk My Schedule) -- without touching the real AttendanceLog data. Different from the Employees sheet\'s own "OTEligible" column, which is global/live and controls whether OT is ever recorded in the first place.';
 
   var existing = ss.getSheetByName(sheetName);
   // Same existing-but-empty case as buildScheduleSheet_'s identical check
@@ -2315,6 +2342,24 @@ function buildSalarySheet_(year, month) {
   // what row 1 actually holds.
   var existingIsEmpty = !!(existing && existing.getLastRow() === 0);
   if (existing && !existingIsEmpty) {
+    // One-time per-sheet migration for a sheet built before the "OT
+    // Eligible" column existed. Detected by COLUMN COUNT, not header text --
+    // the old shape is exactly 4 columns (EmployeeID, Name, Salary, the live
+    // OT-per-quarter formula); the new shape is 5 (those same four, plus
+    // "OT Eligible" inserted BEFORE the formula column, shifting it from D
+    // to E). insertColumnBefore(4) only ever runs when the sheet is still
+    // genuinely 4 columns wide -- checking header text instead would wrongly
+    // re-trigger a second insert if an earlier run inserted the column but
+    // was interrupted (execution timeout, error) before ever writing its
+    // header, corrupting the sheet further on retry. This mirrors the
+    // "Service Spreadsheets timed out" failure this exact function already
+    // hit once in production (see existingIsEmpty's doc comment above) --
+    // every step below needs to tolerate being re-run from a half-finished
+    // state just as safely.
+    if (existing.getLastColumn() === 4) {
+      existing.insertColumnBefore(4);
+    }
+
     var values = existing.getDataRange().getValues();
     var headers = values[0];
     var idCol = headers.indexOf('EmployeeID');
@@ -2323,7 +2368,7 @@ function buildSalarySheet_(year, month) {
 
     var newRows = employees
       .filter(function (emp) { return !existingIds[emp.EmployeeID]; })
-      .map(function (emp) { return [emp.EmployeeID, emp.Name, seedSalary_(emp)]; });
+      .map(function (emp) { return [emp.EmployeeID, emp.Name, seedSalary_(emp), true]; });
     if (newRows.length > 0) {
       var startRow = existing.getLastRow() + 1;
       // A sheet that's had unused rows trimmed off (normal spreadsheet
@@ -2337,7 +2382,26 @@ function buildSalarySheet_(year, month) {
       if (existing.getMaxRows() < neededRows) {
         existing.insertRowsAfter(existing.getMaxRows(), neededRows - existing.getMaxRows());
       }
-      existing.getRange(startRow, 1, newRows.length, 3).setValues(newRows);
+      existing.getRange(startRow, 1, newRows.length, 4).setValues(newRows);
+    }
+    // Fill in ONLY genuinely blank "OT Eligible" cells with TRUE -- the
+    // blank cells insertColumnBefore just created above on a migrated
+    // sheet, plus (defensively) any row that somehow still lacks a value.
+    // Deliberately NOT a blanket overwrite of the whole column, unlike the
+    // cosmetic formatting/header refreshes elsewhere in this function --
+    // this column holds real admin corrections (e.g. one employee's one
+    // month flipped to FALSE), and re-seeding the whole column on every
+    // run would silently reset that back to TRUE the next time anyone
+    // re-runs this command for any unrelated reason (even just adding one
+    // new employee, or rebuilding a different month via the "All" option).
+    if (existing.getLastRow() > 1) {
+      var otEligibleRange = existing.getRange(2, 4, existing.getLastRow() - 1, 1);
+      var otEligibleValues = otEligibleRange.getValues();
+      var otEligibleChanged = false;
+      for (var oe = 0; oe < otEligibleValues.length; oe++) {
+        if (otEligibleValues[oe][0] === '') { otEligibleValues[oe][0] = true; otEligibleChanged = true; }
+      }
+      if (otEligibleChanged) otEligibleRange.setValues(otEligibleValues);
     }
     // Whole column, not just the newly-appended rows -- #,##0.00 (not the
     // whole-baht #,##0 this used before a real salary turned out to have
@@ -2351,17 +2415,19 @@ function buildSalarySheet_(year, month) {
 
     // Re-sort the whole sheet (existing rows + whatever just got appended)
     // every time this runs -- same reasoning as buildScheduleSheet_'s
-    // identical re-sort pass. Deliberately A:C ONLY (3 columns), never
-    // touching column D here -- an earlier version of this resort read the
-    // WHOLE row including D via getValues() (which returns each formula's
-    // last-COMPUTED result, not the formula text) and wrote that back with
-    // setValues(), silently flattening D's live "=IF(C..=\"\",\"\",ROUND(C../640,2))"
-    // formulas into frozen static numbers on every single run -- exactly
-    // the "self-updating, never needs a re-run" behavior this column exists
-    // for, undone by the very re-run meant to maintain it. Column D is
+    // identical re-sort pass. Deliberately A:D ONLY (the 4 stored-value
+    // columns), never touching column E here -- an earlier version of this
+    // resort (back when "OT Eligible" didn't exist yet and D itself was the
+    // formula column) read the WHOLE row including the formula column via
+    // getValues() (which returns each formula's last-COMPUTED result, not
+    // the formula text) and wrote that back with setValues(), silently
+    // flattening its live "=IF(C..=\"\",\"\",ROUND(C../640,2))" formulas into
+    // frozen static numbers on every single run -- exactly the
+    // "self-updating, never needs a re-run" behavior this column exists
+    // for, undone by the very re-run meant to maintain it. Column E is
     // rebuilt fresh from scratch AFTER this resort completes (below)
     // instead, so it only ever gets REAL live formulas, never a stale
-    // snapshot. A smaller side benefit: a 3-wide write is less data moved
+    // snapshot. A smaller side benefit: a narrower write is less data moved
     // in the single most expensive call in this function, which matters
     // because this exact call is the prime suspect for a "Service
     // Spreadsheets timed out" failure this function hit in production on a
@@ -2369,7 +2435,12 @@ function buildSalarySheet_(year, month) {
     // in the one write that rewrites every existing row at once.
     var employeesById = {};
     getAllEmployees_().forEach(function (emp) { employeesById[String(emp.EmployeeID)] = emp; });
-    var freshValues = existing.getRange(1, 1, existing.getLastRow(), 3).getValues();
+    // A:D (4 cols, not 3) -- the OT Eligible value in D must travel WITH
+    // its own employee's row through this resort, same reason EmployeeID/
+    // Name/Salary do. Column E (the live formula) is still deliberately
+    // excluded, same as before -- see the resort-vs-formula-column comment
+    // below.
+    var freshValues = existing.getRange(1, 1, existing.getLastRow(), 4).getValues();
     var dataRows = freshValues.slice(1);
     if (dataRows.length > 0) {
       dataRows.sort(function (rowA, rowB) {
@@ -2379,7 +2450,7 @@ function buildSalarySheet_(year, month) {
         if (keyA[1] !== keyB[1]) return keyA[1] - keyB[1];
         return String(rowA[idCol]).localeCompare(String(rowB[idCol]));
       });
-      existing.getRange(2, 1, dataRows.length, 3).setValues(dataRows);
+      existing.getRange(2, 1, dataRows.length, 4).setValues(dataRows);
     }
     // Floor, not a fixed width -- auto-fit (new-sheet branch below) sizes
     // the column to whatever's typed in SO FAR, which is too narrow the
@@ -2387,8 +2458,17 @@ function buildSalarySheet_(year, month) {
     // visually clipped) -- never shrinks a column an admin widened further
     // by hand.
     if (existing.getColumnWidth(3) < 100) existing.setColumnWidth(3, 100);
+    if (existing.getColumnWidth(4) < 90) existing.setColumnWidth(4, 90);
 
-    // Column D, "OT per Quarter (Baht)" -- informational only, nothing
+    // "OT Eligible" header (column D) -- re-asserted every run same as the
+    // other header text below, but this NEVER touches the per-row values
+    // underneath it (see the blanks-only fill above) -- only row 1.
+    if (existing.getRange(1, 4).getValue() !== 'OT Eligible') {
+      existing.getRange(1, 4).setValue('OT Eligible');
+    }
+    existing.getRange(1, 4).setNote(OT_ELIGIBLE_HEADER_NOTE);
+
+    // Column E, "OT per Quarter (Baht)" -- informational only, nothing
     // downstream reads it (getSalaryForMonth_ finds Salary by header NAME,
     // not position). A live FORMULA, not a static computed value, so it
     // keeps itself correct if an admin edits the Salary cell directly --
@@ -2398,60 +2478,65 @@ function buildSalarySheet_(year, month) {
     // order matters here), so it only ever lands REAL live formulas on
     // whatever the final, just-resorted row order turns out to be, same
     // self-healing spirit as checkAndFixSalaryHeaders_ for a sheet built
-    // before this column existed.
-    if (existing.getRange(1, 4).getValue() !== 'OT per Quarter (Baht)') {
-      existing.getRange(1, 4).setValue('OT per Quarter (Baht)');
+    // before this column existed. Shifted from D to E by the "OT Eligible"
+    // column inserted before it -- see this function's own top doc comment.
+    if (existing.getRange(1, 5).getValue() !== 'OT per Quarter (Baht)') {
+      existing.getRange(1, 5).setValue('OT per Quarter (Baht)');
     }
     // Header row styling (red fill, bold white text) -- cosmetic only, so
     // it's safe to reapply unconditionally on every run, same reasoning as
     // the dropdown/color/number-format refreshes elsewhere in this
     // function -- a Salary sheet built before this style existed picks it
     // up too, without needing a one-off migration pass.
-    existing.getRange(1, 1, 1, 4).setBackground('#ff0000').setFontColor('#ffffff').setFontWeight('bold');
+    existing.getRange(1, 1, 1, 5).setBackground('#ff0000').setFontColor('#ffffff').setFontWeight('bold');
     if (existing.getLastRow() > 1) {
       var otQuarterFormulas = [];
       for (var r = 2; r <= existing.getLastRow(); r++) {
         otQuarterFormulas.push(['=IF(C' + r + '="","",ROUND(C' + r + '/640,2))']);
       }
-      var otQuarterRange = existing.getRange(2, 4, otQuarterFormulas.length, 1);
+      var otQuarterRange = existing.getRange(2, 5, otQuarterFormulas.length, 1);
       otQuarterRange.setFormulas(otQuarterFormulas);
       otQuarterRange.setNumberFormat('#,##0.00');
     }
-    if (existing.getColumnWidth(4) < 140) existing.setColumnWidth(4, 140);
+    if (existing.getColumnWidth(5) < 140) existing.setColumnWidth(5, 140);
     return sheetName;
   }
 
-  var header = ['EmployeeID', 'Name', 'Salary', 'OT per Quarter (Baht)'];
+  var header = ['EmployeeID', 'Name', 'Salary', 'OT Eligible', 'OT per Quarter (Baht)'];
   var rows = [header];
-  employees.forEach(function (emp) { rows.push([emp.EmployeeID, emp.Name, seedSalary_(emp), '']); });
+  employees.forEach(function (emp) { rows.push([emp.EmployeeID, emp.Name, seedSalary_(emp), true, '']); });
 
   // existingIsEmpty: reuse the already-created-but-blank tab from an
   // interrupted earlier run instead of insertSheet, which would otherwise
   // throw "A sheet with this name already exists" -- see existingIsEmpty's
   // own doc comment above for why this tab can exist yet be empty.
   var sheet = existingIsEmpty ? existing : ss.insertSheet(sheetName);
-  sheet.getRange(1, 1, rows.length, 4).setValues(rows);
-  sheet.getRange(1, 1, 1, 4).setBackground('#ff0000').setFontColor('#ffffff').setFontWeight('bold');
+  sheet.getRange(1, 1, rows.length, 5).setValues(rows);
+  sheet.getRange(1, 1, 1, 5).setBackground('#ff0000').setFontColor('#ffffff').setFontWeight('bold');
+  sheet.getRange(1, 4).setNote(OT_ELIGIBLE_HEADER_NOTE);
   sheet.setFrozenRows(1);
   if (rows.length > 1) {
     sheet.getRange(2, 3, rows.length - 1, 1).setNumberFormat('#,##0.00');
     // Same live-formula approach as the existing-sheet branch above -- see
-    // its own comment for why this is a formula, not a static value.
+    // its own comment for why this is a formula, not a static value. Column
+    // E, not D -- "OT Eligible" sits before it (see this function's own top
+    // doc comment on why).
     var otQuarterFormulas = [];
     for (var r = 2; r < rows.length + 1; r++) {
       otQuarterFormulas.push(['=IF(C' + r + '="","",ROUND(C' + r + '/640,2))']);
     }
-    var otQuarterRange = sheet.getRange(2, 4, otQuarterFormulas.length, 1);
+    var otQuarterRange = sheet.getRange(2, 5, otQuarterFormulas.length, 1);
     otQuarterRange.setFormulas(otQuarterFormulas);
     otQuarterRange.setNumberFormat('#,##0.00');
   }
-  sheet.autoResizeColumns(1, 4);
+  sheet.autoResizeColumns(1, 5);
   // Same floor as the existing-sheet branch above -- auto-fit alone sizes
   // the Salary column to whatever's already filled in (often blank, or
   // short whole-baht legacy values), too narrow for a real value with
   // cents typed in later.
   if (sheet.getColumnWidth(3) < 100) sheet.setColumnWidth(3, 100);
-  if (sheet.getColumnWidth(4) < 140) sheet.setColumnWidth(4, 140);
+  if (sheet.getColumnWidth(4) < 90) sheet.setColumnWidth(4, 90);
+  if (sheet.getColumnWidth(5) < 140) sheet.setColumnWidth(5, 140);
   return sheetName;
 }
 
@@ -2724,6 +2809,11 @@ function getDashboardSummaryData_(year, month) {
   // (HistoricalSummary.gs) use this to fall back to a backfilled record for
   // an employee with no real data that month.
   var historicalByEmployee, historicalByMonth, monthsWithRealData;
+  // Same per-fiscal-month/per-month "OT Eligible" source as the Summary
+  // sheet (writeMonthlySummaryData_/writeYearlySummaryData_) -- see
+  // getEffectiveMonthTotals_'s own doc comment for how a FALSE here zeroes
+  // this employee's OT for that period.
+  var otEligibilityByEmployee, otEligibilityCache;
   if (isAllMonths) {
     var logSheet = getSheet_('AttendanceLog');
     var aggregated = aggregateYearSummary_(logSheet.getDataRange().getValues(), year);
@@ -2747,9 +2837,11 @@ function getDashboardSummaryData_(year, month) {
     fiscalMonths = getFiscalMonths_(year);
     salaryCache = {};
     historicalByMonth = {};
+    otEligibilityCache = {};
     fiscalMonths.forEach(function (fm) {
       salaryCache[fm.calYear + '-' + fm.calMonth] = getSalaryForMonth_(fm.calYear, fm.calMonth);
       historicalByMonth[fm.calYear + '-' + fm.calMonth] = getHistoricalSummaryForMonth_(fm.calYear, fm.calMonth);
+      otEligibilityCache[fm.calYear + '-' + fm.calMonth] = getOtEligibilityForMonth_(fm.calYear, fm.calMonth);
     });
   } else {
     var logsByEmployee = getMonthLogsByEmployee_(year, month);
@@ -2757,6 +2849,7 @@ function getDashboardSummaryData_(year, month) {
     var daysInMonth = new Date(year, month, 0).getDate();
     salaryByEmployee = getSalaryForMonth_(year, month);
     historicalByEmployee = getHistoricalSummaryForMonth_(year, month);
+    otEligibilityByEmployee = getOtEligibilityForMonth_(year, month);
     totalsByEmployee = {};
     leaveCountsByEmployee = {};
     leaveDetailByEmployee = {};
@@ -2776,7 +2869,7 @@ function getDashboardSummaryData_(year, month) {
       // needs that distinction preserved even when every count is zero.
       // "Does this employee have data this month" is tracked separately,
       // just below, for the visibility filter further down.
-      totalsByEmployee[emp.EmployeeID] = getEffectiveMonthTotals_(emp, dayLogs, scheduledShiftsForMonth[emp.EmployeeID], daysInMonth, salaryByEmployee[emp.EmployeeID], scheduledShiftsForMonth, historicalByEmployee);
+      totalsByEmployee[emp.EmployeeID] = getEffectiveMonthTotals_(emp, dayLogs, scheduledShiftsForMonth[emp.EmployeeID], daysInMonth, salaryByEmployee[emp.EmployeeID], scheduledShiftsForMonth, historicalByEmployee, otEligibilityByEmployee[emp.EmployeeID] !== false);
       var totals = totalsByEmployee[emp.EmployeeID];
       leaveCountsByEmployee[emp.EmployeeID] = totals.leaveCounts;
       // month/year stamped onto every entry (even though they're constant
@@ -2850,7 +2943,7 @@ function getDashboardSummaryData_(year, month) {
     // employee in the loop above, including for an employee with nothing on
     // file -- getEffectiveMonthTotals_ never returns undefined).
     var totals = isAllMonths
-      ? getEffectiveYearTotals_(emp, fiscalMonths, totalsByEmployee[emp.EmployeeID], monthsWithRealData, salaryCache, historicalByMonth)
+      ? getEffectiveYearTotals_(emp, fiscalMonths, totalsByEmployee[emp.EmployeeID], monthsWithRealData, salaryCache, historicalByMonth, otEligibilityCache)
       : totalsByEmployee[emp.EmployeeID];
     var leaveCounts = leaveCountsByEmployee[emp.EmployeeID] || zeroLeaveCounts;
     var otPay = totals.otPay;

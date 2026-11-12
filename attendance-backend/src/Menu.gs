@@ -482,15 +482,27 @@ function menuUndoDeactivation_(ui, title, employee) {
  * 2026-10-21 per request, since an admin needing one for a given month
  * always needs the other too (a new employee needs a row in both; a new
  * month needs both sheets built before Report/Summary/Print can price it).
- * Builds Schedule then Salary for the same resolved month(s); each builder
- * is independently idempotent (never overwrites a cell an admin already
+ * Builds Schedule then Salary for the resolved month; each builder is
+ * independently idempotent (never overwrites a cell an admin already
  * filled in), so re-running this for an already-built month just tops up
  * whatever's missing in either sheet. See buildScheduleSheet_ and
  * buildSalarySheet_'s own doc comments (Report.gs) for what each sheet is
- * for. Month also accepts "All" (via a blank Month field, since Apps
- * Script's native prompt has no pre-filled default) -- same "whole fiscal
- * year in one go" behavior the old Salary-only menu item already had
- * (getFiscalMonths_, Report.gs: Year 2026 = April 2026 through March 2027).
+ * for.
+ *
+ * The "All" (whole fiscal year in one execution) option that used to live
+ * here was REMOVED 2026-11-11 -- each month's pair of builder calls could
+ * individually hit "Service Spreadsheets timed out" (a real, not-uncommon
+ * Google-side hiccup, not a bug in either builder -- retryTransientSheetsError_
+ * already retries each call 3x, but a sustained hiccup can still exhaust
+ * that), and chaining 12 months of these calls back-to-back in ONE
+ * execution only multiplied the chances of hitting it somewhere in the
+ * middle AND made the failure harder to see (buried in a 12-month batch
+ * rather than obviously tied to the one month just run). One month per
+ * click is simpler to reason about when this happens: the admin sees
+ * exactly which month failed and just re-runs that same menu item for it
+ * -- both builders are already safe to re-run from scratch for a given
+ * month, so nothing is lost by requiring one click per month instead of
+ * batching.
  */
 function menuCreateScheduleAndSalarySheets_() {
   var ui = SpreadsheetApp.getUi();
@@ -505,63 +517,34 @@ function menuCreateScheduleAndSalarySheets_() {
     return;
   }
 
-  var monthResp = ui.prompt(title, 'Month (1-12) -- leave blank and press OK for the whole fiscal year (April ' + year + ' - March ' + (year + 1) + '):', ui.ButtonSet.OK_CANCEL);
+  var monthResp = ui.prompt(title, 'Month (1-12):', ui.ButtonSet.OK_CANCEL);
   if (monthResp.getSelectedButton() !== ui.Button.OK) return;
   var monthText = monthResp.getResponseText().trim();
 
-  if (monthText === '' || monthText.toLowerCase() === 'all') {
-    var fiscalMonths = getFiscalMonths_(year);
-    var sheetNames = [];
-    var failedMonths = [];
-    // Each month's pair of builder calls gets its OWN try/catch -- a single
-    // month exhausting retryTransientSheetsError_'s retries must not abort
-    // every LATER fiscal month the way one unguarded exception used to
-    // (2026-11-05: a mid-loop "Service Spreadsheets timed out" left the
-    // rest of the fiscal year never even attempted). Both builders are
-    // safe to re-run from scratch for a given month -- see their own doc
-    // comments -- so a failed month here just needs the admin to run this
-    // same command again for that one month (or "All" again) later.
-    fiscalMonths.forEach(function (fm) {
-      var monthLabel = fm.calYear + '-' + (fm.calMonth < 10 ? '0' + fm.calMonth : fm.calMonth);
-      try {
-        // Collected into locals first, only pushed into sheetNames together
-        // once BOTH calls succeed -- pushing the Schedule name immediately
-        // after its own call used to mean a month whose Schedule build
-        // succeeded but whose Salary build then threw got listed in BOTH
-        // the "built successfully" and the "skipped" dialogs below, for the
-        // same month (caught in review).
-        var scheduleName = retryTransientSheetsError_(function () { return buildScheduleSheet_(fm.calYear, fm.calMonth); });
-        var salaryName = retryTransientSheetsError_(function () { return buildSalarySheet_(fm.calYear, fm.calMonth); });
-        sheetNames.push(scheduleName, salaryName);
-      } catch (e) {
-        failedMonths.push(monthLabel + ' -- ' + ((e && e.message) || e));
-      }
-    });
-
-    if (failedMonths.length === 0) {
-      ui.alert('Done', 'Fiscal year ' + year + ' ready: ' + sheetNames.join(', ') + '. Fill in each day\'s shift from the dropdown; each Salary row is seeded from the previous month (or the Employees sheet, for the current calendar month only) -- only edit a cell when something actually changed.', ui.ButtonSet.OK);
-    } else {
-      var okCount = fiscalMonths.length - failedMonths.length;
-      ui.alert(
-        'Done, with some months skipped',
-        'Fiscal year ' + year + ': ' + okCount + ' of ' + fiscalMonths.length + ' month(s) built/updated successfully (' + sheetNames.join(', ') + ').\n\n' +
-          'These month(s) hit an error even after retrying and were skipped:\n' + failedMonths.join('\n') + '\n\n' +
-          'Both builders are safe to re-run -- just run "Create / Update Schedule + Salary Sheet" again for the affected month (or "All" again) once ready; it will only top up what\'s missing, never duplicate what already built.',
-        ui.ButtonSet.OK
-      );
-    }
-    return;
-  }
-
   var month = Number(monthText);
   if (!month || month < 1 || month > 12) {
-    ui.alert('Enter a valid month between 1 and 12, or "All".');
+    ui.alert('Enter a valid month between 1 and 12.');
     return;
   }
 
-  var scheduleSheetName = retryTransientSheetsError_(function () { return buildScheduleSheet_(year, month); });
-  var salarySheetName = retryTransientSheetsError_(function () { return buildSalarySheet_(year, month); });
-  ui.alert('Done', '"' + scheduleSheetName + '" and "' + salarySheetName + '" are ready. Fill in each day\'s shift from the dropdown; each Salary row is seeded from last month (or the Employees sheet, if this is the current month) -- only edit a cell when something actually changed.', ui.ButtonSet.OK);
+  // Caught here, not left to surface as Apps Script's own raw exception
+  // dialog, so a sustained "Service Spreadsheets timed out" (rare, but
+  // retryTransientSheetsError_'s 3 attempts can still all lose to it) tells
+  // the admin plainly what happened and what to do, instead of a bare
+  // Google-internal error message with no next step. Both builders are
+  // safe to re-run from scratch -- see their own doc comments -- so the
+  // fix is always just "run this same menu item again for this month".
+  try {
+    var scheduleSheetName = retryTransientSheetsError_(function () { return buildScheduleSheet_(year, month); });
+    var salarySheetName = retryTransientSheetsError_(function () { return buildSalarySheet_(year, month); });
+  } catch (e) {
+    // Short and actionable, not Apps Script's own raw exception dialog --
+    // both builders are safe to re-run from scratch (see their own doc
+    // comments), so there's never more to say than "try again".
+    ui.alert(title, 'Temporary Google Sheets error -- please try again.', ui.ButtonSet.OK);
+    return;
+  }
+  ui.alert('Success', '"' + scheduleSheetName + '" and "' + salarySheetName + '" are ready.', ui.ButtonSet.OK);
 }
 
 /**

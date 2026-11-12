@@ -302,6 +302,24 @@ function setDashboardViewerPassword() {
 }
 
 /**
+ * Same as setDashboardViewerPassword() just above, but for the SEPARATE
+ * daily.html-only password (DASHBOARD_VIEWER_PASSWORD_DAILY) -- the one
+ * handed out to employees, which (per requireDashboardAccess_'s
+ * allowDailyOnly check) can only ever unlock the Daily view, never
+ * Monthly/OT-Special. Keep this genuinely different from
+ * DASHBOARD_VIEWER_PASSWORD -- reusing the same value here defeats the
+ * whole point of having two passwords. Same run-it-yourself pattern: edit
+ * the value below, select this function in the Apps Script editor dropdown,
+ * click Run. Leave blank ('') and run once to disable daily.html's login
+ * entirely.
+ */
+function setDashboardDailyViewerPassword() {
+  var newPassword = '1234';
+  PropertiesService.getScriptProperties().setProperty('DASHBOARD_VIEWER_PASSWORD_DAILY', String(newPassword));
+  Logger.log('Dashboard daily-only viewer password updated.');
+}
+
+/**
  * Sets the script's API key / session secret / QR value. Already run once at
  * project setup -- the real values now live only in Script Properties (Project
  * Settings > Script Properties in the editor), not in source. To rotate a

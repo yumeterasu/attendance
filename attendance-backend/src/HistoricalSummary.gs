@@ -248,8 +248,20 @@ function getHistoricalSummaryForMonth_(year, month) {
  * historicalByEmployee: getHistoricalSummaryForMonth_(year, month)'s result
  * -- read ONCE per report/Dashboard load by the caller, not re-read here
  * per employee.
+ *
+ * otEligibleThisMonth (optional, default true): the per-month "OT
+ * Eligible" override from the "Salary YYYY-MM" sheet (see
+ * getOtEligibilityForMonth_, Attendance.gs). Applied as a final clamp
+ * AFTER the real-vs-historical choice above, not folded into either
+ * branch -- when false, otMinutesTotal/otQuartersTotal/otPay all read as
+ * zero/blank for this month regardless of which source they came from,
+ * while daysWorked/lateCount/overCount/leaveCounts are left untouched
+ * (not OT-related). This is a display/aggregation-level override only --
+ * it never rewrites the real AttendanceLog data sumMonthTotals_ read, same
+ * precedent as the Report tab's "Break (min)" column staying real while
+ * the Dashboard's break-budget flag uses a discounted figure instead.
  */
-function getEffectiveMonthTotals_(emp, dayLogsForEmployee, scheduledShiftsForEmployee, daysInMonth, salaryForMonth, scheduledShiftsForMonth, historicalByEmployee) {
+function getEffectiveMonthTotals_(emp, dayLogsForEmployee, scheduledShiftsForEmployee, daysInMonth, salaryForMonth, scheduledShiftsForMonth, historicalByEmployee, otEligibleThisMonth) {
   var hasRealData = (dayLogsForEmployee && Object.keys(dayLogsForEmployee).length > 0) ||
     (scheduledShiftsForEmployee && Object.keys(scheduledShiftsForEmployee).length > 0);
 
@@ -257,32 +269,40 @@ function getEffectiveMonthTotals_(emp, dayLogsForEmployee, scheduledShiftsForEmp
   var realOtPay = computeOtPay_(emp, realTotals.otMinutesTotal, realTotals.otQuartersTotal, salaryForMonth);
   var realLeaveCounts = countLeavesForEmployee_(scheduledShiftsForMonth, emp.EmployeeID);
 
+  var result;
   if (hasRealData) {
-    return {
+    result = {
       daysWorked: realTotals.daysWorked, lateCount: realTotals.lateCount, overCount: realTotals.overCount,
       otMinutesTotal: realTotals.otMinutesTotal, otQuartersTotal: realTotals.otQuartersTotal,
       otPay: realOtPay, leaveCounts: realLeaveCounts
     };
+  } else {
+    var historical = historicalByEmployee[emp.EmployeeID];
+    if (!historical) {
+      // Nothing real AND no Historical row either -- realTotals/realOtPay/
+      // realLeaveCounts are already the correct all-zero/blank shape for
+      // "nothing on file", so reusing them keeps this branch identical to
+      // this feature's pre-existing output.
+      result = {
+        daysWorked: realTotals.daysWorked, lateCount: realTotals.lateCount, overCount: realTotals.overCount,
+        otMinutesTotal: realTotals.otMinutesTotal, otQuartersTotal: realTotals.otQuartersTotal,
+        otPay: realOtPay, leaveCounts: realLeaveCounts
+      };
+    } else {
+      result = {
+        daysWorked: historical.daysWorked, lateCount: historical.lateCount, overCount: historical.overCount,
+        otMinutesTotal: historical.otMinutesTotal, otQuartersTotal: historical.otQuartersTotal,
+        otPay: historical.otPay, leaveCounts: historical.leaveCounts
+      };
+    }
   }
 
-  var historical = historicalByEmployee[emp.EmployeeID];
-  if (!historical) {
-    // Nothing real AND no Historical row either -- realTotals/realOtPay/
-    // realLeaveCounts are already the correct all-zero/blank shape for
-    // "nothing on file", so reusing them keeps this branch identical to
-    // this feature's pre-existing output.
-    return {
-      daysWorked: realTotals.daysWorked, lateCount: realTotals.lateCount, overCount: realTotals.overCount,
-      otMinutesTotal: realTotals.otMinutesTotal, otQuartersTotal: realTotals.otQuartersTotal,
-      otPay: realOtPay, leaveCounts: realLeaveCounts
-    };
+  if (otEligibleThisMonth === false) {
+    result.otMinutesTotal = 0;
+    result.otQuartersTotal = 0;
+    result.otPay = '';
   }
-
-  return {
-    daysWorked: historical.daysWorked, lateCount: historical.lateCount, overCount: historical.overCount,
-    otMinutesTotal: historical.otMinutesTotal, otQuartersTotal: historical.otQuartersTotal,
-    otPay: historical.otPay, leaveCounts: historical.leaveCounts
-  };
+  return result;
 }
 
 /**
@@ -311,8 +331,16 @@ function getEffectiveMonthTotals_(emp, dayLogsForEmployee, scheduledShiftsForEmp
  * getHistoricalSummaryForMonth_(calYear, calMonth) }, built once per call
  * by the caller (one Historical Summary read per fiscal month, not per
  * employee), same "read once" rule salaryCache already follows.
+ *
+ * otEligibilityCache: { '<calYear>-<calMonth>': getOtEligibilityForMonth_(calYear, calMonth) },
+ * same per-fiscal-month cache shape as salaryCache. A fiscal month flagged
+ * ineligible for this employee contributes zero to
+ * otMinutesTotal/otQuartersTotal/otPay (real or Historical-fallback
+ * alike) but still contributes its real daysWorked/lateCount/overCount --
+ * see getEffectiveMonthTotals_'s own doc comment for the same rule stated
+ * once, at the single-month level.
  */
-function getEffectiveYearTotals_(emp, fiscalMonths, employeeTotals, monthsWithRealData, salaryCache, historicalByMonth) {
+function getEffectiveYearTotals_(emp, fiscalMonths, employeeTotals, monthsWithRealData, salaryCache, historicalByMonth, otEligibilityCache) {
   var monthlyTotals = (employeeTotals && employeeTotals.monthlyTotals) || {};
   var otByMonth = (employeeTotals && employeeTotals.otByMonth) || {};
   // Japanese OT pay (flat per-minute rate, salary-independent) is priced
@@ -330,12 +358,17 @@ function getEffectiveYearTotals_(emp, fiscalMonths, employeeTotals, monthsWithRe
 
   fiscalMonths.forEach(function (fm) {
     var key = fm.calYear + '-' + fm.calMonth;
+    // Same override as getEffectiveMonthTotals_, applied per fiscal month
+    // instead of once -- a probation month early in the fiscal year must
+    // not drag down months after it, or vice versa.
+    var otEligibleThisMonth = (otEligibilityCache[key] || {})[emp.EmployeeID] !== false;
 
     if (monthsWithRealData[emp.EmployeeID + '|' + key]) {
       var mt = monthlyTotals[key] || { daysWorked: 0, lateCount: 0, overCount: 0 };
       daysWorked += mt.daysWorked;
       lateCount += mt.lateCount;
       overCount += mt.overCount;
+      if (!otEligibleThisMonth) return;
       var monthOt = otByMonth[key] || { otMinutes: 0, otQuarters: 0 };
       otMinutesTotal += monthOt.otMinutes;
       otQuartersTotal += monthOt.otQuarters;
@@ -354,6 +387,7 @@ function getEffectiveYearTotals_(emp, fiscalMonths, employeeTotals, monthsWithRe
     daysWorked += historical.daysWorked;
     lateCount += historical.lateCount;
     overCount += historical.overCount;
+    if (!otEligibleThisMonth) return;
     otMinutesTotal += historical.otMinutesTotal;
     otQuartersTotal += historical.otQuartersTotal;
     if (historical.otPay !== '') { otPaySum += historical.otPay; anyOtEligible = true; }

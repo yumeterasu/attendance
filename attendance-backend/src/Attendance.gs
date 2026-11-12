@@ -16,8 +16,8 @@ var DUPLICATE_GUARD_MS = 60 * 1000; // reject re-scans within 60s of the last lo
 // time, which used to leave Late wrongly TRUE (computed against whatever
 // shift the employee picked before the admin corrected it) and, worse,
 // silently zero out genuinely-earned ลาเช้า OT the moment Recompute ran
-// (no end time to compute OT against) -- see isHalfDayLeaveShift_ and
-// previewRecomputeLateAndOt_'s own comments for the rest of this fix.
+// (no end time to compute OT against) -- see previewRecomputeLateAndOt_'s
+// own comments for the rest of this fix.
 // 'Event Full Day 8:00-17:00' / 'Event Half Day 8:00-12:30' (renamed +
 // split from the original single 'Event 8:00-17:00', 2026-10-20): both are
 // still just "Event" shifts to every piece of Late/OT/absence logic in
@@ -49,8 +49,8 @@ var DUPLICATE_GUARD_MS = 60 * 1000; // reject re-scans within 60s of the last lo
 var SHIFTS = ['7:00-16:00', '7:30-16:30', '8:00-17:00', '8:30-17:30', '7:00-17:00', '7:00-17:30', '8:00-18:00', '8:00-18:30', 'Event Full Day 8:00-17:00', 'Event Half Day 8:00-12:30', 'Special 8:30-17:30', 'Annual Leave', 'Sick Leave', 'Unpaid Leave', 'Paid Special Leave', 'Substitutional Leave', 'Maternity Leave', 'Half Day Annual Leave AM 8:00-12:30', 'Half Day Annual Leave PM 12:30-17:00', 'Half Day Sick Leave AM 8:00-12:30', 'Half Day Sick Leave PM 12:30-17:00', 'Half Day Unpaid Leave AM 8:00-12:30', 'Half Day Unpaid Leave PM 12:30-17:00', 'Holiday'];
 // Shift values that mean "nobody's expected in at all that day" -- as
 // opposed to a blank cell (not scheduled yet) or a Half Day Leave entry
-// (still expected in for half the day -- see isHalfDayLeaveShift_). Used
-// wherever a scheduled-but-not-working day should be excluded from an
+// (still expected in for half the day, via one of the "Half Day ..." SHIFTS
+// entries above). Used wherever a scheduled-but-not-working day should be excluded from an
 // absence/attendance check: "Annual Leave", "Sick Leave", "Unpaid Leave"
 // and "Paid Special Leave" are one person's own day off (paid or not
 // doesn't matter here, just whether they're expected in); "Substitutional
@@ -234,9 +234,9 @@ function getShiftStartTime_(shiftOrEvent) {
  * when someone genuinely arrived or left. Returns `actualTimestamp`
  * unchanged for every other shift (or an Event shift with no parseable
  * time), so this is a no-op everywhere else. Uses the same isEventShift_
- * definition as everywhere else that treats Event shifts specially (see
- * highlightShiftMismatches_) -- callers pass whatever's in the Shift
- * column, already known to be that day's scheduled shift text.
+ * definition as everywhere else that treats Event shifts specially --
+ * callers pass whatever's in the Shift column, already known to be that
+ * day's scheduled shift text.
  */
 function eventShiftOverrideTimestamp_(scheduledShift, actualTimestamp, type) {
   if (!isEventShift_(scheduledShift)) return actualTimestamp;
@@ -313,23 +313,6 @@ function lateForScheduledShift_(scheduledShift, timestamp) {
 }
 
 /**
- * True for any Half Day Leave label -- both the current AM/PM variants
- * (see SHIFTS' own comment) and the legacy plain "Half Day X Leave" labels
- * still sitting in older "Schedule YYYY-MM" sheets from before 2026-10-02.
- * Deliberately NOT folded into isNoLateNoOtShift_ -- unlike Event/Special,
- * Half Day Leave WANTS normal Late/OT computation against its own embedded
- * time (that's the whole point of this fix); this helper exists only for
- * the one place that needs to tell Half Day apart from an ordinary shift:
- * highlightShiftMismatches_ (Report.gs), which must never flag a Half Day
- * cell as "stale" just because the admin always corrects it after the
- * fact, long after the employee's own check-in time was recorded against
- * whatever shift they originally picked.
- */
-function isHalfDayLeaveShift_(scheduledShift) {
-  return !!scheduledShift && /^Half Day /.test(scheduledShift);
-}
-
-/**
  * True if `day`'s missing IN or OUT is actually the OTHER half of a
  * genuine overnight Special Shift pairing with the ADJACENT day -- e.g. IN
  * at 23:50 today, OUT at 00:30 tomorrow. recordAttendance_'s own comment
@@ -349,9 +332,7 @@ function isHalfDayLeaveShift_(scheduledShift) {
  * picked on the very last day of a month, spanning into the 1st of the
  * next, isn't recognized here (would need a second month's Schedule sheet
  * and AttendanceLog slice); accepted as a narrow, rare edge case rather
- * than adding that cross-month complexity, same spirit as this codebase's
- * other accepted narrow trade-offs (see e.g. highlightShiftMismatches_'s
- * own "no overnight shift exists to need it yet" comment).
+ * than adding that cross-month complexity.
  *
  * `missingSide` is 'OUT' (today has an IN with no OUT -- does tomorrow's
  * OUT complete it) or 'IN' (today has an OUT with no IN -- does
@@ -1535,6 +1516,16 @@ function handleKioskMyAttendance_(params) {
   var otUnit = otUnitForDepartment_(found.row.Department);
   var daysInMonth = new Date(year, month, 0).getDate();
   var monthTotals = sumMonthTotals_(dayLogs, scheduledShiftsForMonth, daysInMonth);
+  // Per-month "OT Eligible" override (Salary sheet column, see
+  // getOtEligibilityForMonth_) -- so an employee paging back to a month
+  // the admin flagged (e.g. their own first month, not paid OT) never
+  // sees a number here the Dashboard/Summary/PDF disagree with. Only the
+  // two OT totals are zeroed -- daysWorked/lateCount/overCount stay real,
+  // and there's no otPay figure on the Kiosk to begin with.
+  if (getOtEligibilityForMonth_(year, month)[found.row.EmployeeID] === false) {
+    monthTotals.otMinutesTotal = 0;
+    monthTotals.otQuartersTotal = 0;
+  }
   // getAllowancesForEmployeeMonth_ (Allowances.gs) reads the whole
   // Allowances sheet once per call -- unlike handleKioskMyAttendanceBulk_/
   // handleKioskScheduleSyncAll_ below (which each read it exactly once no
@@ -1553,6 +1544,12 @@ function handleKioskMyAttendance_(params) {
     month: month,
     days: days,
     otUnit: otUnit,
+    // Same sumMonthTotals_ result the Report/Summary sheets and Dashboard
+    // already use for this figure (see getDashboardSummaryData_, Report.gs)
+    // -- added 2026-11-03 so My Schedule can finally show an employee how
+    // many days they worked this month, which until now wasn't surfaced
+    // anywhere on the Kiosk at all.
+    daysWorked: monthTotals.daysWorked,
     otMinutesTotal: monthTotals.otMinutesTotal,
     otQuartersTotal: monthTotals.otQuartersTotal,
     lateCount: monthTotals.lateCount,
@@ -1631,6 +1628,14 @@ function handleKioskMyAttendanceBulk_(params) {
     var scheduledShiftsForMonth = (getScheduledShiftsForMonth_(year, month))[employeeId] || {};
     var daysInMonth = new Date(year, month, 0).getDate();
     var monthTotals = sumMonthTotals_(dayLogs, scheduledShiftsForMonth, daysInMonth);
+    // Same per-month "OT Eligible" override as handleKioskMyAttendance_'s
+    // identical comment -- read per month in this loop, same granularity
+    // as scheduledShiftsForMonth just above (one small sheet read per
+    // month either way).
+    if (getOtEligibilityForMonth_(year, month)[employeeId] === false) {
+      monthTotals.otMinutesTotal = 0;
+      monthTotals.otQuartersTotal = 0;
+    }
     var monthAllowanceEntries = employeeAllowanceRows.filter(function (a) {
       return a.year === year && a.month === month;
     });
@@ -1639,6 +1644,11 @@ function handleKioskMyAttendanceBulk_(params) {
       month: month,
       days: buildMyAttendanceDays_(year, month, dayLogs, scheduledShiftsForMonth, tz),
       otUnit: otUnit,
+      // Same addition as handleKioskMyAttendance_'s own daysWorked, kept in
+      // sync here too -- otherwise a month paged in from this bulk/cached
+      // path (see this function's own doc comment) would show no Days
+      // Worked until the next live fetch overwrote it.
+      daysWorked: monthTotals.daysWorked,
       otMinutesTotal: monthTotals.otMinutesTotal,
       otQuartersTotal: monthTotals.otQuartersTotal,
       lateCount: monthTotals.lateCount,
@@ -1689,6 +1699,10 @@ function handleKioskScheduleSyncAll_(params) {
   // returns a per-employeeId map, so this is a direct fit for the
   // per-employee loop below with no further reshaping needed.
   var allowancesByEmployee = getAllowancesForMonth_(year, month);
+  // Same per-month "OT Eligible" override as handleKioskMyAttendance_'s
+  // identical comment -- one read for the whole batch, same as the maps
+  // just above.
+  var otEligibilityByEmployee = getOtEligibilityForMonth_(year, month);
 
   // getCachedEmployees_ (Utils.gs) rather than a fresh sheet.getDataRange()
   // read or getAllEmployees_() -- same raw row order findEmployeeByKioskPin_
@@ -1742,11 +1756,21 @@ function handleKioskScheduleSyncAll_(params) {
       // handleKioskMyAttendance_'s identical comment.
       var otUnit = otUnitForDepartment_(row[deptCol]);
       var monthTotals = sumMonthTotals_(dayLogs, scheduledShiftsForMonth, daysInMonth);
+      if (otEligibilityByEmployee[employeeId] === false) {
+        monthTotals.otMinutesTotal = 0;
+        monthTotals.otQuartersTotal = 0;
+      }
       employees.push({
         pin: pin,
         name: name,
         days: buildMyAttendanceDays_(year, month, dayLogs, scheduledShiftsForMonth, tz),
         otUnit: otUnit,
+        // Same addition as handleKioskMyAttendance_'s own daysWorked --
+        // this is the device-wide daily sync that pre-caches everyone's
+        // CURRENT month, so without it an employee opening My Schedule on
+        // this cached snapshot (before their own live fetch ever runs)
+        // would see no Days Worked figure at all.
+        daysWorked: monthTotals.daysWorked,
         otMinutesTotal: monthTotals.otMinutesTotal,
         otQuartersTotal: monthTotals.otQuartersTotal,
         lateCount: monthTotals.lateCount,
@@ -1808,7 +1832,7 @@ function handleKioskScheduleSyncAll_(params) {
  *
  * Split 2026-10-02 into this preview (all computation, no sheet write) and
  * commitRecomputeResult_ below (just the write) -- a real risk surfaced by
- * the Half Day Leave fix (see SHIFTS/isHalfDayLeaveShift_'s own comments):
+ * the Half Day Leave fix (see SHIFTS' own comment):
  * recomputing a day whose Schedule cell now says Half Day AM (never has OT)
  * when it used to say an ordinary shift would silently zero out already-
  * earned, genuinely correct OT with no way to tell afterward it ever had a
@@ -2133,8 +2157,8 @@ function commitRecomputeResult_(preview) {
 /**
  * Resolves a "Schedule YYYY-MM" sheet's header row into { day: colIndex },
  * shared by every reader of that sheet's per-day columns
- * (getScheduledShiftsForMonth_, findScheduleCell_, checkCurrentSchedule_,
- * highlightShiftMismatches_) so they can't independently drift on what
+ * (getScheduledShiftsForMonth_, findScheduleCell_, checkCurrentSchedule_)
+ * so they can't independently drift on what
  * counts as "the day N column" -- two of them once did exactly that (one
  * took the first matching header, one the last) when this coercion was
  * first added piecemeal to each call site separately.
@@ -2236,6 +2260,47 @@ function getSalaryForMonth_(year, month) {
     // an admin could still paste/type it in with commas by hand.
     var salary = Number(String(values[i][salaryCol] == null ? '' : values[i][salaryCol]).replace(/,/g, '').trim());
     if (salary > 0) result[employeeId] = salary;
+  }
+  return result;
+}
+
+/**
+ * Reads the same "Salary YYYY-MM" sheet's "OT Eligible" column and returns
+ * { [employeeId]: boolean } -- the per-month override that zeroes an
+ * employee's OT for one specific month everywhere it's aggregated
+ * (Summary tab, Dashboard, Print Employee Report PDF, Kiosk My Schedule),
+ * see getEffectiveMonthTotals_/getEffectiveYearTotals_ (HistoricalSummary.gs)
+ * for how it's applied. A SEPARATE function from getSalaryForMonth_ above,
+ * deliberately -- that function's bare-number return shape already has
+ * several call sites consuming it directly as a number, and reshaping it
+ * into something richer would touch all of them for no reason.
+ *
+ * "Blank/missing means eligible" -- same convention as isOtEligible_
+ * above, extended to three distinct missing cases that must all resolve
+ * to true, never false: no "Salary YYYY-MM" sheet at all for this month,
+ * a sheet that predates this column (built before this feature existed,
+ * not yet migrated by re-running "Create/Update Schedule + Salary Sheet"),
+ * and an employee with no row on an otherwise-existing sheet. Only an
+ * explicit FALSE (boolean or the literal text) ever excludes an
+ * employee/month from the returned map.
+ */
+function getOtEligibilityForMonth_(year, month) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheetName = 'Salary ' + year + '-' + (month < 10 ? '0' + month : String(month));
+  var sheet = ss.getSheetByName(sheetName);
+  if (!sheet) return {};
+
+  var values = sheet.getDataRange().getValues();
+  var headers = values[0];
+  var idCol = headers.indexOf('EmployeeID');
+  var eligibleCol = headers.indexOf('OT Eligible'); // -1 on a sheet not yet migrated -- every employee defaults to eligible below
+  if (idCol === -1) return {};
+
+  var result = {};
+  for (var i = 1; i < values.length; i++) {
+    var employeeId = String(values[i][idCol]);
+    var raw = eligibleCol === -1 ? '' : values[i][eligibleCol];
+    result[employeeId] = raw !== false && raw !== 'FALSE';
   }
   return result;
 }
