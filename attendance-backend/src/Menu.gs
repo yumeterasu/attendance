@@ -15,6 +15,7 @@ function onOpen() {
     .addItem('Add New Employee', 'guardedMenuAddNewEmployee_')
     .addItem('Deactivate Employee (Resignation)', 'guardedMenuDeactivateEmployee_')
     .addItem('Add Backdated Check-in/Check-out', 'guardedMenuAddBackdatedAttendance_')
+    .addItem('Cancel Wrong OT for One Day', 'guardedMenuCancelOtForOneDay_')
     .addItem('Bulk Mark Attendance for a Day', 'guardedMenuBulkMarkAttendance_')
     .addItem('Allowancer', 'guardedMenuAddSpecialAllowance_')
     .addItem('Add Historical Summary Month', 'guardedMenuAddHistoricalSummaryRows_')
@@ -47,6 +48,7 @@ function guardedMenuFixLateInAsOut_() { if (preflightHeaderCheck_()) menuFixLate
 function guardedMenuAddNewEmployee_() { if (preflightHeaderCheck_()) menuAddNewEmployee_(); }
 function guardedMenuDeactivateEmployee_() { if (preflightHeaderCheck_()) menuDeactivateEmployee_(); }
 function guardedMenuAddBackdatedAttendance_() { if (preflightHeaderCheck_()) menuAddBackdatedAttendance_(); }
+function guardedMenuCancelOtForOneDay_() { if (preflightHeaderCheck_()) menuCancelOtForOneDay_(); }
 function guardedMenuBulkMarkAttendance_() { if (preflightHeaderCheck_()) menuBulkMarkAttendance_(); }
 function guardedMenuAddSpecialAllowance_() { if (preflightHeaderCheck_()) menuAddSpecialAllowance_(); }
 function guardedMenuAddHistoricalSummaryRows_() { if (preflightHeaderCheck_()) menuAddHistoricalSummaryRows_(); }
@@ -968,6 +970,103 @@ function menuAddBackdatedAttendance_() {
   });
 
   ui.alert('Done', employee.Name + '\n' + summaryLines.join('\n'), ui.ButtonSet.OK);
+}
+
+/**
+ * Corrects the specific mistake this was built for (admin request,
+ * 2026-11-12): an employee -- Thai/other in practice, since Japanese OUT/
+ * OUT OT are equivalent and always auto-computed -- presses "OUT OT" on a
+ * day that should carry no OT at all. There's no menu item that already
+ * covers this: "Fix Mis-tapped IN After 16:00" is a different mistake (wrong
+ * Type, not a wrong OT flag) and "⭐ Recompute Late/OT for One Month"
+ * deliberately leaves an already-OT=TRUE Thai row alone unless the day's
+ * Schedule shift says Event/Special/Holiday or the employee's global
+ * OTEligible is off (see its own doc comment in Attendance.gs) -- neither
+ * is true here, so Recompute cannot undo this by itself. The only real fix
+ * is editing the stored OT/OTQuarters cells directly, which is exactly what
+ * this does, with the same employee-lookup/confirm pattern as "Add
+ * Backdated Check-in/Check-out" above.
+ *
+ * Finds every OUT row that day via findAllOutRowsForDate_ (Attendance.gs)
+ * rather than assuming there's only one -- aggregateMonthLogs_ (Report.gs)
+ * always takes whichever OUT row has the latest timestamp as the one that
+ * feeds Summary/Dashboard/Kiosk My Schedule, so if more than one exists
+ * (e.g. a past "Add Backdated..." correction left an extra row), only the
+ * latest one can actually be carrying the live OT value -- the admin is
+ * told this explicitly rather than the tool silently guessing.
+ */
+function menuCancelOtForOneDay_() {
+  var ui = SpreadsheetApp.getUi();
+  var title = 'Cancel Wrong OT for One Day';
+
+  var employeeResp = ui.prompt(title, 'Employee name or ID:', ui.ButtonSet.OK_CANCEL);
+  if (employeeResp.getSelectedButton() !== ui.Button.OK) return;
+  var employee = findEmployeeByNameOrId_(employeeResp.getResponseText().trim());
+  if (!employee) {
+    ui.alert('No employee found matching "' + employeeResp.getResponseText().trim() + '".');
+    return;
+  }
+
+  var confirmEmployee = ui.alert(
+    title,
+    'Found: ' + employee.Name + ' (' + employee.EmployeeID + '). Is this the right person?',
+    ui.ButtonSet.YES_NO
+  );
+  if (confirmEmployee !== ui.Button.YES) return;
+
+  var dateResp = ui.prompt(title, 'Date (DD/MM/YYYY), e.g. 24/07/2026 -- the day OUT OT was tapped by mistake:', ui.ButtonSet.OK_CANCEL);
+  if (dateResp.getSelectedButton() !== ui.Button.OK) return;
+  var dateParts = dateResp.getResponseText().trim().split('/');
+  if (dateParts.length !== 3) { ui.alert('Enter the date as DD/MM/YYYY.'); return; }
+  var day = Number(dateParts[0]), month = Number(dateParts[1]), year = Number(dateParts[2]);
+  var date = new Date(year, month - 1, day);
+  if (isNaN(date.getTime())) { ui.alert('That date did not parse -- double check the values.'); return; }
+
+  var tz = Session.getScriptTimeZone();
+  var outRows = findAllOutRowsForDate_(employee.EmployeeID, date);
+  if (outRows.length === 0) {
+    ui.alert(title, 'No OUT record found for ' + employee.Name + ' on that date.', ui.ButtonSet.OK);
+    return;
+  }
+
+  // findAllOutRowsForDate_ already returns these latest-first, matching
+  // aggregateMonthLogs_'s own "latest OUT wins" rule -- see its doc comment.
+  var target = outRows[0];
+  if (outRows.length > 1) {
+    var multiWarn = ui.alert(
+      title,
+      employee.Name + ' has ' + outRows.length + ' OUT records on that date. Only the latest one (' +
+      Utilities.formatDate(target.timestamp, tz, 'HH:mm') +
+      ') is the one that actually counts toward OT/Duration everywhere -- continue with that one?',
+      ui.ButtonSet.YES_NO
+    );
+    if (multiWarn !== ui.Button.YES) return;
+  }
+
+  if (!target.ot) {
+    ui.alert(
+      title,
+      employee.Name + '\'s OUT at ' + Utilities.formatDate(target.timestamp, tz, 'HH:mm') + ' on that date already has no OT -- nothing to cancel.',
+      ui.ButtonSet.OK
+    );
+    return;
+  }
+
+  var otAmountText = target.department === 'Japanese'
+    ? (target.otMinutes || 0) + ' min'
+    : (target.otQuarters || 0) + ' quarter(s)';
+  var confirmCancel = ui.alert(
+    title,
+    'Cancel OT (' + otAmountText + ') for ' + employee.Name + ' on ' +
+    Utilities.formatDate(target.timestamp, tz, 'dd-MM-yyyy') + ' (OUT at ' +
+    Utilities.formatDate(target.timestamp, tz, 'HH:mm') + ')?',
+    ui.ButtonSet.YES_NO
+  );
+  if (confirmCancel !== ui.Button.YES) return;
+
+  cancelOtOnLogRow_(target.rowIndex, target.department);
+
+  ui.alert('Success', 'OT cancelled for ' + employee.Name + ' on ' + Utilities.formatDate(target.timestamp, tz, 'dd-MM-yyyy') + '.', ui.ButtonSet.OK);
 }
 
 /**

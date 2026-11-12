@@ -2659,6 +2659,77 @@ function findLogEntryForDate_(employeeId, type, date) {
 }
 
 /**
+ * Every OUT row for one employee on one calendar date, across the whole
+ * AttendanceLog -- built for menuCancelOtForOneDay_ (Menu.gs), which needs
+ * two things findLogEntryForDate_ deliberately doesn't give a caller: the
+ * sheet row index itself (to write the correction back), and EVERY matching
+ * row rather than silently resolving to just the most recent one, so the
+ * admin can be told when more than one OUT exists that day instead of
+ * guessing which one actually "counts". aggregateMonthLogs_ (Report.gs)
+ * always takes whichever OUT row has the latest timestamp that day as the
+ * one that feeds Summary/Dashboard/Kiosk My Schedule -- sorting by
+ * timestamp here (not returning in sheet order) lets the caller find that
+ * same row the same way, without duplicating that rule in two places.
+ */
+function findAllOutRowsForDate_(employeeId, date) {
+  var sheet = getSheet_('AttendanceLog');
+  var values = sheet.getDataRange().getValues();
+  var headers = values[0];
+  var idCol = headers.indexOf('EmployeeID');
+  var deptCol = headers.indexOf('Department');
+  var tsCol = headers.indexOf('Timestamp');
+  var typeCol = headers.indexOf('Type');
+  var otCol = headers.indexOf('OT');
+  var otMinutesCol = headers.indexOf('OTMinutes');
+  var otQuartersCol = headers.indexOf('OTQuarters');
+
+  var result = [];
+  for (var i = 1; i < values.length; i++) {
+    if (String(values[i][idCol]) !== String(employeeId)) continue;
+    if (values[i][typeCol] !== 'OUT') continue;
+    var ts = new Date(values[i][tsCol]);
+    if (!isSameDay_(ts, date)) continue;
+    result.push({
+      rowIndex: i + 1, // 1-based sheet row -- values[] is 0-based and values[0] is the header row, so row i (0-based) is sheet row i+1
+      timestamp: ts,
+      department: String(values[i][deptCol] || ''),
+      ot: isTrue_(values[i][otCol]),
+      otMinutes: otMinutesCol !== -1 ? values[i][otMinutesCol] : '',
+      otQuarters: otQuartersCol !== -1 ? values[i][otQuartersCol] : ''
+    });
+  }
+  result.sort(function (a, b) { return b.timestamp.getTime() - a.timestamp.getTime(); });
+  return result;
+}
+
+/**
+ * Cancels OT on one specific AttendanceLog OUT row -- the fix for an
+ * accidental "OUT OT" kiosk tap on a day that should carry no OT at all
+ * (menuCancelOtForOneDay_, Menu.gs). Sets OT to FALSE and zeroes only
+ * whichever of OTMinutes/OTQuarters this department's OUT branch actually
+ * populates (recordAttendance_'s OUT branch: Japanese writes OTMinutes and
+ * leaves OTQuarters blank, everyone else the reverse) -- leaves the other,
+ * already-blank column untouched rather than turning a blank cell into a
+ * stray 0 that was never part of that department's own write pattern.
+ * rowIndex is 1-based, matching sheet.getRange's own convention (see
+ * findAllOutRowsForDate_, this function's only source of a rowIndex).
+ */
+function cancelOtOnLogRow_(rowIndex, department) {
+  var sheet = getSheet_('AttendanceLog');
+  var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  var otCol = headers.indexOf('OT') + 1;
+  var otMinutesCol = headers.indexOf('OTMinutes') + 1;
+  var otQuartersCol = headers.indexOf('OTQuarters') + 1;
+
+  if (otCol > 0) sheet.getRange(rowIndex, otCol).setValue(false);
+  if (department === 'Japanese') {
+    if (otMinutesCol > 0) sheet.getRange(rowIndex, otMinutesCol).setValue(0);
+  } else {
+    if (otQuartersCol > 0) sheet.getRange(rowIndex, otQuartersCol).setValue(0);
+  }
+}
+
+/**
  * Like findStintStartInLog_, but for the offline-sync/backdated write paths
  * (recordOfflineSyncedAttendance_/recordBackdatedAttendance_): does its own
  * full, unbounded AttendanceLog read (same reasoning as findLogEntryForDate_'s
