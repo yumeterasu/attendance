@@ -66,6 +66,7 @@ function runHealthCheck_(confirmBlocked) {
   checkAndFixSalaryHeaders_(findings);
   checkAndFixAllowancesHeaders_(findings);
   checkAndFixHistoricalSummaryHeaders_(findings);
+  checkAndFixLiveReportSummaryStructure_(findings);
   checkDashboardPasswordCollision_(findings);
 
   var ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -659,6 +660,95 @@ function checkAndFixHistoricalSummaryHeaders_(findings, dryRun) {
       message: sheet.getName() + ' header row ' + (dryRun ? 'needs repair' : 'auto-repaired') + ': ' + fixed.join(', ') + (dryRun ? ' missing.' : ' restored.')
     });
   }
+}
+
+/**
+ * Verifies/repairs the live "Report" and "Summary" tabs' OWN control cells
+ * -- the Year/Month label text (A1/A2) and, more importantly, the B1/B2
+ * dropdown cells refreshLiveReportSheet_/refreshLiveSummarySheet_
+ * (Report.gs) read on every refresh. Added 2026-11-12 -- until now,
+ * checkAndFixCriticalSheets_ only confirmed these two tabs exist BY NAME
+ * (see its own doc comment: "no rename-recovery attempted there... pure
+ * computed views with no stable row-1 fingerprint"), never looked at
+ * what's actually in their first few rows.
+ *
+ * Why this matters: if B1/B2's value is cleared or its dropdown (data
+ * validation) is deleted, both refresh functions silently `return` early
+ * on a blank/invalid year or month (Report.gs) -- no thrown error, no
+ * alert, the table just quietly stops updating. Exactly the "looks fine,
+ * quietly wrong" failure class Health Check exists to catch elsewhere
+ * (the Employees!A1 incident referenced throughout this file).
+ *
+ * No `dryRun` param, unlike the header-restore checks above -- this is
+ * only ever called from runHealthCheck_ (the full "Health Check" menu
+ * item), never from preflightHeaderCheck_, so it always repairs
+ * immediately, same as the content-level checks further down this file
+ * (checkEmployeesSheet_ etc). Deliberately NOT added to
+ * preflightHeaderCheck_: unlike Employees/Schedule/Salary/Allowances/
+ * Historical Summary, no OTHER menu command reads Report/Summary's own
+ * cells before doing its own work (the various admin actions that touch
+ * them only ever WRITE a fresh refresh afterward) -- a broken
+ * Report/Summary tab just means those two views stop refreshing, not
+ * that some other button's own data read breaks, so there's nothing for
+ * a fast pre-check to protect here.
+ *
+ * Existence-only check on the dropdown (just "does B1/B2 have a data
+ * validation rule at all", not "does its list still match exactly") --
+ * matches the rigor level of every other check in this file; a dropdown
+ * that's merely gone stale (e.g. still capped at an old year) is a
+ * different, much lower-stakes mistake than one that's been deleted
+ * outright and is now silently breaking the refresh. A blank B1/B2 is
+ * reseeded with today's year/month -- but ONLY when genuinely blank,
+ * same "blank-only fill" discipline this codebase already uses everywhere
+ * else (e.g. the OT Eligible column migration in buildSalarySheet_) --
+ * never overwriting an admin's real Year/Month selection.
+ */
+function checkAndFixLiveReportSummaryStructure_(findings) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var thisYear = new Date().getFullYear();
+  var years = [];
+  for (var y = thisYear - 1; y <= thisYear + 3; y++) years.push(y);
+  var months = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 'All']; // identical list on both sheets -- confirmed by reading setupLiveReportSheet/setupLiveSummarySheet (Report.gs)
+
+  [LIVE_REPORT_SHEET_NAME, LIVE_SUMMARY_SHEET_NAME].forEach(function (sheetName) {
+    var sheet = ss.getSheetByName(sheetName);
+    if (!sheet) return; // checkAndFixCriticalSheets_ already reports a missing tab
+
+    var fixed = [];
+
+    var a1 = sheet.getRange('A1');
+    if (a1.getValue() !== 'Year:') { a1.setValue('Year:'); fixed.push('A1 label'); }
+    var a2 = sheet.getRange('A2');
+    if (a2.getValue() !== 'Month:') { a2.setValue('Month:'); fixed.push('A2 label'); }
+
+    var yearCell = sheet.getRange('B1');
+    if (!yearCell.getDataValidation()) {
+      yearCell.setDataValidation(SpreadsheetApp.newDataValidation().requireValueInList(years, true).build());
+      fixed.push('B1 dropdown');
+    }
+    if (!yearCell.getValue()) { yearCell.setValue(thisYear); fixed.push('B1 value'); }
+
+    var monthCell = sheet.getRange('B2');
+    if (!monthCell.getDataValidation()) {
+      monthCell.setDataValidation(SpreadsheetApp.newDataValidation().requireValueInList(months, true).build());
+      fixed.push('B2 dropdown');
+    }
+    if (!monthCell.getValue()) { monthCell.setValue(new Date().getMonth() + 1); fixed.push('B2 value'); }
+
+    if (fixed.length > 0) {
+      findings.push({
+        sheetName: sheetName,
+        a1: null,
+        fixable: true,
+        message: sheetName + ' auto-repaired: ' + fixed.join(', ') + ' restored.'
+      });
+      // A repaired blank/invalid B1/B2 means the table below was stale --
+      // refresh immediately so the fix is visible without the admin having
+      // to re-touch the dropdown themselves.
+      if (sheetName === LIVE_REPORT_SHEET_NAME) refreshLiveReportSheet_();
+      else refreshLiveSummarySheet_();
+    }
+  });
 }
 
 /**
