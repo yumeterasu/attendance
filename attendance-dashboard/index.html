@@ -628,6 +628,7 @@
     background: #F4F7FD;
     padding: 12px 14px;
     border-bottom: 1px solid var(--border);
+    border-right: 1px solid var(--border);
     white-space: nowrap;
     /* Stays visible while scrolling through a long Monthly table (real
        feedback -- the column headers used to scroll away, leaving the
@@ -726,17 +727,36 @@
   tbody td {
     padding: 11px 7px;
     border-bottom: 1px solid var(--border);
+    border-right: 1px solid var(--border);
     white-space: nowrap;
   }
 
+  /* No stray line flush against the card's own right edge/rounded corner --
+     every OTHER cell boundary still gets the divider from thead th/tbody
+     td's border-right above (border-collapse merges each pair into one
+     shared 1px line, never doubled). */
+  thead th:last-child, tbody td:last-child { border-right: none; }
+
   tbody tr:last-child td { border-bottom: none; }
+  /* Subtle zebra striping (real feedback, 2026-11-13 -- easy to lose your
+     place scanning a long roster now that the table has 13 columns) --
+     reuses the page's own --bg token (the body's own background, a hair
+     darker than the card's white) rather than a new color, so it reads as
+     "every other row sits on the page" not as its own design element.
+     nth-child(even), not odd -- keeps the FIRST row visually matched to
+     the header's own #F4F7FD-on-white boundary instead of jumping
+     straight to a tinted row under the header. Declared BEFORE
+     tbody tr:hover below, not after -- equal specificity, so source order
+     decides, and hover (an even row included) must always win over the
+     stripe, never the other way around. */
+  tbody tr:nth-child(even) { background: var(--bg); }
   tbody tr:hover { background: #FAFBFF; }
 
   /* Whole-row tint for the over-budget Annual Leave case (see renderRows) --
      a small icon alone next to the name turned out too easy to miss while
      scanning a long roster, so the row itself carries the color instead.
      Targets td directly (not just tr) since a td's own background always
-     paints over its row's, including on hover. */
+     paints over its row's, including on hover AND the zebra stripe above. */
   tbody tr.annual-leave-row-warn td,
   tbody tr.annual-leave-row-warn:hover td { background: var(--danger-bg); }
   #summaryTable tbody tr:last-child td:first-child { border-bottom-left-radius: 16px; }
