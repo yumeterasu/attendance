@@ -654,8 +654,15 @@
      tightened just the horizontal padding here (and on tbody td, pill,
      and leave-badge below) rather than widening `main`, since widening it
      read as worse (real feedback, 2026-10-19): a near-empty page with the
-     table stranded in the middle, not actually easier to read. */
-  thead th { padding-left: 10px; padding-right: 10px; }
+     table stranded in the middle, not actually easier to read. Tightened
+     again, 10px -> 7px, after the Unpaid Leave/Deduction columns landed
+     (real feedback, 2026-11-13) -- most columns' content (a day count, a
+     single-digit Late/Over pill, a 3-4 char Branch/Department word) is
+     far narrower than 10px of padding on each side was leaving room for;
+     reclaiming that margin across all 13 columns (~78px total) gives
+     `main`'s own width back some real right-edge breathing room instead
+     of the table running right up against it. */
+  thead th { padding-left: 7px; padding-right: 7px; }
   /* Pins the 6 columns whose header width doesn't vary enough between
      languages to matter for the table's overall fit -- each value is
      max(en, ja) measured via headless Chrome against this exact CSS,
@@ -717,7 +724,7 @@
   thead th.sortable.sort-asc, thead th.sortable.sort-desc { color: var(--accent-dark); }
 
   tbody td {
-    padding: 11px 10px;
+    padding: 11px 7px;
     border-bottom: 1px solid var(--border);
     white-space: nowrap;
   }
