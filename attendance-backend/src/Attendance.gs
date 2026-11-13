@@ -1478,6 +1478,44 @@ function buildMyAttendanceDays_(year, month, dayLogs, scheduledShiftsForMonth, t
 }
 
 /**
+ * One employee's Unpaid Leave Deduction for a Kiosk My Schedule response --
+ * shared by all 3 Kiosk handlers that build one of these per employee/month
+ * (handleKioskMyAttendance_, handleKioskMyAttendanceBulk_,
+ * handleKioskScheduleSyncAll_) specifically so a future field/behavior
+ * change here can't be made in 2 of the 3 and silently forgotten in the
+ * third the way this one almost was (real review catch, 2026-11-14 -- this
+ * feature's first draft added it to only 2 of the 3, missing the device-
+ * wide daily sync that pre-caches everyone's current month for offline
+ * fallback). Takes the already-resolved salaryForMonth rather than fetching
+ * it itself -- each of the 3 callers reads "Salary YYYY-MM" at a different
+ * granularity (once for a single month, once per month in a loop, once for
+ * a whole batch), so fetching belongs at the call site, not duplicated
+ * here. Returns just the deduction (already '' -> null converted, same
+ * convention every other surface of this figure uses) -- the day count
+ * countUnpaidLeaveDaysForEmployee_ computes along the way to get there is
+ * an internal input to the Baht figure, not a separate value the Kiosk UI
+ * shows anywhere today, so it isn't threaded through to the response.
+ *
+ * Deliberately does NOT fall back to a Historical Summary row the way
+ * getEffectiveMonthTotals_ (HistoricalSummary.gs) does for this same
+ * figure on the Summary tab/Dashboard/Print Report PDF -- this matches
+ * every OTHER figure on the Kiosk's My Schedule screen (daysWorked,
+ * lateCount, overCount, OT), none of which fall back to Historical
+ * Summary either (that fallback was deliberately scoped to the Summary
+ * tab/Dashboard/PDF only when it was built, per CLAUDE.md). Paging My
+ * Schedule back to one of the pre-launch backfilled months will show no
+ * Unpaid Leave Deduction (along with no real days/late/OT figures
+ * either) even if that month happens to have both a Historical Summary
+ * row AND a Salary sheet -- a known, pre-existing Kiosk limitation this
+ * feature doesn't change, not a new gap specific to it.
+ */
+function kioskUnpaidLeaveDeduction_(emp, scheduledShiftsForEmployee, salaryForMonth) {
+  var unpaidLeaveDays = countUnpaidLeaveDaysForEmployee_(scheduledShiftsForEmployee);
+  var unpaidLeaveDeduction = computeUnpaidLeaveDeduction_(emp, salaryForMonth, unpaidLeaveDays);
+  return unpaidLeaveDeduction === '' ? null : unpaidLeaveDeduction;
+}
+
+/**
  * Lets an employee check their own month's check-in/out times right from the
  * kiosk, by re-entering their same 4-digit KioskPIN -- no admin session
  * needed. Defaults to the current year/month if not given.
@@ -1516,13 +1554,20 @@ function handleKioskMyAttendance_(params) {
   var otUnit = otUnitForDepartment_(found.row.Department);
   var daysInMonth = new Date(year, month, 0).getDate();
   var monthTotals = sumMonthTotals_(dayLogs, scheduledShiftsForMonth, daysInMonth);
+  // One combined read of the "Salary YYYY-MM" sheet for both the OT
+  // Eligible override below AND this month's salary (needed further down
+  // for computeUnpaidLeaveDeduction_) -- getSalaryAndOtEligibilityForMonth_
+  // (above) exists specifically so this handler doesn't read that same
+  // sheet twice via getOtEligibilityForMonth_ + getSalaryForMonth_
+  // separately.
+  var salaryAndEligibility = getSalaryAndOtEligibilityForMonth_(year, month);
   // Per-month "OT Eligible" override (Salary sheet column, see
   // getOtEligibilityForMonth_) -- so an employee paging back to a month
   // the admin flagged (e.g. their own first month, not paid OT) never
   // sees a number here the Dashboard/Summary/PDF disagree with. Only the
   // two OT totals are zeroed -- daysWorked/lateCount/overCount stay real,
   // and there's no otPay figure on the Kiosk to begin with.
-  if (getOtEligibilityForMonth_(year, month)[found.row.EmployeeID] === false) {
+  if (salaryAndEligibility.eligible[found.row.EmployeeID] === false) {
     monthTotals.otMinutesTotal = 0;
     monthTotals.otQuartersTotal = 0;
   }
@@ -1538,6 +1583,11 @@ function handleKioskMyAttendance_(params) {
   // down rapid Prev/Next paging, this is the place a per-request cache
   // (same idea as getCachedEmployees_, Utils.gs) would need to go.
   var allowanceEntries = getAllowancesForEmployeeMonth_(found.row.EmployeeID, year, month);
+  // kioskUnpaidLeaveDeduction_ (above) -- added 2026-11-14 so My Schedule
+  // can finally show an employee their own Unpaid Leave Deduction, which
+  // until now was backend/Dashboard-only. `scheduledShiftsForMonth` is
+  // already narrowed to just this one employee's { day: shift } above.
+  var unpaidLeaveDeduction = kioskUnpaidLeaveDeduction_(found.row, scheduledShiftsForMonth, salaryAndEligibility.salary[found.row.EmployeeID]);
   return ok_({
     name: found.row.Name,
     year: year,
@@ -1563,7 +1613,8 @@ function handleKioskMyAttendance_(params) {
     // summing, so the itemized lines always add up to exactly the total
     // above them.
     allowanceTotal: sumRoundedAllowances_(allowanceEntries),
-    allowanceDetail: roundedAllowanceDetail_(allowanceEntries)
+    allowanceDetail: roundedAllowanceDetail_(allowanceEntries),
+    unpaidLeaveDeduction: unpaidLeaveDeduction
   });
 }
 
@@ -1628,17 +1679,30 @@ function handleKioskMyAttendanceBulk_(params) {
     var scheduledShiftsForMonth = (getScheduledShiftsForMonth_(year, month))[employeeId] || {};
     var daysInMonth = new Date(year, month, 0).getDate();
     var monthTotals = sumMonthTotals_(dayLogs, scheduledShiftsForMonth, daysInMonth);
+    // One combined read of the "Salary YYYY-MM" sheet for both the OT
+    // Eligible override below and this month's salary (needed for
+    // computeUnpaidLeaveDeduction_) -- see getSalaryAndOtEligibilityForMonth_'s
+    // own doc comment for why this replaced two separate reads
+    // (getOtEligibilityForMonth_ + getSalaryForMonth_) of the same sheet,
+    // which otherwise doubled that sheet's I/O on this already
+    // MY_ATTENDANCE_BULK_MONTHS-times-per-login loop.
+    var monthSalaryAndEligibility = getSalaryAndOtEligibilityForMonth_(year, month);
     // Same per-month "OT Eligible" override as handleKioskMyAttendance_'s
     // identical comment -- read per month in this loop, same granularity
     // as scheduledShiftsForMonth just above (one small sheet read per
     // month either way).
-    if (getOtEligibilityForMonth_(year, month)[employeeId] === false) {
+    if (monthSalaryAndEligibility.eligible[employeeId] === false) {
       monthTotals.otMinutesTotal = 0;
       monthTotals.otQuartersTotal = 0;
     }
     var monthAllowanceEntries = employeeAllowanceRows.filter(function (a) {
       return a.year === year && a.month === month;
     });
+    // kioskUnpaidLeaveDeduction_ (above) -- same addition as
+    // handleKioskMyAttendance_'s own, kept in sync here too, otherwise a
+    // month paged in from this bulk/cached path would show no deduction
+    // until the next live fetch overwrote it.
+    var monthUnpaidLeaveDeduction = kioskUnpaidLeaveDeduction_(found.row, scheduledShiftsForMonth, monthSalaryAndEligibility.salary[employeeId]);
     months.push({
       year: year,
       month: month,
@@ -1654,7 +1718,8 @@ function handleKioskMyAttendanceBulk_(params) {
       lateCount: monthTotals.lateCount,
       overCount: monthTotals.overCount,
       allowanceTotal: sumRoundedAllowances_(monthAllowanceEntries),
-      allowanceDetail: roundedAllowanceDetail_(monthAllowanceEntries)
+      allowanceDetail: roundedAllowanceDetail_(monthAllowanceEntries),
+      unpaidLeaveDeduction: monthUnpaidLeaveDeduction
     });
   }
 
@@ -1699,10 +1764,13 @@ function handleKioskScheduleSyncAll_(params) {
   // returns a per-employeeId map, so this is a direct fit for the
   // per-employee loop below with no further reshaping needed.
   var allowancesByEmployee = getAllowancesForMonth_(year, month);
-  // Same per-month "OT Eligible" override as handleKioskMyAttendance_'s
-  // identical comment -- one read for the whole batch, same as the maps
-  // just above.
-  var otEligibilityByEmployee = getOtEligibilityForMonth_(year, month);
+  // One combined read of the "Salary YYYY-MM" sheet for both the OT
+  // Eligible override below and this month's salary (needed for
+  // kioskUnpaidLeaveDeduction_/computeUnpaidLeaveDeduction_, added
+  // 2026-11-14) -- one read for the whole batch, same reasoning as
+  // allowancesByEmployee just above, via getSalaryAndOtEligibilityForMonth_
+  // instead of getOtEligibilityForMonth_ alone now that both are needed.
+  var salaryAndEligibilityByEmployee = getSalaryAndOtEligibilityForMonth_(year, month);
 
   // getCachedEmployees_ (Utils.gs) rather than a fresh sheet.getDataRange()
   // read or getAllEmployees_() -- same raw row order findEmployeeByKioskPin_
@@ -1756,10 +1824,24 @@ function handleKioskScheduleSyncAll_(params) {
       // handleKioskMyAttendance_'s identical comment.
       var otUnit = otUnitForDepartment_(row[deptCol]);
       var monthTotals = sumMonthTotals_(dayLogs, scheduledShiftsForMonth, daysInMonth);
-      if (otEligibilityByEmployee[employeeId] === false) {
+      if (salaryAndEligibilityByEmployee.eligible[employeeId] === false) {
         monthTotals.otMinutesTotal = 0;
         monthTotals.otQuartersTotal = 0;
       }
+      // kioskUnpaidLeaveDeduction_ (above) -- same addition as
+      // handleKioskMyAttendance_'s own, kept in sync here too (real review
+      // catch, 2026-11-14 -- this feature's first draft missed this one of
+      // the 3 Kiosk handlers entirely, see that helper's own doc comment).
+      // row[deptCol] wrapped in a minimal { Department: ... } object --
+      // this loop only has the raw Employees-sheet row array, not a named-
+      // property record like found.row in the other 2 handlers.
+      // computeUnpaidLeaveDeduction_ doesn't currently read emp.Department
+      // at all (every department uses the same formula as of 2026-11-14's
+      // interim decision), but still takes `emp` as its first parameter
+      // for a possible future department-specific formula -- this wrapper
+      // just satisfies that same signature the other 2 handlers' found.row
+      // already does.
+      var unpaidLeaveDeduction = kioskUnpaidLeaveDeduction_({ Department: row[deptCol] }, scheduledShiftsForMonth, salaryAndEligibilityByEmployee.salary[employeeId]);
       employees.push({
         pin: pin,
         name: name,
@@ -1776,7 +1858,8 @@ function handleKioskScheduleSyncAll_(params) {
         lateCount: monthTotals.lateCount,
         overCount: monthTotals.overCount,
         allowanceTotal: sumRoundedAllowances_(allowancesByEmployee[employeeId]),
-        allowanceDetail: roundedAllowanceDetail_(allowancesByEmployee[employeeId])
+        allowanceDetail: roundedAllowanceDetail_(allowancesByEmployee[employeeId]),
+        unpaidLeaveDeduction: unpaidLeaveDeduction
       });
     } catch (e) {
       Logger.log('handleKioskScheduleSyncAll_: skipped ' + employeeId + ' (' + name + '): ' + e.message);
@@ -2239,14 +2322,24 @@ function getScheduledShiftsForMonth_(year, month) {
  * as "not eligible for OT pay this month" (returns '', not 0), which is the
  * deliberate, correct behavior here, not a bug to guard against: a month
  * nobody ever filled in a salary for genuinely has no rate to price OT at.
+ *
+ * preloadedValues (optional, added 2026-11-14): the sheet's own
+ * getDataRange().getValues() result, already in hand -- lets
+ * getSalaryAndOtEligibilityForMonth_ (below) read this sheet ONCE and
+ * reuse this function's exact parsing for the Salary half, rather than
+ * either reading the sheet twice (once per function) or hand-duplicating
+ * this parsing logic a second time just to avoid that. Every other call
+ * site omits this and gets the original single-read behavior unchanged.
  */
-function getSalaryForMonth_(year, month) {
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var sheetName = 'Salary ' + year + '-' + (month < 10 ? '0' + month : String(month));
-  var sheet = ss.getSheetByName(sheetName);
-  if (!sheet) return {};
-
-  var values = sheet.getDataRange().getValues();
+function getSalaryForMonth_(year, month, preloadedValues) {
+  var values = preloadedValues;
+  if (!values) {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheetName = 'Salary ' + year + '-' + (month < 10 ? '0' + month : String(month));
+    var sheet = ss.getSheetByName(sheetName);
+    if (!sheet) return {};
+    values = sheet.getDataRange().getValues();
+  }
   var headers = values[0];
   var idCol = headers.indexOf('EmployeeID');
   var salaryCol = headers.indexOf('Salary');
@@ -2283,14 +2376,19 @@ function getSalaryForMonth_(year, month) {
  * and an employee with no row on an otherwise-existing sheet. Only an
  * explicit FALSE (boolean or the literal text) ever excludes an
  * employee/month from the returned map.
+ *
+ * preloadedValues (optional, added 2026-11-14): same purpose as
+ * getSalaryForMonth_'s own identical parameter -- see its doc comment.
  */
-function getOtEligibilityForMonth_(year, month) {
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var sheetName = 'Salary ' + year + '-' + (month < 10 ? '0' + month : String(month));
-  var sheet = ss.getSheetByName(sheetName);
-  if (!sheet) return {};
-
-  var values = sheet.getDataRange().getValues();
+function getOtEligibilityForMonth_(year, month, preloadedValues) {
+  var values = preloadedValues;
+  if (!values) {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheetName = 'Salary ' + year + '-' + (month < 10 ? '0' + month : String(month));
+    var sheet = ss.getSheetByName(sheetName);
+    if (!sheet) return {};
+    values = sheet.getDataRange().getValues();
+  }
   var headers = values[0];
   var idCol = headers.indexOf('EmployeeID');
   var eligibleCol = headers.indexOf('OT Eligible'); // -1 on a sheet not yet migrated -- every employee defaults to eligible below
@@ -2303,6 +2401,44 @@ function getOtEligibilityForMonth_(year, month) {
     result[employeeId] = raw !== false && raw !== 'FALSE';
   }
   return result;
+}
+
+/**
+ * Combines getSalaryForMonth_ and getOtEligibilityForMonth_'s own reads
+ * into one -- added 2026-11-14 for the 3 Kiosk handlers
+ * (handleKioskMyAttendance_/handleKioskMyAttendanceBulk_/
+ * handleKioskScheduleSyncAll_), which all now need Salary AND OT Eligible
+ * from the same "Salary YYYY-MM" sheet (the latter already for its
+ * existing OT-zeroing override, the former newly for
+ * computeUnpaidLeaveDeduction_'s salary figure) -- calling both of those
+ * functions separately would read that same sheet twice per month, and
+ * handleKioskMyAttendanceBulk_ already loops this per month
+ * (MY_ATTENDANCE_BULK_MONTHS times) on every single Kiosk PIN login.
+ *
+ * Reads the sheet exactly once here, then calls getSalaryForMonth_/
+ * getOtEligibilityForMonth_ themselves with that same `values` via their
+ * own preloadedValues parameter -- NOT a second, hand-duplicated copy of
+ * their parsing logic (an earlier version of this function was exactly
+ * that, flagged in review as a real future-drift risk: a parsing change
+ * to either of those two could land there and silently miss this copy).
+ * This gets both "read the sheet once" and "one parsing implementation"
+ * at the same time. Those two functions stay separate otherwise, for
+ * their own other call sites (Report.gs's writeMonthlySummaryData_/
+ * writeYearlySummaryData_ etc., which only ever need one or the other) --
+ * see getOtEligibilityForMonth_'s own doc comment for why reshaping
+ * either of them would touch call sites that don't need this.
+ */
+function getSalaryAndOtEligibilityForMonth_(year, month) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheetName = 'Salary ' + year + '-' + (month < 10 ? '0' + month : String(month));
+  var sheet = ss.getSheetByName(sheetName);
+  if (!sheet) return { salary: {}, eligible: {} };
+
+  var values = sheet.getDataRange().getValues();
+  return {
+    salary: getSalaryForMonth_(year, month, values),
+    eligible: getOtEligibilityForMonth_(year, month, values)
+  };
 }
 
 /**

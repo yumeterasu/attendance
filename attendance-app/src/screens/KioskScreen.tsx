@@ -522,13 +522,40 @@ function HourMinuteSliders({
 // rendered (even as '') rather than only when non-empty -- statsGridTapHint
 // reserves a fixed height either way, so every box comes out the same total
 // height regardless of which one(s) happen to have a hint this time.
-function renderMyScheduleStatBox(label: string, value: string, color: string, hint: string = '', onPress?: () => void) {
+// hintColor (added 2026-11-14) overrides statsGridTapHint's own baked-in
+// color, just for this one instance -- the Special Allowance box reuses
+// this same fixed-height hint line for its Unpaid Leave Deduction figure
+// when there is one (see that box's own comment below), which needs to
+// read as a warning (LATE_RED), not the usual accent-colored "Tap for
+// details" hint. numberOfLines={1} + adjustsFontSizeToFit on that hint --
+// a figure that directly affects someone's pay must never be silently
+// cut off with an ellipsis, and shrinking the font to fit the one line
+// (rather than letting it wrap, which would grow this box past its
+// siblings') is what keeps the whole amount visible AND every box the
+// same fixed height. This alone isn't sufficient for an unbounded
+// string -- the Unpaid Leave Deduction hint that calls this also keeps
+// its own text short specifically so minimumFontScale's floor is never
+// actually reached in practice (see that call site's own comment); the
+// two defenses work together, neither alone is enough. adjustsFontSizeToFit/
+// minimumFontScale are gated on hintColor being set (true only for the new
+// Unpaid Leave case, see that call site) rather than applied to every box's
+// hint unconditionally -- the pre-existing "Tap for details" hint already
+// shipped fitting this line at its normal size, and this way its render
+// path is untouched by this change rather than now also passing through
+// adjustsFontSizeToFit's shrink-to-fit logic for a string it never needed.
+function renderMyScheduleStatBox(label: string, value: string, color: string, hint: string = '', onPress?: () => void, hintColor?: string) {
   const Wrapper = onPress ? Pressable : View;
   return (
     <Wrapper style={styles.statsGridItem} {...(onPress ? { onPress } : {})}>
       <Text style={styles.otSummaryLabel}>{label}</Text>
       <Text style={[styles.otSummaryValue, { color }]} numberOfLines={1}>{value}</Text>
-      <Text style={styles.statsGridTapHint}>{hint}</Text>
+      <Text
+        style={[styles.statsGridTapHint, hintColor ? { color: hintColor } : null]}
+        numberOfLines={1}
+        {...(hintColor ? { adjustsFontSizeToFit: true, minimumFontScale: 0.7 } : {})}
+      >
+        {hint}
+      </Text>
     </Wrapper>
   );
 }
@@ -2195,6 +2222,18 @@ export default function KioskScreen({ navigation }: Props) {
       windowHeight - safeAreaInsets.top - safeAreaInsets.bottom - containerVerticalPadding - aboveGridHeight - belowGridHeight;
     const cellHeight = Math.max(MIN_CELL_HEIGHT, availableForGrid / weeks.length);
     const hasAllowanceDetail = (scheduleData.allowanceDetail?.length ?? 0) > 0;
+    // Shown in the Special Allowance box's own fixed-height hint line
+    // (statsGridTapHint) in place of "Tap for details" whenever nonzero --
+    // added 2026-11-14 so an employee can see their Unpaid Leave Deduction
+    // without a 5th stat box (the grid is already a hard 2x2, see the
+    // comment above statsGrid below) or a new modal. Takes priority over
+    // the "Tap for details" hint when both apply (the box stays tappable
+    // for Allowance detail either way -- only which hint TEXT shows this
+    // month changes) since this figure directly affects pay and must
+    // never be silently hidden behind a hint an employee has no reason to
+    // expect means "also check here for a deduction."
+    const unpaidLeaveDeduction = scheduleData.unpaidLeaveDeduction;
+    const hasUnpaidLeaveDeduction = typeof unpaidLeaveDeduction === 'number' && unpaidLeaveDeduction > 0;
 
     return (
       <LinearGradient
@@ -2466,13 +2505,30 @@ export default function KioskScreen({ navigation }: Props) {
               deploy-skew window, see its own comment in client.ts) and an
               employee with no allowance entries that month has nothing to
               expand into either way, so this falls back to the same plain,
-              non-interactive box the other stats use. */}
+              non-interactive box the other stats use. The hint line shows
+              the Unpaid Leave Deduction (red) in place of "Tap for
+              details" whenever nonzero this month -- see
+              hasUnpaidLeaveDeduction's own comment above -- the box's
+              tappability is unaffected either way, still gated only by
+              hasAllowanceDetail. Deliberately English-only (unlike every
+              other bilingual label/hint on this screen) and a plain ASCII
+              "-" (not "−", U+2212, which this font has no guarantee of
+              mapping, and which the Dashboard's own formatBaht()
+              deliberately avoids for the same reason) -- this string
+              scales with the actual Baht amount, which can run long for a
+              high-salary employee with several Unpaid Leave days, and
+              adjustsFontSizeToFit (below) only has so much room to shrink
+              into before truncating; keeping it short in the first place
+              is what actually guarantees the full figure stays visible. */}
           {renderMyScheduleStatBox(
             'Special Allowance / เงินพิเศษ',
             `฿${scheduleData.allowanceTotal.toLocaleString(undefined, { maximumFractionDigits: 2 })}`,
             SCHEDULE_ACCENT_DARK,
-            hasAllowanceDetail ? 'Tap for details / แตะเพื่อดูรายละเอียด' : '',
-            hasAllowanceDetail ? () => setShowAllowanceDetail(true) : undefined
+            hasUnpaidLeaveDeduction
+              ? `-฿${unpaidLeaveDeduction!.toLocaleString(undefined, { maximumFractionDigits: 2 })} Unpaid Leave`
+              : hasAllowanceDetail ? 'Tap for details / แตะเพื่อดูรายละเอียด' : '',
+            hasAllowanceDetail ? () => setShowAllowanceDetail(true) : undefined,
+            hasUnpaidLeaveDeduction ? LATE_RED : undefined
           )}
         </View>
 

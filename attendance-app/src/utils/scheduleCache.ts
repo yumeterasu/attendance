@@ -42,8 +42,12 @@ const KEY_PREFIX = 'kiosk_schedule_cache_v4';
 // (2026-10-20) is intentionally OPTIONAL -- not part of any of these
 // required-fields bumps, since the tap-to-expand breakdown it backs
 // degrades gracefully (just not tappable) rather than needing yet another
-// cache wipe for a nice-to-have.
-export type CachedMonth = { name: string; year: number; month: number; days: ScheduleDay[]; otUnit: OtUnit; daysWorked: number; otMinutesTotal: number; otQuartersTotal: number; lateCount: number; overCount: number; allowanceTotal: number; allowanceDetail?: AllowanceDetailEntry[] };
+// cache wipe for a nice-to-have. unpaidLeaveDeduction (2026-11-14) is
+// OPTIONAL for the same reason -- a cached month without it just shows
+// no Unpaid Leave line, rather than forcing a v4->v5 wipe of every
+// employee's whole 12-month cache for one new line that matters most for
+// the always-live-fetched current month anyway.
+export type CachedMonth = { name: string; year: number; month: number; days: ScheduleDay[]; otUnit: OtUnit; daysWorked: number; otMinutesTotal: number; otQuartersTotal: number; lateCount: number; overCount: number; allowanceTotal: number; allowanceDetail?: AllowanceDetailEntry[]; unpaidLeaveDeduction?: number | null };
 
 function keyFor(pin: string, year: number, month: number): string {
   return `${KEY_PREFIX}_${pin}_${year}_${month}`;
@@ -77,7 +81,7 @@ export async function getCachedScheduleMonth(pin: string, year: number, month: n
 // Bumped v2 -> v3 alongside KEY_PREFIX above too, same reason and same day.
 // Bumped v3 -> v4 alongside KEY_PREFIX above too, same reason and same day.
 const CURRENT_KEY_PREFIX = 'kiosk_schedule_current_v4';
-export type CurrentSnapshot = { name: string; year: number; month: number; days: ScheduleDay[]; otUnit: OtUnit; daysWorked: number; otMinutesTotal: number; otQuartersTotal: number; lateCount: number; overCount: number; allowanceTotal: number; allowanceDetail?: AllowanceDetailEntry[]; fetchedAt: number };
+export type CurrentSnapshot = { name: string; year: number; month: number; days: ScheduleDay[]; otUnit: OtUnit; daysWorked: number; otMinutesTotal: number; otQuartersTotal: number; lateCount: number; overCount: number; allowanceTotal: number; allowanceDetail?: AllowanceDetailEntry[]; unpaidLeaveDeduction?: number | null; fetchedAt: number };
 
 function currentKeyFor(pin: string): string {
   return `${CURRENT_KEY_PREFIX}_${pin}`;

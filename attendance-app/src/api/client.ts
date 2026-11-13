@@ -212,6 +212,18 @@ export function kioskMyAttendance(pin: string, year?: number, month?: number) {
     overCount: number;
     allowanceTotal: number;
     allowanceDetail?: AllowanceDetailEntry[];
+    // Added 2026-11-14 for the My Schedule summary grid's Unpaid Leave line
+    // (see computeUnpaidLeaveDeduction_, Report.gs). Optional, not a
+    // required-fields cache-key bump (scheduleCache.ts) -- unlike
+    // lateCount/overCount/allowanceTotal/daysWorked, the summary grid
+    // isn't "unusable" without this: a cached month without it just shows
+    // no deduction line, same graceful degradation allowanceDetail already
+    // gets. null (not just absent) means "not eligible, no Salary on file
+    // this month" -- same convention the Dashboard/Summary tab use. Just
+    // the Baht figure, not the underlying day count too -- nothing on the
+    // Kiosk shows that separately today (unlike the Dashboard, which has
+    // its own dedicated Unpaid Leave column).
+    unpaidLeaveDeduction?: number | null;
   }>('kioskMyAttendance', { pin, year, month }, isCurrentMonth ? SCHEDULE_TIMEOUT_MS : SCHEDULE_MONTH_NAV_TIMEOUT_MS);
 }
 
@@ -226,7 +238,7 @@ const SCHEDULE_BULK_SYNC_TIMEOUT_MS = 45000;
 export function kioskMyAttendanceBulk(pin: string) {
   return postAction<{
     name: string;
-    months: { year: number; month: number; days: ScheduleDay[]; otUnit: OtUnit; daysWorked: number; otMinutesTotal: number; otQuartersTotal: number; lateCount: number; overCount: number; allowanceTotal: number; allowanceDetail?: AllowanceDetailEntry[] }[];
+    months: { year: number; month: number; days: ScheduleDay[]; otUnit: OtUnit; daysWorked: number; otMinutesTotal: number; otQuartersTotal: number; lateCount: number; overCount: number; allowanceTotal: number; allowanceDetail?: AllowanceDetailEntry[]; unpaidLeaveDeduction?: number | null }[];
   }>('kioskMyAttendanceBulk', { pin }, SCHEDULE_BULK_SYNC_TIMEOUT_MS);
 }
 
@@ -272,7 +284,7 @@ export function kioskDirectory() {
 // shape for its own `employees` parameter, rather than a second inline
 // copy of these 9 fields that could silently drift out of sync with this
 // one the next time a field is added here and forgotten there.
-export type ScheduleSyncEmployee = { pin: string; name: string; days: ScheduleDay[]; otUnit: OtUnit; daysWorked: number; otMinutesTotal: number; otQuartersTotal: number; lateCount: number; overCount: number; allowanceTotal: number; allowanceDetail?: AllowanceDetailEntry[] };
+export type ScheduleSyncEmployee = { pin: string; name: string; days: ScheduleDay[]; otUnit: OtUnit; daysWorked: number; otMinutesTotal: number; otQuartersTotal: number; lateCount: number; overCount: number; allowanceTotal: number; allowanceDetail?: AllowanceDetailEntry[]; unpaidLeaveDeduction?: number | null };
 
 // Device-wide daily background sync (see useScheduleSync) -- every active
 // employee's current month in one call, no PIN. Same budget as

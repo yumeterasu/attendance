@@ -1289,6 +1289,24 @@ function countLeavesForEmployee_(scheduledShiftsForMonth, employeeId) {
 }
 
 /**
+ * Just the Unpaid Leave day count, for a caller that already has ONE
+ * employee's own { day: shift } object (not the whole-roster
+ * { employeeId: { day: shift } } shape countLeavesForEmployee_ above
+ * expects) -- added 2026-11-14 for handleKioskMyAttendance_/
+ * handleKioskMyAttendanceBulk_ (Attendance.gs), both of which only ever
+ * have this one employee's slice at hand. Still reuses
+ * countLeavesForEmployee_ itself (via a single-key wrapper, kept in this
+ * one place instead of being hand-rolled at each call site) rather than
+ * re-walking the HALF_DAY_LEAVE_COUNTS_AS_ mapping separately -- that
+ * mapping covers several legacy/AM-PM-variant keys (see its own doc
+ * comment above), and a second, independent day-loop here would risk
+ * silently drifting from it over time.
+ */
+function countUnpaidLeaveDaysForEmployee_(scheduledShiftsForEmployee) {
+  return countLeavesForEmployee_({ employee: scheduledShiftsForEmployee || {} }, 'employee')['Unpaid Leave'];
+}
+
+/**
  * Same scan as countLeavesForEmployee_, but keeps WHICH day each leave cell
  * fell on instead of just the running count -- backs the Dashboard Monthly
  * view's Leave pill popup (click a nonzero Leave badge to see which dates),
