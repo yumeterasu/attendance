@@ -2906,16 +2906,26 @@ function findAllOutRowsForDate_(employeeId, date) {
 /**
  * Cancels OT on one specific AttendanceLog OUT row -- the fix for an
  * accidental "OUT OT" kiosk tap on a day that should carry no OT at all
- * (menuCancelOtForOneDay_, Menu.gs). Sets OT to FALSE and zeroes only
- * whichever of OTMinutes/OTQuarters this department's OUT branch actually
- * populates (recordAttendance_'s OUT branch: Japanese writes OTMinutes and
- * leaves OTQuarters blank, everyone else the reverse) -- leaves the other,
- * already-blank column untouched rather than turning a blank cell into a
- * stray 0 that was never part of that department's own write pattern.
- * rowIndex is 1-based, matching sheet.getRange's own convention (see
- * findAllOutRowsForDate_, this function's only source of a rowIndex).
+ * (menuCancelOtForOneDay_, Menu.gs). Sets OT to FALSE and zeroes
+ * whichever of OTMinutes/OTQuarters actually holds a real (nonzero/non-
+ * blank) value on THIS row, read directly off the row itself rather than
+ * inferred from a department -- no longer takes a department parameter
+ * at all (real review catch, 2026-11-14: this used to branch on
+ * `department === 'Japanese'`, taking either the row's own frozen
+ * AttendanceLog.Department or the employee's current Employees.Department
+ * as a proxy for "which column was this row written with" -- both are
+ * genuinely the wrong tool for that job for a transferred employee
+ * (frozen stays right only until syncAttendanceLogDepartments_ is next
+ * run; current is right only until the employee transfers departments),
+ * and arguing over which proxy to trust was solving the wrong problem --
+ * the row's own two OT columns already say, unambiguously, which one was
+ * actually populated). Leaves whichever column is already blank/0
+ * untouched, rather than writing a stray 0 into a column that was never
+ * part of that row's own write pattern. rowIndex is 1-based, matching
+ * sheet.getRange's own convention (see findAllOutRowsForDate_, this
+ * function's only source of a rowIndex).
  */
-function cancelOtOnLogRow_(rowIndex, department) {
+function cancelOtOnLogRow_(rowIndex) {
   var sheet = getSheet_('AttendanceLog');
   var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
   var otCol = headers.indexOf('OT') + 1;
@@ -2923,11 +2933,45 @@ function cancelOtOnLogRow_(rowIndex, department) {
   var otQuartersCol = headers.indexOf('OTQuarters') + 1;
 
   if (otCol > 0) sheet.getRange(rowIndex, otCol).setValue(false);
-  if (department === 'Japanese') {
-    if (otMinutesCol > 0) sheet.getRange(rowIndex, otMinutesCol).setValue(0);
-  } else {
-    if (otQuartersCol > 0) sheet.getRange(rowIndex, otQuartersCol).setValue(0);
+  if (otMinutesCol > 0 && Number(sheet.getRange(rowIndex, otMinutesCol).getValue()) > 0) {
+    sheet.getRange(rowIndex, otMinutesCol).setValue(0);
   }
+  if (otQuartersCol > 0 && Number(sheet.getRange(rowIndex, otQuartersCol).getValue()) > 0) {
+    sheet.getRange(rowIndex, otQuartersCol).setValue(0);
+  }
+}
+
+/**
+ * The inverse of cancelOtOnLogRow_ above -- the fix for a Thai employee
+ * who forgot to tap "OUT OT" and tapped plain OUT instead, despite
+ * genuinely working OT that day (menuConvertOutToOutOtForOneDay_,
+ * Menu.gs). Sets OT to TRUE and writes the given otQuarters -- the
+ * caller (menuConvertOutToOutOtForOneDay_) has already computed that
+ * figure via the exact same resolveThaiOt_ a real OUT OT tap uses, fed
+ * the day's real shift (off the matching IN row, same as a real tap
+ * resolves it) and the row's own existing OUT timestamp, so this is
+ * never a fabricated number.
+ *
+ * Thai-only, unlike cancelOtOnLogRow_ -- no department branch here,
+ * because menuConvertOutToOutOtForOneDay_ already rejects a Japanese
+ * target before ever calling this (Japanese OT is always auto-computed
+ * at tap time regardless of which OUT button was pressed, so there is
+ * no "forgot to tap OUT OT" case for Japanese to fix -- see that menu
+ * function's own doc comment). OTMinutes is deliberately left untouched
+ * (stays blank) -- same column-asymmetry convention cancelOtOnLogRow_
+ * follows, just one-directional here since the other department never
+ * reaches this function. rowIndex is 1-based, matching sheet.getRange's
+ * own convention (see findAllOutRowsForDate_, this function's only
+ * source of a rowIndex).
+ */
+function convertOutToOutOtOnLogRow_(rowIndex, otQuarters) {
+  var sheet = getSheet_('AttendanceLog');
+  var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  var otCol = headers.indexOf('OT') + 1;
+  var otQuartersCol = headers.indexOf('OTQuarters') + 1;
+
+  if (otCol > 0) sheet.getRange(rowIndex, otCol).setValue(true);
+  if (otQuartersCol > 0) sheet.getRange(rowIndex, otQuartersCol).setValue(otQuarters);
 }
 
 /**

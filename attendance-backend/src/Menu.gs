@@ -16,6 +16,7 @@ function onOpen() {
     .addItem('Deactivate Employee (Resignation)', 'guardedMenuDeactivateEmployee_')
     .addItem('Add Backdated Check-in/Check-out', 'guardedMenuAddBackdatedAttendance_')
     .addItem('Cancel Wrong OT for One Day', 'guardedMenuCancelOtForOneDay_')
+    .addItem('Convert OUT to OUT OT for One Day', 'guardedMenuConvertOutToOutOtForOneDay_')
     .addItem('Bulk Mark Attendance for a Day', 'guardedMenuBulkMarkAttendance_')
     .addItem('Allowancer', 'guardedMenuAddSpecialAllowance_')
     .addItem('Add Historical Summary Month', 'guardedMenuAddHistoricalSummaryRows_')
@@ -49,6 +50,7 @@ function guardedMenuAddNewEmployee_() { if (preflightHeaderCheck_()) menuAddNewE
 function guardedMenuDeactivateEmployee_() { if (preflightHeaderCheck_()) menuDeactivateEmployee_(); }
 function guardedMenuAddBackdatedAttendance_() { if (preflightHeaderCheck_()) menuAddBackdatedAttendance_(); }
 function guardedMenuCancelOtForOneDay_() { if (preflightHeaderCheck_()) menuCancelOtForOneDay_(); }
+function guardedMenuConvertOutToOutOtForOneDay_() { if (preflightHeaderCheck_()) menuConvertOutToOutOtForOneDay_(); }
 function guardedMenuBulkMarkAttendance_() { if (preflightHeaderCheck_()) menuBulkMarkAttendance_(); }
 function guardedMenuAddSpecialAllowance_() { if (preflightHeaderCheck_()) menuAddSpecialAllowance_(); }
 function guardedMenuAddHistoricalSummaryRows_() { if (preflightHeaderCheck_()) menuAddHistoricalSummaryRows_(); }
@@ -956,6 +958,34 @@ function menuAddBackdatedAttendance_() {
 }
 
 /**
+ * Strict DD/MM/YYYY parse, shared by menuCancelOtForOneDay_ and
+ * menuConvertOutToOutOtForOneDay_ below (both prompt for a specific past
+ * date, where acting on the wrong one matters) -- factored out after
+ * review caught that a plain `new Date(year, month - 1, day)` plus an
+ * isNaN check silently accepts garbage input instead of rejecting it,
+ * since JS's Date constructor rolls an out-of-range value into a
+ * DIFFERENT, still-valid date rather than failing: 31/02/2026 (no such
+ * day) becomes 3 March 2026, 15/13/2026 (no such month) becomes 15
+ * January 2027, and a 2-digit year like 24/07/26 becomes 24 July 1926
+ * (JS treats a year 0-99 as 1900+year). Checking date.getDate() alone
+ * (this function's own first draft) only catches the first case --
+ * date.getMonth() catches the second, and an explicit year-length check
+ * catches the third, none of which isNaN() or getDate() alone would
+ * have caught. Returns a real Date, or null for anything that doesn't
+ * round-trip exactly or isn't a plausible 4-digit year.
+ */
+function parseStrictDdMmYyyy_(text) {
+  var parts = String(text).trim().split('/');
+  if (parts.length !== 3) return null;
+  var day = Number(parts[0]), month = Number(parts[1]), year = Number(parts[2]);
+  if (!day || !month || !year) return null;
+  if (String(parts[2]).trim().length !== 4) return null; // rejects a 2-digit year outright, rather than silently resolving it against 1900
+  var date = new Date(year, month - 1, day);
+  if (isNaN(date.getTime()) || date.getDate() !== day || date.getMonth() !== month - 1 || date.getFullYear() !== year) return null;
+  return date;
+}
+
+/**
  * Corrects the specific mistake this was built for (admin request,
  * 2026-11-12): an employee -- Thai/other in practice, since Japanese OUT/
  * OUT OT are equivalent and always auto-computed -- presses "OUT OT" on a
@@ -999,11 +1029,8 @@ function menuCancelOtForOneDay_() {
 
   var dateResp = ui.prompt(title, 'Date (DD/MM/YYYY), e.g. 24/07/2026 -- the day OUT OT was tapped by mistake:', ui.ButtonSet.OK_CANCEL);
   if (dateResp.getSelectedButton() !== ui.Button.OK) return;
-  var dateParts = dateResp.getResponseText().trim().split('/');
-  if (dateParts.length !== 3) { ui.alert('Enter the date as DD/MM/YYYY.'); return; }
-  var day = Number(dateParts[0]), month = Number(dateParts[1]), year = Number(dateParts[2]);
-  var date = new Date(year, month - 1, day);
-  if (isNaN(date.getTime())) { ui.alert('That date did not parse -- double check the values.'); return; }
+  var date = parseStrictDdMmYyyy_(dateResp.getResponseText());
+  if (!date) { ui.alert('Enter a real date as DD/MM/YYYY (4-digit year).'); return; }
 
   var tz = Session.getScriptTimeZone();
   var outRows = findAllOutRowsForDate_(employee.EmployeeID, date);
@@ -1035,7 +1062,16 @@ function menuCancelOtForOneDay_() {
     return;
   }
 
-  var otAmountText = target.department === 'Japanese'
+  // Built from the row's own two OT columns directly (whichever one is
+  // actually nonzero), not from any department value -- same reasoning
+  // cancelOtOnLogRow_ (Attendance.gs) itself now uses, after review
+  // caught that neither the frozen AttendanceLog.Department nor the
+  // employee's current Department is a reliable proxy for "which column
+  // did this specific row populate" (right up until a department
+  // transfer or a stale pre-standardization label breaks the
+  // assumption) -- the row's own data already answers that
+  // unambiguously.
+  var otAmountText = (target.otMinutes || 0) > 0
     ? (target.otMinutes || 0) + ' min'
     : (target.otQuarters || 0) + ' quarter(s)';
   var confirmCancel = ui.alert(
@@ -1047,9 +1083,175 @@ function menuCancelOtForOneDay_() {
   );
   if (confirmCancel !== ui.Button.YES) return;
 
-  cancelOtOnLogRow_(target.rowIndex, target.department);
+  cancelOtOnLogRow_(target.rowIndex);
 
   ui.alert('Success', 'OT cancelled for ' + employee.Name + ' on ' + Utilities.formatDate(target.timestamp, tz, 'dd-MM-yyyy') + '.', ui.ButtonSet.OK);
+}
+
+/**
+ * The inverse of menuCancelOtForOneDay_ above -- fixes a Thai employee
+ * who forgot to tap "OUT OT" and tapped plain OUT instead, despite
+ * genuinely working OT that day. Converts the existing OUT row into an
+ * OUT OT row by computing exactly what a real OUT OT tap at that same
+ * timestamp would have produced, via convertOutToOutOtOnLogRow_
+ * (Attendance.gs) -- never a typed-in or guessed number.
+ *
+ * Thai-only, by design, not just by convention: Japanese OT is always
+ * auto-computed at tap time regardless of which OUT button was pressed
+ * (computeJapaneseOtMinutes_'s own doc comment, Attendance.gs -- "OUT and
+ * OUT OT are equivalent for Japanese"), so a Japanese employee's plain
+ * OUT row already carries the correct OT. There is no "forgot to tap OUT
+ * OT" case for Japanese to fix, so a Japanese target is rejected outright
+ * rather than silently doing nothing or computing something wrong.
+ *
+ * Shares the first half of menuCancelOtForOneDay_'s flow exactly
+ * (employee lookup/confirm, date prompt, findAllOutRowsForDate_ + the
+ * same multi-row warning) -- see that function's own comments for why
+ * each of those steps exists.
+ */
+function menuConvertOutToOutOtForOneDay_() {
+  var ui = SpreadsheetApp.getUi();
+  var title = 'Convert OUT to OUT OT for One Day';
+
+  var employeeResp = ui.prompt(title, 'Employee name or ID:', ui.ButtonSet.OK_CANCEL);
+  if (employeeResp.getSelectedButton() !== ui.Button.OK) return;
+  var employee = findEmployeeByNameOrId_(employeeResp.getResponseText().trim());
+  if (!employee) {
+    ui.alert('No employee found matching "' + employeeResp.getResponseText().trim() + '".');
+    return;
+  }
+
+  var confirmEmployee = ui.alert(
+    title,
+    'Found: ' + employee.Name + ' (' + employee.EmployeeID + '). Is this the right person?',
+    ui.ButtonSet.YES_NO
+  );
+  if (confirmEmployee !== ui.Button.YES) return;
+
+  var dateResp = ui.prompt(title, 'Date (DD/MM/YYYY), e.g. 24/07/2026 -- the day OUT OT was forgotten:', ui.ButtonSet.OK_CANCEL);
+  if (dateResp.getSelectedButton() !== ui.Button.OK) return;
+  var date = parseStrictDdMmYyyy_(dateResp.getResponseText());
+  if (!date) { ui.alert('Enter a real date as DD/MM/YYYY (4-digit year).'); return; }
+
+  var tz = Session.getScriptTimeZone();
+  var outRows = findAllOutRowsForDate_(employee.EmployeeID, date);
+  if (outRows.length === 0) {
+    ui.alert(title, 'No OUT record found for ' + employee.Name + ' on that date.', ui.ButtonSet.OK);
+    return;
+  }
+
+  // Same "only the latest OUT actually counts" warning as
+  // menuCancelOtForOneDay_ -- see its own comment.
+  var target = outRows[0];
+  if (outRows.length > 1) {
+    var multiWarn = ui.alert(
+      title,
+      employee.Name + ' has ' + outRows.length + ' OUT records on that date. Only the latest one (' +
+      Utilities.formatDate(target.timestamp, tz, 'HH:mm') +
+      ') is the one that actually counts toward OT/Duration everywhere -- continue with that one?',
+      ui.ButtonSet.YES_NO
+    );
+    if (multiWarn !== ui.Button.YES) return;
+  }
+
+  // employee.Department (current Employees data), NOT target.department
+  // (the frozen AttendanceLog Department column that row was written
+  // with) -- per syncAttendanceLogDepartments' own doc comment (Admin.gs),
+  // that column is "purely cosmetic/audit-trail... Report, Summary, and
+  // the OT recompute tool all read the current Employees data directly,
+  // never this column." A row from before Department was standardized
+  // (or a since-transferred employee) can carry a stale label, and
+  // getting this gate wrong would run Thai quarter-based OT math on what
+  // should be a Japanese row.
+  if (employee.Department === 'Japanese') {
+    // Worded carefully: this only claims "this tool doesn't apply," never
+    // "the day already has correct OT" -- employee.Department is CURRENT,
+    // not necessarily what it was on the target date, so an employee
+    // who's since transferred Thai -> Japanese would get a flatly wrong
+    // reassurance from the stronger claim (real review catch). Does NOT
+    // point the admin at Recompute as "the fix" for that edge case
+    // either (an earlier draft of this message did) -- Recompute also
+    // prices OT off CURRENT Department, so it would apply Japanese
+    // auto-OT rules to that historically-Thai day, not recover the
+    // missed Thai quarters; there's no existing tool that correctly
+    // handles a genuine department transfer, so this message doesn't
+    // claim one does.
+    ui.alert(
+      title,
+      employee.Name + ' is currently classified as Japanese, whose OT is always auto-computed at tap time regardless of which OUT button was pressed -- this tool doesn\'t apply. (If they were actually Thai on that specific date and this was a genuine department transfer since then, this needs a manual correction -- neither this tool nor Recompute handles that case correctly.)',
+      ui.ButtonSet.OK
+    );
+    return;
+  }
+
+  if (target.ot) {
+    ui.alert(
+      title,
+      employee.Name + '\'s OUT at ' + Utilities.formatDate(target.timestamp, tz, 'HH:mm') + ' on that date already has OT (' +
+      (target.otQuarters || 0) + ' quarter(s)) -- nothing to convert.',
+      ui.ButtonSet.OK
+    );
+    return;
+  }
+
+  // Same "resolve the day's shift off the matching IN row, not a fresh
+  // Schedule lookup" rule every real OUT/OUT OT tap already follows --
+  // see findStintStartInForDate_'s own doc comment. target.timestamp
+  // (not the bare `date`) is required here: findStintStartInForDate_
+  // finds the IN that opened the stint ENDING at the timestamp it's
+  // given, so passing midnight would silently fail to find anything.
+  var matchingIn = findStintStartInForDate_(employee.EmployeeID, target.timestamp);
+  var shift = matchingIn ? matchingIn.shift : '';
+  if (!shift) {
+    ui.alert(
+      title,
+      'Could not find a matching IN row with a known shift for ' + employee.Name + ' on that date -- can\'t compute OT without knowing the scheduled shift end time.',
+      ui.ButtonSet.OK
+    );
+    return;
+  }
+
+  // The exact function a real OUT OT tap calls (resolveThaiOt_,
+  // Attendance.gs) -- otRequested forced true, since this tool exists
+  // specifically for "they would have pressed OUT OT had they
+  // remembered." Never fabricates a number: if the real formula says
+  // zero quarters were earned, there is genuinely nothing to convert.
+  var thaiOt = resolveThaiOt_(employee, true, shift, target.timestamp);
+  if (!thaiOt.ot || thaiOt.otQuarters === 0) {
+    // Re-derives WHY thaiOt.ot came back false from the same two
+    // primitives otEligibleForDay_ itself composes (isOtEligible_ &&
+    // !isNoLateNoOtShift_ -- shift is already guaranteed truthy by the
+    // guard above), rather than getting a reason code back from
+    // resolveThaiOt_/otEligibleForDay_ directly, since neither returns
+    // one today. Equivalent to that function's own logic as of
+    // 2026-11-14 -- if otEligibleForDay_ ever gains a new condition,
+    // this block needs the same new branch or it'll fall through to the
+    // generic "didn't stay 15 minutes" message even when that's not the
+    // real reason.
+    var reason;
+    if (!isOtEligible_(employee)) {
+      reason = employee.Name + ' is not OT-eligible (Employees sheet\'s OTEligible column is off).';
+    } else if (isNoLateNoOtShift_(shift)) {
+      reason = 'That day\'s shift (' + shift + ') is an Event/Special day -- no OT applies.';
+    } else {
+      reason = employee.Name + ' did not stay at least 15 minutes past the scheduled shift end (' + shift + ') -- 0 OT quarters would be earned.';
+    }
+    ui.alert(title, reason + ' Nothing to convert.', ui.ButtonSet.OK);
+    return;
+  }
+
+  var confirmConvert = ui.alert(
+    title,
+    'Convert to OUT OT (' + thaiOt.otQuarters + ' quarter(s)) for ' + employee.Name + ' on ' +
+    Utilities.formatDate(target.timestamp, tz, 'dd-MM-yyyy') + ' (OUT at ' +
+    Utilities.formatDate(target.timestamp, tz, 'HH:mm') + ', shift ' + shift + ')?',
+    ui.ButtonSet.YES_NO
+  );
+  if (confirmConvert !== ui.Button.YES) return;
+
+  convertOutToOutOtOnLogRow_(target.rowIndex, thaiOt.otQuarters);
+
+  ui.alert('Success', 'Converted to OUT OT (' + thaiOt.otQuarters + ' quarter(s)) for ' + employee.Name + ' on ' + Utilities.formatDate(target.timestamp, tz, 'dd-MM-yyyy') + '.', ui.ButtonSet.OK);
 }
 
 /**
