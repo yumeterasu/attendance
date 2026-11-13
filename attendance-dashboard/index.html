@@ -664,22 +664,25 @@
      `main`'s own width back some real right-edge breathing room instead
      of the table running right up against it. */
   thead th { padding-left: 7px; padding-right: 7px; }
-  /* Pins the 6 columns whose header width doesn't vary enough between
+  /* Pins the 5 columns whose header width doesn't vary enough between
      languages to matter for the table's overall fit -- each value is
      max(en, ja) measured via headless Chrome against this exact CSS,
-     +buffer (real feedback, 2026-11-05; daysWorked re-measured 2026-11-05
-     after shortening its EN label from "Days Worked" to "Days", which
-     flipped it from EN-wider to JA-wider). Deliberately NOT applied to
-     the other 5 columns (Late/Over/OT (min)/OT (qtr)/OT Pay), where
+     +buffer (real feedback, 2026-11-05). Deliberately NOT applied to the
+     other 6 columns (Days/Late/Over/OT (min)/OT (qtr)/OT Pay), where
      Japanese renders noticeably WIDER than English: pinning every column
      to its own cross-language max would force this table ~165px past the
      ~1030px it fits in today, turning on a horizontal scrollbar that
-     isn't there now even in English -- rejected in favor of these 6
-     columns, which cost little or no extra table width. */
+     isn't there now even in English -- rejected in favor of these 5
+     columns, which cost little or no extra table width. daysWorked was
+     pinned at 88px until 2026-11-13 (sized for its JA label, "出勤日数"),
+     but real feedback pointed out that made it visibly bigger than Late/
+     Over in English for no reason -- all three hold the exact same
+     content shape (a plain number, 3 digits at most), so daysWorked was
+     moved into this unpinned group to match them instead, same tradeoff
+     Over's own JA label (also 4 kanji) already accepted. */
   thead th[data-sort="name"] { min-width: 104px; }
   thead th[data-sort="branch"] { min-width: 93px; }
   thead th[data-sort="department"] { min-width: 124px; }
-  thead th[data-sort="daysWorked"] { min-width: 88px; }
   thead th[data-sort="specialAllowance"] { min-width: 117px; }
   thead th[data-sort="unpaidLeaveDays"] { min-width: 78px; }
   thead th[data-sort="unpaidLeaveDeduction"] { min-width: 117px; }
