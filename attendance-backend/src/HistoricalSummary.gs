@@ -297,6 +297,16 @@ function getEffectiveMonthTotals_(emp, dayLogsForEmployee, scheduledShiftsForEmp
     }
   }
 
+  // computeUnpaidLeaveDeduction_ (Report.gs) -- read live off result.leaveCounts
+  // regardless of which branch built it (real or Historical Summary), since
+  // the Historical Summary sheet already carries a typed "Unpaid Leave"
+  // count among its LEAVE_COUNT_TYPES columns, same source Special
+  // Allowance's live-only convention does NOT need to apply here. Computed
+  // BEFORE the otEligibleThisMonth override below and never touched by
+  // it -- Unpaid Leave deduction has nothing to do with the OT Eligible
+  // override, must never be zeroed by it.
+  result.unpaidLeaveDeduction = computeUnpaidLeaveDeduction_(emp, salaryForMonth, result.leaveCounts['Unpaid Leave']);
+
   if (otEligibleThisMonth === false) {
     result.otMinutesTotal = 0;
     result.otQuartersTotal = 0;
@@ -339,8 +349,20 @@ function getEffectiveMonthTotals_(emp, dayLogsForEmployee, scheduledShiftsForEmp
  * alike) but still contributes its real daysWorked/lateCount/overCount --
  * see getEffectiveMonthTotals_'s own doc comment for the same rule stated
  * once, at the single-month level.
+ *
+ * unpaidLeaveDaysByMonth: { '<calYear>-<calMonth>': days }, this one
+ * employee's slice of leaveCountsAndDetailForYear_'s unpaidByMonth
+ * (Report.gs) -- summed here the same way otPay is, pricing each fiscal
+ * month's Unpaid Leave Deduction against THAT month's own Salary sheet
+ * (reusing salaryCache, no extra read) rather than one flat year-total
+ * days-count against a single salary. Unlike OT pay this never splits by
+ * department inside this function -- computeUnpaidLeaveDeduction_ owns
+ * that branch (Japanese currently always ''), so the same per-month loop
+ * below works unchanged for every department. Independent of
+ * otEligibleThisMonth too -- Unpaid Leave deduction has nothing to do
+ * with the OT Eligible override.
  */
-function getEffectiveYearTotals_(emp, fiscalMonths, employeeTotals, monthsWithRealData, salaryCache, historicalByMonth, otEligibilityCache) {
+function getEffectiveYearTotals_(emp, fiscalMonths, employeeTotals, monthsWithRealData, salaryCache, historicalByMonth, otEligibilityCache, unpaidLeaveDaysByMonth) {
   var monthlyTotals = (employeeTotals && employeeTotals.monthlyTotals) || {};
   var otByMonth = (employeeTotals && employeeTotals.otByMonth) || {};
   // Japanese OT pay (flat per-minute rate, salary-independent) is priced
@@ -355,9 +377,24 @@ function getEffectiveYearTotals_(emp, fiscalMonths, employeeTotals, monthsWithRe
 
   var daysWorked = 0, lateCount = 0, overCount = 0, otMinutesTotal = 0, otQuartersTotal = 0;
   var otPaySum = 0, anyOtEligible = false;
+  var unpaidLeaveDeductionSum = 0, anyUnpaidEligible = false;
+  unpaidLeaveDaysByMonth = unpaidLeaveDaysByMonth || {};
 
   fiscalMonths.forEach(function (fm) {
     var key = fm.calYear + '-' + fm.calMonth;
+    // Independent of the real-data/Historical branching below (the day
+    // count for this month was already resolved by
+    // leaveCountsAndDetailForYear_ regardless of source) and of
+    // otEligibleThisMonth (Unpaid Leave deduction is never gated by OT
+    // Eligible) -- undefined means genuinely no data at all this month
+    // (same as the OT/days-worked branches' own "nothing on file" skip
+    // just below), not a real 0.
+    var unpaidDaysThisMonth = unpaidLeaveDaysByMonth[key];
+    if (unpaidDaysThisMonth !== undefined) {
+      var salaryForUnpaid = (salaryCache[key] || {})[emp.EmployeeID];
+      var monthDeduction = computeUnpaidLeaveDeduction_(emp, salaryForUnpaid, unpaidDaysThisMonth);
+      if (monthDeduction !== '') { unpaidLeaveDeductionSum += monthDeduction; anyUnpaidEligible = true; }
+    }
     // Same override as getEffectiveMonthTotals_, applied per fiscal month
     // instead of once -- a probation month early in the fiscal year must
     // not drag down months after it, or vice versa.
@@ -404,6 +441,7 @@ function getEffectiveYearTotals_(emp, fiscalMonths, employeeTotals, monthsWithRe
   return {
     daysWorked: daysWorked, lateCount: lateCount, overCount: overCount,
     otMinutesTotal: otMinutesTotal, otQuartersTotal: otQuartersTotal,
-    otPay: anyOtEligible ? round2_(otPaySum) : ''
+    otPay: anyOtEligible ? round2_(otPaySum) : '',
+    unpaidLeaveDeduction: anyUnpaidEligible ? round2_(unpaidLeaveDeductionSum) : ''
   };
 }

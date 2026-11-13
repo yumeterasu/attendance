@@ -673,6 +673,8 @@
   thead th[data-sort="department"] { min-width: 124px; }
   thead th[data-sort="daysWorked"] { min-width: 88px; }
   thead th[data-sort="specialAllowance"] { min-width: 117px; }
+  thead th[data-sort="unpaidLeaveDays"] { min-width: 78px; }
+  thead th[data-sort="unpaidLeaveDeduction"] { min-width: 117px; }
   thead th[data-sort="leaveTotal"] { min-width: 78px; }
   /* Rounds the corners #monthlyView .card's overflow:hidden used to clip
      for free (see that rule's own comment) -- top corners only need it on
@@ -1351,6 +1353,8 @@
               <th class="sortable" data-sort="otPay" data-i18n="tableOtPay">OT Pay</th>
               <th class="sortable" data-sort="specialAllowance" data-i18n="tableAllowance">Allowance</th>
               <th class="sortable" data-sort="leaveTotal" data-i18n="tableLeave">Leave</th>
+              <th class="sortable" data-sort="unpaidLeaveDays" data-i18n="tableUnpaidLeave">Unpaid Leave</th>
+              <th class="sortable" data-sort="unpaidLeaveDeduction" data-i18n="tableUnpaidDeduction">Deduction</th>
             </tr>
           </thead>
           <tbody id="summaryBody"></tbody>
@@ -1565,6 +1569,8 @@
       tableOtQtr: 'OT (qtr)',
       tableOtPay: 'OT Pay',
       tableAllowance: 'Allowance',
+      tableUnpaidLeave: 'Unpaid Leave',
+      tableUnpaidDeduction: 'Deduction',
       tableLeave: 'Leave',
       dateLabel: 'Date',
       absentLabel: 'Absent',
@@ -1646,6 +1652,8 @@
       tableOtQtr: '残業(15分単位)',
       tableOtPay: '残業代',
       tableAllowance: '特別手当',
+      tableUnpaidLeave: '無給休暇',
+      tableUnpaidDeduction: '減給額',
       tableLeave: '休暇',
       dateLabel: '日付',
       absentLabel: '欠勤',
@@ -2189,12 +2197,17 @@
     employees.forEach(function (emp) {
       var tr = document.createElement('tr');
 
+      // Unpaid Leave is deliberately left out of this combined badge list --
+      // it now has its own dedicated column (with its deduction amount
+      // right next to it) further down, so it must not also double-count
+      // or double-display inside this generic "Leave" column. It still
+      // appears in leaveDetail's per-day modal (opened by leaveHtml below),
+      // which lists every leave type regardless.
       var leaveBadges = [];
       if (emp.leave.annual) leaveBadges.push(t('leaveAnnual') + ' ' + formatLeaveCount(emp.leave.annual));
       if (emp.leave.sick) leaveBadges.push(t('leaveSick') + ' ' + formatLeaveCount(emp.leave.sick));
       if (emp.leave.paidSpecial) leaveBadges.push(t('leavePaidSpecial') + ' ' + formatLeaveCount(emp.leave.paidSpecial));
       if (emp.leave.substitutional) leaveBadges.push(t('leaveSubstitutional') + ' ' + formatLeaveCount(emp.leave.substitutional));
-      if (emp.leave.unpaid) leaveBadges.push(t('leaveUnpaid') + ' ' + formatLeaveCount(emp.leave.unpaid));
       if (emp.leave.maternity) leaveBadges.push(t('leaveMaternity') + ' ' + formatLeaveCount(emp.leave.maternity));
       // A real <button> whenever there's at least one leave day this period
       // (clicking it opens the per-day detail modal, see "Leave detail
@@ -2240,6 +2253,20 @@
         ? '<button type="button" class="pill otpay allowance-pill">' + formatBaht(emp.specialAllowance) + '</button>'
         : '<span class="pill zero">฿0.00</span>';
 
+      // Unpaid Leave's own dedicated day-count column -- plain pill, same
+      // "day count, not money" styling the Late/Over columns use, not the
+      // Allowance/OT Pay money styling (that's unpaidDeductionHtml below).
+      var unpaidLeaveHtml = emp.leave.unpaid
+        ? '<span class="pill late">' + formatLeaveCount(emp.leave.unpaid) + '</span>'
+        : '<span class="pill zero">0</span>';
+
+      // Same null-means-not-eligible convention as otPayHtml above (no
+      // Salary on file this month, or a Japanese employee whose own
+      // formula isn't decided yet -- computeUnpaidLeaveDeduction_, Report.gs).
+      var unpaidDeductionHtml = emp.unpaidLeaveDeduction === null
+        ? '<span class="pill zero">—</span>'
+        : (emp.unpaidLeaveDeduction > 0 ? '<span class="pill late">' + formatBaht(emp.unpaidLeaveDeduction) + '</span>' : '<span class="pill zero">฿0.00</span>');
+
       // Flags an employee who has used more than the statutory 6-day Annual
       // Leave entitlement for the fiscal year, so an admin reconciling the
       // Dashboard against real payroll notices it needs a retroactive salary
@@ -2265,7 +2292,9 @@
         '<td class="num">' + emp.otQuarters + '</td>' +
         '<td class="num">' + otPayHtml + '</td>' +
         '<td class="num">' + allowanceHtml + '</td>' +
-        '<td>' + leaveHtml + '</td>';
+        '<td>' + leaveHtml + '</td>' +
+        '<td class="num">' + unpaidLeaveHtml + '</td>' +
+        '<td class="num">' + unpaidDeductionHtml + '</td>';
       if (emp.specialAllowance !== 0) {
         tr.querySelector('.allowance-pill').addEventListener('click', function () { openAllowanceModal(emp); });
       }
@@ -2567,7 +2596,10 @@
   var dailyErrorInfo = null;
 
   function leaveTotal(emp) {
-    return (emp.leave.annual || 0) + (emp.leave.sick || 0) + (emp.leave.paidSpecial || 0) + (emp.leave.substitutional || 0) + (emp.leave.unpaid || 0);
+    // Unpaid Leave excluded -- it has its own dedicated sortable column
+    // now (unpaidLeaveDays below), same reasoning its badge was pulled out
+    // of leaveHtml above.
+    return (emp.leave.annual || 0) + (emp.leave.sick || 0) + (emp.leave.paidSpecial || 0) + (emp.leave.substitutional || 0);
   }
 
   function sortValueFor(emp, key) {
@@ -2582,6 +2614,8 @@
       case 'otQuarters': return emp.otQuarters;
       case 'otPay': return emp.otPay; // can be null (Thai employees have no OT pay rate)
       case 'specialAllowance': return emp.specialAllowance;
+      case 'unpaidLeaveDays': return emp.leave.unpaid || 0;
+      case 'unpaidLeaveDeduction': return emp.unpaidLeaveDeduction; // can be null -- see unpaidDeductionHtml's own comment
       case 'leaveTotal': return leaveTotal(emp);
       default: return '';
     }

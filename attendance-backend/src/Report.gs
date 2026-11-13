@@ -69,6 +69,13 @@ function getSortedReportEmployees_(logsByEmployee, onlyEmployeeId) {
  * the "Salary YYYY-MM" sheet (getOtEligibilityForMonth_, Attendance.gs),
  * already resolved by the caller -- passed straight through to
  * getEffectiveMonthTotals_, same as salaryForMonth.
+ *
+ * A 5th segment, Unpaid Leave Deduction, is appended the same way the OT
+ * segment's Baht figure is -- omitted entirely (not shown as "0 Baht")
+ * when totals.unpaidLeaveDeduction is '' (no Salary on file this month,
+ * or a Japanese employee -- see computeUnpaidLeaveDeduction_, Report.gs,
+ * for why Japanese is unconditionally '' until its own formula is
+ * decided), shown even at 0 Baht otherwise, same as Special Allowance.
  */
 function buildEmployeeReportSummaryLine_(emp, dayLogs, scheduledShiftsForEmployee, daysInMonth, allowances, salaryForMonth, scheduledShiftsForMonth, historicalByEmployee, otEligibleThisMonth) {
   var totals = getEffectiveMonthTotals_(emp, dayLogs, scheduledShiftsForEmployee, daysInMonth, salaryForMonth, scheduledShiftsForMonth, historicalByEmployee, otEligibleThisMonth);
@@ -77,10 +84,12 @@ function buildEmployeeReportSummaryLine_(emp, dayLogs, scheduledShiftsForEmploye
     ? totals.otMinutesTotal + ' min'
     : totals.otQuartersTotal + ' quarter' + (totals.otQuartersTotal === 1 ? '' : 's');
   if (totals.otPay !== '') otText += ' (' + totals.otPay + ' Baht)';
+  var unpaidLeaveText = totals.unpaidLeaveDeduction === '' ? '' : '   |   Unpaid Leave Deduction ' + totals.unpaidLeaveDeduction + ' Baht';
   return 'Late ' + totals.lateCount + ' day' + (totals.lateCount === 1 ? '' : 's') +
     '   |   OT ' + otText +
     '   |   Over Break ' + totals.overCount + ' day' + (totals.overCount === 1 ? '' : 's') +
-    '   |   Special Allowance ' + sumRoundedAllowances_(allowances) + ' Baht';
+    '   |   Special Allowance ' + sumRoundedAllowances_(allowances) + ' Baht' +
+    unpaidLeaveText;
 }
 
 /**
@@ -1329,6 +1338,13 @@ function leaveDetailForEmployee_(scheduledShiftsForMonth, employeeId) {
 function leaveCountsAndDetailForYear_(year, monthsWithRealData) {
   var countsByEmployee = {}; // { [employeeId]: { [LEAVE_COUNT_TYPES[i]]: count } }
   var detailByEmployee = {}; // { [employeeId]: [{ day, type, half, month, year }] }
+  // Per-fiscal-month Unpaid Leave day count, { [employeeId]: { '<calYear>-<calMonth>': days } }
+  // -- getEffectiveYearTotals_ (HistoricalSummary.gs) needs this to price
+  // each fiscal month's Unpaid Leave deduction against THAT month's own
+  // Salary sheet (a mid-year raise must split correctly, same reasoning
+  // otByMonth already exists for OT pay) rather than one flat year-total
+  // count against a single salary figure.
+  var unpaidByMonth = {};
   // Every employee, not just Object.keys(scheduledShiftsForMonth) below --
   // needed so a fiscal month with no real Schedule tab at all can still
   // check each employee's Historical Summary row (HistoricalSummary.gs) for
@@ -1339,6 +1355,7 @@ function leaveCountsAndDetailForYear_(year, monthsWithRealData) {
     var monthIndex0 = (FISCAL_YEAR_START_MONTH + i) % 12;
     var calendarYear = year + Math.floor((FISCAL_YEAR_START_MONTH + i) / 12);
     var calMonth = monthIndex0 + 1;
+    var monthKey = calendarYear + '-' + calMonth;
     var scheduledShiftsForMonth = getScheduledShiftsForMonth_(calendarYear, calMonth);
     var historicalForMonth = getHistoricalSummaryForMonth_(calendarYear, calMonth);
     for (var employeeId in scheduledShiftsForMonth) {
@@ -1348,6 +1365,8 @@ function leaveCountsAndDetailForYear_(year, monthsWithRealData) {
         LEAVE_COUNT_TYPES.forEach(function (t) { countsByEmployee[employeeId][t] = 0; });
       }
       LEAVE_COUNT_TYPES.forEach(function (t) { countsByEmployee[employeeId][t] += monthCounts[t]; });
+      if (!unpaidByMonth[employeeId]) unpaidByMonth[employeeId] = {};
+      unpaidByMonth[employeeId][monthKey] = monthCounts['Unpaid Leave'];
 
       var monthDetail = leaveDetailForEmployee_(scheduledShiftsForMonth, employeeId);
       if (monthDetail.length) {
@@ -1364,7 +1383,6 @@ function leaveCountsAndDetailForYear_(year, monthsWithRealData) {
     // Schedule presence) -- no detail entries added (Historical Summary
     // has no day-level data), so a backfilled month contributes to the
     // Dashboard Leave popup's total count but not its per-day list.
-    var monthKey = calendarYear + '-' + calMonth;
     allEmployees.forEach(function (emp) {
       if (monthsWithRealData[emp.EmployeeID + '|' + monthKey]) return; // real data already counted above
       var historical = historicalForMonth[emp.EmployeeID];
@@ -1374,9 +1392,11 @@ function leaveCountsAndDetailForYear_(year, monthsWithRealData) {
         LEAVE_COUNT_TYPES.forEach(function (t) { countsByEmployee[emp.EmployeeID][t] = 0; });
       }
       LEAVE_COUNT_TYPES.forEach(function (t) { countsByEmployee[emp.EmployeeID][t] += historical.leaveCounts[t] || 0; });
+      if (!unpaidByMonth[emp.EmployeeID]) unpaidByMonth[emp.EmployeeID] = {};
+      unpaidByMonth[emp.EmployeeID][monthKey] = historical.leaveCounts['Unpaid Leave'] || 0;
     });
   }
-  return { counts: countsByEmployee, detail: detailByEmployee };
+  return { counts: countsByEmployee, detail: detailByEmployee, unpaidByMonth: unpaidByMonth };
 }
 
 /** Thin wrapper kept for the Summary sheet's existing call site (writeYearlySummaryData_), which only ever needed the counts half of leaveCountsAndDetailForYear_. */
@@ -1538,11 +1558,12 @@ function writeMonthlySummaryData_(sheet, startRow, year, month) {
     return String(a.EmployeeID).localeCompare(String(b.EmployeeID));
   });
 
-  var COLS = 9 + LEAVE_COUNT_TYPES.length; // Employee, Department, Days Worked, Late Count, Over Count, OT (min), OT (Quarter), OT Pay (Baht), Special Allowance (Baht), then one column per LEAVE_COUNT_TYPES entry
+  var COLS = 10 + LEAVE_COUNT_TYPES.length; // Employee, Department, Days Worked, Late Count, Over Count, OT (min), OT (Quarter), OT Pay (Baht), Special Allowance (Baht), Unpaid Leave Deduction (Baht), then one column per LEAVE_COUNT_TYPES entry
   var LATE_COUNT_COL = 4;
   var OVER_COUNT_COL = 5;
   var OT_PAY_COL = 8;
-  var rows = [['Employee', 'Department', 'Days Worked', 'Late Count', 'Over Count', 'OT (min)', 'OT (Quarter)', 'OT Pay (Baht)', 'Special Allowance (Baht)'].concat(LEAVE_COUNT_TYPES)];
+  var UNPAID_DEDUCTION_COL = 10;
+  var rows = [['Employee', 'Department', 'Days Worked', 'Late Count', 'Over Count', 'OT (min)', 'OT (Quarter)', 'OT Pay (Baht)', 'Special Allowance (Baht)', 'Unpaid Leave Deduction (Baht)'].concat(LEAVE_COUNT_TYPES)];
   var lateHighlightRows = []; // sheet row numbers (1-indexed) where Late Count > 0, for the red highlight below
   var overHighlightRows = []; // sheet row numbers (1-indexed) where Over Count > 0, for the red highlight below
   var otPayHighlightRows = []; // sheet row numbers (1-indexed) where OT Pay > 0, for the light-green highlight below
@@ -1566,9 +1587,10 @@ function writeMonthlySummaryData_(sheet, startRow, year, month) {
     // comes from the Allowances sheet only, even for a backfilled month
     // (see getEffectiveMonthTotals_'s own doc comment).
     var specialAllowance = sumRoundedAllowances_(allowancesByEmployee[emp.EmployeeID]);
+    var unpaidLeaveDeduction = totals.unpaidLeaveDeduction;
     var leaveCounts = totals.leaveCounts;
     var leaveCountValues = LEAVE_COUNT_TYPES.map(function (t) { return leaveCounts[t]; });
-    rows.push([emp.Name + ' (' + emp.EmployeeID + ')', emp.Department, daysWorked, lateCount, overCount, otMinutesTotal, otQuartersTotal, otPay, specialAllowance].concat(leaveCountValues));
+    rows.push([emp.Name + ' (' + emp.EmployeeID + ')', emp.Department, daysWorked, lateCount, overCount, otMinutesTotal, otQuartersTotal, otPay, specialAllowance, unpaidLeaveDeduction].concat(leaveCountValues));
     if (lateCount > 0) lateHighlightRows.push(startRow + rows.length - 1);
     if (overCount > 0) overHighlightRows.push(startRow + rows.length - 1);
     if (otPay > 0) otPayHighlightRows.push(startRow + rows.length - 1);
@@ -1585,6 +1607,7 @@ function writeMonthlySummaryData_(sheet, startRow, year, month) {
   // dropdown/color refreshes elsewhere in this file.
   if (rows.length > 1) {
     sheet.getRange(startRow + 1, OT_PAY_COL, rows.length - 1, 1).setNumberFormat('#,##0.00');
+    sheet.getRange(startRow + 1, UNPAID_DEDUCTION_COL, rows.length - 1, 1).setNumberFormat('#,##0.00');
   }
 
   if (lateHighlightRows.length > 0) {
@@ -1623,7 +1646,14 @@ function writeYearlySummaryData_(sheet, startRow, year) {
   var aggregated = aggregateYearSummary_(logSheet.getDataRange().getValues(), year);
   var totalsByEmployee = aggregated.totals;
   var monthsWithRealData = aggregated.monthsWithRealData;
-  var leaveCountsByEmployee = countLeavesForYear_(year, monthsWithRealData);
+  // leaveCountsAndDetailForYear_ directly, not the countLeavesForYear_
+  // wrapper -- this view also needs its unpaidByMonth field (per-fiscal-
+  // month Unpaid Leave day counts) to price the new Unpaid Leave
+  // Deduction column below, same reasoning getDashboardSummaryData_'s
+  // "All" branch already follows for its own copy of this same call.
+  var leaveYearResult = leaveCountsAndDetailForYear_(year, monthsWithRealData);
+  var leaveCountsByEmployee = leaveYearResult.counts;
+  var unpaidByMonth = leaveYearResult.unpaidByMonth;
   // One Salary-sheet read per fiscal month (12 total), not per employee --
   // see getEffectiveYearTotals_'s own doc comment (HistoricalSummary.gs)
   // for why a Thai employee's OT pay has to be priced month-by-month rather
@@ -1677,11 +1707,12 @@ function writeYearlySummaryData_(sheet, startRow, year) {
     return String(a.EmployeeID).localeCompare(String(b.EmployeeID));
   });
 
-  var COLS = 9 + LEAVE_COUNT_TYPES.length; // Employee, Department, Days Worked, Late Count, Over Count, OT (min), OT (Quarter), OT Pay (Baht), Special Allowance (Baht), then one column per LEAVE_COUNT_TYPES entry
+  var COLS = 10 + LEAVE_COUNT_TYPES.length; // Employee, Department, Days Worked, Late Count, Over Count, OT (min), OT (Quarter), OT Pay (Baht), Special Allowance (Baht), Unpaid Leave Deduction (Baht), then one column per LEAVE_COUNT_TYPES entry
   var LATE_COUNT_COL = 4;
   var OVER_COUNT_COL = 5;
   var OT_PAY_COL = 8;
-  var rows = [['Employee', 'Department', 'Days Worked', 'Late Count', 'Over Count', 'OT (min)', 'OT (Quarter)', 'OT Pay (Baht)', 'Special Allowance (Baht)'].concat(LEAVE_COUNT_TYPES)];
+  var UNPAID_DEDUCTION_COL = 10;
+  var rows = [['Employee', 'Department', 'Days Worked', 'Late Count', 'Over Count', 'OT (min)', 'OT (Quarter)', 'OT Pay (Baht)', 'Special Allowance (Baht)', 'Unpaid Leave Deduction (Baht)'].concat(LEAVE_COUNT_TYPES)];
   var lateHighlightRows = [];
   var overHighlightRows = [];
   var otPayHighlightRows = [];
@@ -1693,13 +1724,15 @@ function writeYearlySummaryData_(sheet, startRow, year) {
     // getEffectiveYearTotals_ (HistoricalSummary.gs) sums real numbers for
     // any fiscal month this employee has real data in, that employee's
     // Historical Summary row for any month they don't -- see its own doc
-    // comment for the full precedence rule.
-    var totals = getEffectiveYearTotals_(emp, fiscalMonths, totalsByEmployee[emp.EmployeeID], monthsWithRealData, salaryCache, historicalByMonth, otEligibilityCache);
+    // comment for the full precedence rule. unpaidByMonth[emp.EmployeeID]
+    // feeds its own per-fiscal-month Unpaid Leave Deduction pricing, same
+    // reasoning salaryCache gets passed in for OT Pay.
+    var totals = getEffectiveYearTotals_(emp, fiscalMonths, totalsByEmployee[emp.EmployeeID], monthsWithRealData, salaryCache, historicalByMonth, otEligibilityCache, unpaidByMonth[emp.EmployeeID] || {});
     var otPay = totals.otPay;
     var specialAllowance = allowanceTotalsByEmployee[emp.EmployeeID] || 0;
     var leaveCounts = leaveCountsByEmployee[emp.EmployeeID] || zeroLeaveCounts;
     var leaveCountValues = LEAVE_COUNT_TYPES.map(function (t) { return leaveCounts[t]; });
-    rows.push([emp.Name + ' (' + emp.EmployeeID + ')', emp.Department, totals.daysWorked, totals.lateCount, totals.overCount, totals.otMinutesTotal, totals.otQuartersTotal, otPay, specialAllowance].concat(leaveCountValues));
+    rows.push([emp.Name + ' (' + emp.EmployeeID + ')', emp.Department, totals.daysWorked, totals.lateCount, totals.overCount, totals.otMinutesTotal, totals.otQuartersTotal, otPay, specialAllowance, totals.unpaidLeaveDeduction].concat(leaveCountValues));
     if (totals.lateCount > 0) lateHighlightRows.push(startRow + rows.length - 1);
     if (totals.overCount > 0) overHighlightRows.push(startRow + rows.length - 1);
     if (otPay > 0) otPayHighlightRows.push(startRow + rows.length - 1);
@@ -1712,6 +1745,7 @@ function writeYearlySummaryData_(sheet, startRow, year) {
   // baht even though the stored value already has real cents.
   if (rows.length > 1) {
     sheet.getRange(startRow + 1, OT_PAY_COL, rows.length - 1, 1).setNumberFormat('#,##0.00');
+    sheet.getRange(startRow + 1, UNPAID_DEDUCTION_COL, rows.length - 1, 1).setNumberFormat('#,##0.00');
   }
 
   if (lateHighlightRows.length > 0) {
@@ -2060,6 +2094,33 @@ function computeOtPay_(emp, otMinutesTotal, otQuartersTotal, salaryForMonth) {
   var salary = Number(salaryForMonth);
   if (!(salary > 0)) return ''; // no salary on file for this month -> not eligible for OT pay
   return round2_(otQuartersTotal * (salary / THAI_OT_QUARTER_DIVISOR));
+}
+
+/**
+ * Unpaid Leave deduction in baht for one employee's month (Summary sheet's
+ * "Unpaid Leave Deduction (Baht)") -- salaryForMonth / 30 x unpaidLeaveDays,
+ * the same per-day-rate convention the company already uses for payroll.
+ * Unlike computeOtPay_ there's no flat/per-quarter split by department --
+ * this deduction needs every employee's Salary cell filled in going
+ * forward (previously only Thai staff needed one, for OT pay).
+ *
+ * Japanese currently uses this SAME /30 formula as an explicit interim
+ * decision (admin, 2026-11-13), not because it's necessarily the right
+ * long-term rule for Japanese payroll -- it shipped first as "not
+ * eligible" (always '') for Japanese until a real formula was decided,
+ * then the admin opted to use the Thai formula everywhere for now rather
+ * than leave it uncomputed. `emp` is still threaded through every call
+ * site for this reason -- if a department-specific Japanese formula is
+ * decided later, it's a one-function change here, nothing else needs
+ * touching.
+ *
+ * A missing/blank/zero salaryForMonth returns '' same as computeOtPay_ --
+ * "not eligible" (no salary on file), never a silent 0.
+ */
+function computeUnpaidLeaveDeduction_(emp, salaryForMonth, unpaidLeaveDays) {
+  var salary = Number(salaryForMonth);
+  if (!(salary > 0)) return '';
+  return round2_(salary / 30 * (unpaidLeaveDays || 0));
 }
 
 function round2_(n) {
@@ -2826,6 +2887,11 @@ function getDashboardSummaryData_(year, month) {
     var leaveYearResult = leaveCountsAndDetailForYear_(year, monthsWithRealData);
     leaveCountsByEmployee = leaveYearResult.counts;
     leaveDetailByEmployee = leaveYearResult.detail;
+    // unpaidByMonth (per-fiscal-month Unpaid Leave day counts) -- fed into
+    // getEffectiveYearTotals_ below so the "All" view's Unpaid Leave
+    // Deduction prices each fiscal month against that month's own Salary
+    // sheet, same mid-year-raise correctness OT Pay already gets.
+    var unpaidByMonth = leaveYearResult.unpaidByMonth;
     // getAllowanceEntriesForYear_ (not aggregateSpecialAllowancesForYear_)
     // -- this function needs the itemized entries, for the Allowance
     // column's hover tooltip below, not just the totals that function
@@ -2943,7 +3009,7 @@ function getDashboardSummaryData_(year, month) {
     // employee in the loop above, including for an employee with nothing on
     // file -- getEffectiveMonthTotals_ never returns undefined).
     var totals = isAllMonths
-      ? getEffectiveYearTotals_(emp, fiscalMonths, totalsByEmployee[emp.EmployeeID], monthsWithRealData, salaryCache, historicalByMonth, otEligibilityCache)
+      ? getEffectiveYearTotals_(emp, fiscalMonths, totalsByEmployee[emp.EmployeeID], monthsWithRealData, salaryCache, historicalByMonth, otEligibilityCache, unpaidByMonth[emp.EmployeeID] || {})
       : totalsByEmployee[emp.EmployeeID];
     var leaveCounts = leaveCountsByEmployee[emp.EmployeeID] || zeroLeaveCounts;
     var otPay = totals.otPay;
@@ -3021,6 +3087,11 @@ function getDashboardSummaryData_(year, month) {
       otPay: otPay === '' ? null : otPay, // null = not eligible (e.g. Thai staff with no Salary on file), not zero
       specialAllowance: specialAllowance,
       specialAllowanceDetail: specialAllowanceDetail,
+      // null = not eligible (no Salary on file this month, or a Japanese
+      // employee -- see computeUnpaidLeaveDeduction_, Report.gs, for why
+      // Japanese is unconditionally '' until its own formula is decided),
+      // not zero -- same convention as otPay just above.
+      unpaidLeaveDeduction: totals.unpaidLeaveDeduction === '' ? null : totals.unpaidLeaveDeduction,
       leave: {
         annual: leaveCounts['Annual Leave'],
         sick: leaveCounts['Sick Leave'],
