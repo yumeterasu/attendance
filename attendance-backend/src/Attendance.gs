@@ -1478,7 +1478,7 @@ function buildMyAttendanceDays_(year, month, dayLogs, scheduledShiftsForMonth, t
 }
 
 /**
- * One employee's Unpaid Leave Deduction for a Kiosk My Schedule response --
+ * One employee's Unpaid Leave fields for a Kiosk My Schedule response --
  * shared by all 3 Kiosk handlers that build one of these per employee/month
  * (handleKioskMyAttendance_, handleKioskMyAttendanceBulk_,
  * handleKioskScheduleSyncAll_) specifically so a future field/behavior
@@ -1490,11 +1490,17 @@ function buildMyAttendanceDays_(year, month, dayLogs, scheduledShiftsForMonth, t
  * it itself -- each of the 3 callers reads "Salary YYYY-MM" at a different
  * granularity (once for a single month, once per month in a loop, once for
  * a whole batch), so fetching belongs at the call site, not duplicated
- * here. Returns just the deduction (already '' -> null converted, same
- * convention every other surface of this figure uses) -- the day count
- * countUnpaidLeaveDaysForEmployee_ computes along the way to get there is
- * an internal input to the Baht figure, not a separate value the Kiosk UI
- * shows anywhere today, so it isn't threaded through to the response.
+ * here.
+ *
+ * Returns { unpaidLeaveDays, unpaidLeaveDeduction, unpaidLeaveDetail } --
+ * unpaidLeaveDeduction already '' -> null converted, same convention
+ * every other surface of this figure uses. unpaidLeaveDays/
+ * unpaidLeaveDetail were dropped from this function's first draft (review
+ * flagged them as unused dead plumbing, since the UI at the time only
+ * showed the Baht figure) and are back as of the Days Worked & Unpaid
+ * Leave tap-to-expand redesign (KioskScreen.tsx, 2026-11-14), which needs
+ * both the day count (the box's own mini-stat value) and the day list
+ * (the popup) alongside the total.
  *
  * Deliberately does NOT fall back to a Historical Summary row the way
  * getEffectiveMonthTotals_ (HistoricalSummary.gs) does for this same
@@ -1508,11 +1514,31 @@ function buildMyAttendanceDays_(year, month, dayLogs, scheduledShiftsForMonth, t
  * either) even if that month happens to have both a Historical Summary
  * row AND a Salary sheet -- a known, pre-existing Kiosk limitation this
  * feature doesn't change, not a new gap specific to it.
+ *
+ * unpaidLeaveDays is DERIVED from unpaidLeaveDetail (summed here, 1 per
+ * full-day entry + 0.5 per half-day entry) rather than computed via a
+ * second, independent scan (countUnpaidLeaveDaysForEmployee_) -- an
+ * earlier version of this function called both, which meant the box's
+ * day-count number and its own popup's day list were only ever
+ * guaranteed to agree by the two scans happening to stay in lockstep,
+ * not by construction (real review catch, 2026-11-16: countLeavesForEmployee_,
+ * which countUnpaidLeaveDaysForEmployee_ wraps, and leaveDetailForEmployee_,
+ * which unpaidLeaveDetailForEmployee_ wraps, are two separately-written
+ * copies of the same HALF_DAY_LEAVE_COUNTS_AS_ branching -- a future edit
+ * to one and not the other would have silently desynced them). Note
+ * `unpaidLeaveDetail.length` is NOT the day count on its own -- a half-
+ * day entry is still one array entry worth 0.5, not 1, so this sums over
+ * each entry's `half` flag rather than just counting entries.
  */
-function kioskUnpaidLeaveDeduction_(emp, scheduledShiftsForEmployee, salaryForMonth) {
-  var unpaidLeaveDays = countUnpaidLeaveDaysForEmployee_(scheduledShiftsForEmployee);
+function kioskUnpaidLeaveFields_(emp, scheduledShiftsForEmployee, salaryForMonth) {
+  var unpaidLeaveDetail = unpaidLeaveDetailForEmployee_(scheduledShiftsForEmployee);
+  var unpaidLeaveDays = unpaidLeaveDetail.reduce(function (sum, entry) { return sum + (entry.half ? 0.5 : 1); }, 0);
   var unpaidLeaveDeduction = computeUnpaidLeaveDeduction_(emp, salaryForMonth, unpaidLeaveDays);
-  return unpaidLeaveDeduction === '' ? null : unpaidLeaveDeduction;
+  return {
+    unpaidLeaveDays: unpaidLeaveDays,
+    unpaidLeaveDeduction: unpaidLeaveDeduction === '' ? null : unpaidLeaveDeduction,
+    unpaidLeaveDetail: unpaidLeaveDetail
+  };
 }
 
 /**
@@ -1583,11 +1609,11 @@ function handleKioskMyAttendance_(params) {
   // down rapid Prev/Next paging, this is the place a per-request cache
   // (same idea as getCachedEmployees_, Utils.gs) would need to go.
   var allowanceEntries = getAllowancesForEmployeeMonth_(found.row.EmployeeID, year, month);
-  // kioskUnpaidLeaveDeduction_ (above) -- added 2026-11-14 so My Schedule
-  // can finally show an employee their own Unpaid Leave Deduction, which
+  // kioskUnpaidLeaveFields_ (above) -- added 2026-11-14 so My Schedule can
+  // finally show an employee their own Unpaid Leave Deduction, which
   // until now was backend/Dashboard-only. `scheduledShiftsForMonth` is
   // already narrowed to just this one employee's { day: shift } above.
-  var unpaidLeaveDeduction = kioskUnpaidLeaveDeduction_(found.row, scheduledShiftsForMonth, salaryAndEligibility.salary[found.row.EmployeeID]);
+  var unpaidLeave = kioskUnpaidLeaveFields_(found.row, scheduledShiftsForMonth, salaryAndEligibility.salary[found.row.EmployeeID]);
   return ok_({
     name: found.row.Name,
     year: year,
@@ -1614,7 +1640,9 @@ function handleKioskMyAttendance_(params) {
     // above them.
     allowanceTotal: sumRoundedAllowances_(allowanceEntries),
     allowanceDetail: roundedAllowanceDetail_(allowanceEntries),
-    unpaidLeaveDeduction: unpaidLeaveDeduction
+    unpaidLeaveDays: unpaidLeave.unpaidLeaveDays,
+    unpaidLeaveDeduction: unpaidLeave.unpaidLeaveDeduction,
+    unpaidLeaveDetail: unpaidLeave.unpaidLeaveDetail
   });
 }
 
@@ -1698,11 +1726,11 @@ function handleKioskMyAttendanceBulk_(params) {
     var monthAllowanceEntries = employeeAllowanceRows.filter(function (a) {
       return a.year === year && a.month === month;
     });
-    // kioskUnpaidLeaveDeduction_ (above) -- same addition as
+    // kioskUnpaidLeaveFields_ (above) -- same addition as
     // handleKioskMyAttendance_'s own, kept in sync here too, otherwise a
     // month paged in from this bulk/cached path would show no deduction
     // until the next live fetch overwrote it.
-    var monthUnpaidLeaveDeduction = kioskUnpaidLeaveDeduction_(found.row, scheduledShiftsForMonth, monthSalaryAndEligibility.salary[employeeId]);
+    var monthUnpaidLeave = kioskUnpaidLeaveFields_(found.row, scheduledShiftsForMonth, monthSalaryAndEligibility.salary[employeeId]);
     months.push({
       year: year,
       month: month,
@@ -1719,7 +1747,9 @@ function handleKioskMyAttendanceBulk_(params) {
       overCount: monthTotals.overCount,
       allowanceTotal: sumRoundedAllowances_(monthAllowanceEntries),
       allowanceDetail: roundedAllowanceDetail_(monthAllowanceEntries),
-      unpaidLeaveDeduction: monthUnpaidLeaveDeduction
+      unpaidLeaveDays: monthUnpaidLeave.unpaidLeaveDays,
+      unpaidLeaveDeduction: monthUnpaidLeave.unpaidLeaveDeduction,
+      unpaidLeaveDetail: monthUnpaidLeave.unpaidLeaveDetail
     });
   }
 
@@ -1766,7 +1796,7 @@ function handleKioskScheduleSyncAll_(params) {
   var allowancesByEmployee = getAllowancesForMonth_(year, month);
   // One combined read of the "Salary YYYY-MM" sheet for both the OT
   // Eligible override below and this month's salary (needed for
-  // kioskUnpaidLeaveDeduction_/computeUnpaidLeaveDeduction_, added
+  // kioskUnpaidLeaveFields_/computeUnpaidLeaveDeduction_, added
   // 2026-11-14) -- one read for the whole batch, same reasoning as
   // allowancesByEmployee just above, via getSalaryAndOtEligibilityForMonth_
   // instead of getOtEligibilityForMonth_ alone now that both are needed.
@@ -1828,7 +1858,7 @@ function handleKioskScheduleSyncAll_(params) {
         monthTotals.otMinutesTotal = 0;
         monthTotals.otQuartersTotal = 0;
       }
-      // kioskUnpaidLeaveDeduction_ (above) -- same addition as
+      // kioskUnpaidLeaveFields_ (above) -- same addition as
       // handleKioskMyAttendance_'s own, kept in sync here too (real review
       // catch, 2026-11-14 -- this feature's first draft missed this one of
       // the 3 Kiosk handlers entirely, see that helper's own doc comment).
@@ -1841,7 +1871,7 @@ function handleKioskScheduleSyncAll_(params) {
       // for a possible future department-specific formula -- this wrapper
       // just satisfies that same signature the other 2 handlers' found.row
       // already does.
-      var unpaidLeaveDeduction = kioskUnpaidLeaveDeduction_({ Department: row[deptCol] }, scheduledShiftsForMonth, salaryAndEligibilityByEmployee.salary[employeeId]);
+      var unpaidLeave = kioskUnpaidLeaveFields_({ Department: row[deptCol] }, scheduledShiftsForMonth, salaryAndEligibilityByEmployee.salary[employeeId]);
       employees.push({
         pin: pin,
         name: name,
@@ -1859,7 +1889,9 @@ function handleKioskScheduleSyncAll_(params) {
         overCount: monthTotals.overCount,
         allowanceTotal: sumRoundedAllowances_(allowancesByEmployee[employeeId]),
         allowanceDetail: roundedAllowanceDetail_(allowancesByEmployee[employeeId]),
-        unpaidLeaveDeduction: unpaidLeaveDeduction
+        unpaidLeaveDays: unpaidLeave.unpaidLeaveDays,
+        unpaidLeaveDeduction: unpaidLeave.unpaidLeaveDeduction,
+        unpaidLeaveDetail: unpaidLeave.unpaidLeaveDetail
       });
     } catch (e) {
       Logger.log('handleKioskScheduleSyncAll_: skipped ' + employeeId + ' (' + name + '): ' + e.message);

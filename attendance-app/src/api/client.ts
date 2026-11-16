@@ -193,6 +193,56 @@ export type OtUnit = 'minutes' | 'quarters';
 // box just isn't tappable) when missing, so it doesn't need one too.
 export type AllowanceDetailEntry = { label: string; amount: number };
 
+// Itemized breakdown behind unpaidLeaveDeduction below -- which specific
+// days were Unpaid Leave this month, shown on tap (the Days Worked &
+// Unpaid Leave box in KioskScreen's My Schedule summary grid). half=true
+// for a Half Day Unpaid Leave cell, same meaning as leaveDetailForEmployee_'s
+// own `half` field (Report.gs) this is filtered down from. No `amount`
+// field, unlike AllowanceDetailEntry -- Unpaid Leave isn't itemized money
+// per day in the data model, only a single computed total
+// (unpaidLeaveDeduction), so the popup lists dates and shows that one
+// total rather than fabricating a per-day split.
+export type UnpaidLeaveDetailEntry = { day: number; half: boolean };
+
+// The per-month/per-employee fields that travel together across all 5
+// shapes that carry them: kioskMyAttendance's own return, each entry of
+// kioskMyAttendanceBulk's months[], ScheduleSyncEmployee, and (in
+// scheduleCache.ts) CachedMonth/CurrentSnapshot. Factored out 2026-11-14
+// (real review catch) after the Unpaid Leave trio was hand-added
+// identically to all 5 separately -- this codebase had already warned
+// about exactly this risk, right here, on ScheduleSyncEmployee's own
+// comment below ("a second inline copy... could silently drift out of
+// sync") without actually heeding it for this family of types. A future
+// field now needs editing in exactly one place, and the 3 call sites
+// that build a CachedMonth/CurrentSnapshot/ScheduleSyncEmployee via
+// object spread (see scheduleCache.ts/KioskScreen.tsx/useScheduleSync.ts)
+// already forward whatever this type grows without their own changes.
+export type KioskMonthFields = {
+  otUnit: OtUnit;
+  // Same sumMonthTotals_ figure the Report/Summary sheets and Dashboard
+  // already show (see handleKioskMyAttendance_, Attendance.gs) -- added
+  // 2026-11-03 for the My Schedule summary grid's Days Worked box.
+  daysWorked: number;
+  otMinutesTotal: number;
+  otQuartersTotal: number;
+  lateCount: number;
+  overCount: number;
+  allowanceTotal: number;
+  allowanceDetail?: AllowanceDetailEntry[];
+  // Added 2026-11-14 for the My Schedule summary grid's Days Worked &
+  // Unpaid Leave box (see computeUnpaidLeaveDeduction_, Report.gs).
+  // Optional, not a required-fields cache-key bump (scheduleCache.ts) --
+  // unlike lateCount/overCount/allowanceTotal/daysWorked, the summary
+  // grid isn't "unusable" without these: a cached month without them
+  // just shows "0" for Unpaid Leave and isn't tappable, same graceful
+  // degradation allowanceDetail already gets. unpaidLeaveDeduction null
+  // (not just absent) means "not eligible, no Salary on file this
+  // month" -- same convention the Dashboard/Summary tab use.
+  unpaidLeaveDays?: number;
+  unpaidLeaveDeduction?: number | null;
+  unpaidLeaveDetail?: UnpaidLeaveDetailEntry[];
+};
+
 export function kioskMyAttendance(pin: string, year?: number, month?: number) {
   const now = new Date();
   const isCurrentMonth = year === undefined || month === undefined || (year === now.getFullYear() && month === now.getMonth() + 1);
@@ -201,30 +251,7 @@ export function kioskMyAttendance(pin: string, year?: number, month?: number) {
     year: number;
     month: number;
     days: ScheduleDay[];
-    otUnit: OtUnit;
-    // Same sumMonthTotals_ figure the Report/Summary sheets and Dashboard
-    // already show (see handleKioskMyAttendance_, Attendance.gs) -- added
-    // 2026-11-03 for the My Schedule summary grid's new Days Worked box.
-    daysWorked: number;
-    otMinutesTotal: number;
-    otQuartersTotal: number;
-    lateCount: number;
-    overCount: number;
-    allowanceTotal: number;
-    allowanceDetail?: AllowanceDetailEntry[];
-    // Added 2026-11-14 for the My Schedule summary grid's Unpaid Leave line
-    // (see computeUnpaidLeaveDeduction_, Report.gs). Optional, not a
-    // required-fields cache-key bump (scheduleCache.ts) -- unlike
-    // lateCount/overCount/allowanceTotal/daysWorked, the summary grid
-    // isn't "unusable" without this: a cached month without it just shows
-    // no deduction line, same graceful degradation allowanceDetail already
-    // gets. null (not just absent) means "not eligible, no Salary on file
-    // this month" -- same convention the Dashboard/Summary tab use. Just
-    // the Baht figure, not the underlying day count too -- nothing on the
-    // Kiosk shows that separately today (unlike the Dashboard, which has
-    // its own dedicated Unpaid Leave column).
-    unpaidLeaveDeduction?: number | null;
-  }>('kioskMyAttendance', { pin, year, month }, isCurrentMonth ? SCHEDULE_TIMEOUT_MS : SCHEDULE_MONTH_NAV_TIMEOUT_MS);
+  } & KioskMonthFields>('kioskMyAttendance', { pin, year, month }, isCurrentMonth ? SCHEDULE_TIMEOUT_MS : SCHEDULE_MONTH_NAV_TIMEOUT_MS);
 }
 
 // Fetches the last year of My Schedule history in one call, for the
@@ -238,7 +265,7 @@ const SCHEDULE_BULK_SYNC_TIMEOUT_MS = 45000;
 export function kioskMyAttendanceBulk(pin: string) {
   return postAction<{
     name: string;
-    months: { year: number; month: number; days: ScheduleDay[]; otUnit: OtUnit; daysWorked: number; otMinutesTotal: number; otQuartersTotal: number; lateCount: number; overCount: number; allowanceTotal: number; allowanceDetail?: AllowanceDetailEntry[]; unpaidLeaveDeduction?: number | null }[];
+    months: ({ year: number; month: number; days: ScheduleDay[] } & KioskMonthFields)[];
   }>('kioskMyAttendanceBulk', { pin }, SCHEDULE_BULK_SYNC_TIMEOUT_MS);
 }
 
@@ -282,9 +309,8 @@ export function kioskDirectory() {
 // Exported (not just inlined into kioskScheduleSyncAll's return type below)
 // so scheduleCache.ts's cacheCurrentScheduleSnapshots can import this same
 // shape for its own `employees` parameter, rather than a second inline
-// copy of these 9 fields that could silently drift out of sync with this
-// one the next time a field is added here and forgotten there.
-export type ScheduleSyncEmployee = { pin: string; name: string; days: ScheduleDay[]; otUnit: OtUnit; daysWorked: number; otMinutesTotal: number; otQuartersTotal: number; lateCount: number; overCount: number; allowanceTotal: number; allowanceDetail?: AllowanceDetailEntry[]; unpaidLeaveDeduction?: number | null };
+// copy of KioskMonthFields that could drift out of sync with this one.
+export type ScheduleSyncEmployee = { pin: string; name: string; days: ScheduleDay[] } & KioskMonthFields;
 
 // Device-wide daily background sync (see useScheduleSync) -- every active
 // employee's current month in one call, no PIN. Same budget as

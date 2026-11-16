@@ -522,66 +522,116 @@ function HourMinuteSliders({
 // rendered (even as '') rather than only when non-empty -- statsGridTapHint
 // reserves a fixed height either way, so every box comes out the same total
 // height regardless of which one(s) happen to have a hint this time.
-// hintColor (added 2026-11-14) overrides statsGridTapHint's own baked-in
-// color, just for this one instance -- the Special Allowance box reuses
-// this same fixed-height hint line for its Unpaid Leave Deduction figure
-// when there is one (see that box's own comment below), which needs to
-// read as a warning (LATE_RED), not the usual accent-colored "Tap for
-// details" hint. numberOfLines={1} + adjustsFontSizeToFit on that hint --
-// a figure that directly affects someone's pay must never be silently
-// cut off with an ellipsis, and shrinking the font to fit the one line
-// (rather than letting it wrap, which would grow this box past its
-// siblings') is what keeps the whole amount visible AND every box the
-// same fixed height. This alone isn't sufficient for an unbounded
-// string -- the Unpaid Leave Deduction hint that calls this also keeps
-// its own text short specifically so minimumFontScale's floor is never
-// actually reached in practice (see that call site's own comment); the
-// two defenses work together, neither alone is enough. adjustsFontSizeToFit/
-// minimumFontScale are gated on hintColor being set (true only for the new
-// Unpaid Leave case, see that call site) rather than applied to every box's
-// hint unconditionally -- the pre-existing "Tap for details" hint already
-// shipped fitting this line at its normal size, and this way its render
-// path is untouched by this change rather than now also passing through
-// adjustsFontSizeToFit's shrink-to-fit logic for a string it never needed.
-function renderMyScheduleStatBox(label: string, value: string, color: string, hint: string = '', onPress?: () => void, hintColor?: string) {
+function renderMyScheduleStatBox(label: string, value: string, color: string, hint: string = '', onPress?: () => void) {
   const Wrapper = onPress ? Pressable : View;
   return (
     <Wrapper style={styles.statsGridItem} {...(onPress ? { onPress } : {})}>
       <Text style={styles.otSummaryLabel}>{label}</Text>
       <Text style={[styles.otSummaryValue, { color }]} numberOfLines={1}>{value}</Text>
-      <Text
-        style={[styles.statsGridTapHint, hintColor ? { color: hintColor } : null]}
-        numberOfLines={1}
-        {...(hintColor ? { adjustsFontSizeToFit: true, minimumFontScale: 0.7 } : {})}
-      >
-        {hint}
+      <Text style={styles.statsGridTapHint} numberOfLines={1}>{hint}</Text>
+    </Wrapper>
+  );
+}
+
+// Two mini-stats side by side instead of renderMyScheduleStatBox's single
+// big number, so two related figures can share one statsGridItem slot and
+// keep the grid at 2x2 -- first built 2026-11-03 for Late + Over Break
+// (freeing the slot Days Worked's new box needed that same day).
+// Generalized 2026-11-14 (was hardcoded to Late/Over Break's own labels
+// and colors) to a second call site, Days Worked + Unpaid Leave, which
+// unlike Late/Over Break DOES have detail to expand into -- onPress is
+// optional specifically so Late & Over Break's own call site (still
+// nothing to tap) stays a plain, non-interactive View, same as before
+// this generalization.
+function renderMyScheduleMergedStatBox(
+  label: string,
+  leftValue: string, leftLabel: string, leftColor: string,
+  rightValue: string, rightLabel: string, rightColor: string,
+  onPress?: () => void
+) {
+  const Wrapper = onPress ? Pressable : View;
+  return (
+    <Wrapper style={styles.statsGridItem} {...(onPress ? { onPress } : {})}>
+      <Text style={styles.otSummaryLabel}>{label}</Text>
+      <View style={styles.mergedStatRow}>
+        <View style={styles.miniStat}>
+          <Text style={[styles.miniStatValue, { color: leftColor }]} numberOfLines={1}>{leftValue}</Text>
+          <Text style={[styles.miniStatLabel, { color: leftColor }]}>{leftLabel}</Text>
+        </View>
+        <View style={styles.miniStat}>
+          <Text style={[styles.miniStatValue, { color: rightColor }]} numberOfLines={1}>{rightValue}</Text>
+          <Text style={[styles.miniStatLabel, { color: rightColor }]}>{rightLabel}</Text>
+        </View>
+      </View>
+      <Text style={styles.statsGridTapHint} numberOfLines={1}>
+        {onPress ? 'Tap for details / แตะเพื่อดูรายละเอียด' : ''}
       </Text>
     </Wrapper>
   );
 }
 
-// Late + Over Break's own stat box (added 2026-11-03 alongside Days
-// Worked) -- two mini-stats side by side instead of renderMyScheduleStatBox's
-// single big number, so the two boxes they used to each have (Late, Over
-// Break) fold into the one statsGridItem slot Days Worked's new box needed
-// freed up to keep the grid at 2x2. Never Pressable -- unlike the Allowance
-// box, neither Late nor Over Break has any itemized detail to expand into.
-function renderMyScheduleMergedStatBox(label: string, lateValue: string, overValue: string) {
+// Shared shell for every "tap a stat box, see the itemized list + total"
+// popup on this screen (Special Allowance, Unpaid Leave) -- extracted
+// 2026-11-16 (real review catch) after the Unpaid Leave popup was first
+// built as a ~40-line hand-copied near-duplicate of the Allowance one
+// (only their *styles* had been centralized, as detailModal*, not the
+// JSX itself). `rows` takes already-built row elements rather than a
+// generic data array + renderItem -- the two current callers' rows
+// differ enough (Allowance: label + amount; Unpaid Leave: a single date
+// string, no amount) that a shared renderItem signature would need to
+// support "maybe no second column" anyway, and callers already have
+// `.map(...)` close at hand. Takes resetIdleTimer as a parameter rather
+// than closing over it -- like renderMyScheduleStatBox/
+// renderMyScheduleMergedStatBox above, this is a plain module-level
+// function, not a method on the component, so it has no access to the
+// component's own closures.
+function renderDetailModal(
+  visible: boolean,
+  onClose: () => void,
+  resetIdleTimer: () => void,
+  title: string,
+  subtitle: string,
+  rows: React.ReactNode[],
+  totalLabel: string,
+  totalValue: string
+) {
   return (
-    <View style={styles.statsGridItem}>
-      <Text style={styles.otSummaryLabel}>{label}</Text>
-      <View style={styles.mergedStatRow}>
-        <View style={styles.miniStat}>
-          <Text style={[styles.miniStatValue, { color: LATE_RED }]} numberOfLines={1}>{lateValue}</Text>
-          <Text style={[styles.miniStatLabel, { color: LATE_RED }]}>Late</Text>
-        </View>
-        <View style={styles.miniStat}>
-          <Text style={[styles.miniStatValue, { color: BUTTER }]} numberOfLines={1}>{overValue}</Text>
-          <Text style={[styles.miniStatLabel, { color: BUTTER }]}>Over Break</Text>
-        </View>
-      </View>
-      <Text style={styles.statsGridTapHint}></Text>
-    </View>
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+      {/* Backdrop Pressable (not a 3rd-party library -- nothing else on
+          this screen needed one either) so tapping outside the card
+          closes it, same as the hardware back button (onRequestClose)
+          and the Close button. onTouchStart/onTouchMove on the backdrop
+          -- without them, time spent reading this modal doesn't count as
+          activity (RN's Modal renders in its own native layer, outside
+          the LinearGradient container the idle timer's own touch
+          handlers are bound to), so SCHEDULE_IDLE_TIMEOUT_MS could fire
+          and yank the screen back to PIN entry out from under someone
+          still reading it. */}
+      <Pressable
+        style={styles.detailModalBackdrop}
+        onPress={onClose}
+        onTouchStart={resetIdleTimer}
+        onTouchMove={resetIdleTimer}
+      >
+        {/* Swallows the tap so it doesn't bubble to the backdrop Pressable
+            above and close the card the instant it's opened. */}
+        <Pressable style={styles.detailModalCard} onPress={() => {}}>
+          <Text style={styles.detailModalTitle}>{title}</Text>
+          <Text style={styles.detailModalSubtitle}>{subtitle}</Text>
+          {/* Scrollable, not a plain View -- a long row list would otherwise
+              visually spill past the card's own maxHeight:'80%' cap (RN
+              Views default to overflow:'visible') instead of scrolling. */}
+          <ScrollView style={styles.detailModalList}>{rows}</ScrollView>
+          <View style={styles.detailModalTotalRow}>
+            <Text style={styles.detailModalTotalLabel}>{totalLabel}</Text>
+            <Text style={styles.detailModalTotalAmount}>{totalValue}</Text>
+          </View>
+          <Pressable style={styles.detailModalCloseButton} onPress={onClose}>
+            <Text style={styles.buttonText}>Close / ปิด</Text>
+          </Pressable>
+        </Pressable>
+      </Pressable>
+    </Modal>
   );
 }
 
@@ -762,6 +812,10 @@ export default function KioskScreen({ navigation }: Props) {
   // paging never leaves last month's itemized list on screen under this
   // month's total).
   const [showAllowanceDetail, setShowAllowanceDetail] = useState(false);
+  // Same reset/close-on-navigate treatment as showAllowanceDetail just
+  // above -- backs the Days Worked & Unpaid Leave box's own tap-to-expand
+  // popup (added 2026-11-14).
+  const [showUnpaidLeaveDetail, setShowUnpaidLeaveDetail] = useState(false);
   // Real on-device measurements (onLayout below) of everything around the
   // calendar grid on the scheduleResult screen, used to compute cellHeight
   // -- see MIN_CELL_HEIGHT's own comment for why a hand-estimated budget
@@ -865,6 +919,7 @@ export default function KioskScreen({ navigation }: Props) {
     setScheduleIssue(null);
     setScheduleData(null);
     setShowAllowanceDetail(false);
+    setShowUnpaidLeaveDetail(false);
     // Pre-existing gap, closed here since this is now the one shared reset
     // path: neither the old Cancel/Done handlers nor submitSchedulePin ever
     // cleared this, so a failed goToScheduleMonth's error banner for one
@@ -1107,12 +1162,14 @@ export default function KioskScreen({ navigation }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode]);
 
-  // Closes the Allowance detail modal whenever the viewed month or employee
-  // changes (Prev/Next paging, or a fresh PIN entry) -- without this, paging
-  // away from a month whose detail was left open would carry that same
-  // itemized list over, now mislabeled under a different month's total.
+  // Closes the Allowance/Unpaid Leave detail modals whenever the viewed
+  // month or employee changes (Prev/Next paging, or a fresh PIN entry) --
+  // without this, paging away from a month whose detail was left open
+  // would carry that same itemized list over, now mislabeled under a
+  // different month's total.
   useEffect(() => {
     setShowAllowanceDetail(false);
+    setShowUnpaidLeaveDetail(false);
   }, [scheduleData?.year, scheduleData?.month, scheduleAuthPin]);
 
   // Pre-select IN during the morning arrival window and OUT once it's late
@@ -2222,18 +2279,17 @@ export default function KioskScreen({ navigation }: Props) {
       windowHeight - safeAreaInsets.top - safeAreaInsets.bottom - containerVerticalPadding - aboveGridHeight - belowGridHeight;
     const cellHeight = Math.max(MIN_CELL_HEIGHT, availableForGrid / weeks.length);
     const hasAllowanceDetail = (scheduleData.allowanceDetail?.length ?? 0) > 0;
-    // Shown in the Special Allowance box's own fixed-height hint line
-    // (statsGridTapHint) in place of "Tap for details" whenever nonzero --
-    // added 2026-11-14 so an employee can see their Unpaid Leave Deduction
-    // without a 5th stat box (the grid is already a hard 2x2, see the
-    // comment above statsGrid below) or a new modal. Takes priority over
-    // the "Tap for details" hint when both apply (the box stays tappable
-    // for Allowance detail either way -- only which hint TEXT shows this
-    // month changes) since this figure directly affects pay and must
-    // never be silently hidden behind a hint an employee has no reason to
-    // expect means "also check here for a deduction."
-    const unpaidLeaveDeduction = scheduleData.unpaidLeaveDeduction;
-    const hasUnpaidLeaveDeduction = typeof unpaidLeaveDeduction === 'number' && unpaidLeaveDeduction > 0;
+    // Unpaid Leave now lives in its own tap-to-expand box paired with Days
+    // Worked (see renderMyScheduleMergedStatBox's call below), not as a
+    // hint line stealing Special Allowance's own "Tap for details" slot --
+    // an earlier version of this screen did that instead; redesigned
+    // 2026-11-14 after live feedback asked for Unpaid Leave to sit next to
+    // Days Worked, day-count visible always, the Baht total only on tap
+    // (same reasoning hasAllowanceDetail already follows for Allowance).
+    const hasUnpaidLeaveDetail = (scheduleData.unpaidLeaveDetail?.length ?? 0) > 0;
+    // Shared by both detail popups (Allowance, Unpaid Leave) below -- same
+    // subtitle, computed once rather than twice.
+    const monthYearSubtitle = `${MONTH_NAMES[scheduleData.month - 1]} ${scheduleData.year}`;
 
     return (
       <LinearGradient
@@ -2481,12 +2537,25 @@ export default function KioskScreen({ navigation }: Props) {
             an employee had no way to see how many days they'd actually
             worked this month anywhere on the Kiosk. Late/Over Break folded
             into one merged box (renderMyScheduleMergedStatBox) to make room
-            for it without growing past 2x2. */}
+            for it without growing past 2x2. Days Worked's own box became a
+            second merged one, paired with Unpaid Leave, 2026-11-14 -- see
+            hasUnpaidLeaveDetail's own comment above. */}
         <View style={styles.statsGrid}>
-          {renderMyScheduleStatBox(
-            'Days Worked / วันทำงาน',
-            `${scheduleData.daysWorked} day${scheduleData.daysWorked === 1 ? '' : 's'}`,
-            ACCENT_DARK
+          {/* Pressable only when there's a day list to actually show --
+              unpaidLeaveDetail is optional (older cached data, or a brief
+              deploy-skew window, same reasoning allowanceDetail's own
+              comment in client.ts gives) and a month with zero Unpaid
+              Leave has nothing to expand into either way, so this falls
+              back to the same plain, non-interactive merged box Late &
+              Over Break already is. The popup (below) shows which dates
+              and the Baht total; this box itself only ever shows the day
+              count, never money, so nothing here needs the adjustsFontSizeToFit
+              defense the old hint-line design needed. */}
+          {renderMyScheduleMergedStatBox(
+            'Days Worked & Unpaid Leave / วันทำงานกับวันลาไม่รับเงิน',
+            `${scheduleData.daysWorked} day${scheduleData.daysWorked === 1 ? '' : 's'}`, 'Days Worked', ACCENT_DARK,
+            String(scheduleData.unpaidLeaveDays ?? 0), 'Unpaid Leave', LATE_RED,
+            hasUnpaidLeaveDetail ? () => setShowUnpaidLeaveDetail(true) : undefined
           )}
           {renderMyScheduleStatBox(
             'Total OT / OT รวม',
@@ -2497,101 +2566,79 @@ export default function KioskScreen({ navigation }: Props) {
           )}
           {renderMyScheduleMergedStatBox(
             'Late & Over Break / วันมาสายกับพักเกิน',
-            String(scheduleData.lateCount),
-            String(scheduleData.overCount)
+            String(scheduleData.lateCount), 'Late', LATE_RED,
+            String(scheduleData.overCount), 'Over Break', BUTTER
           )}
           {/* Pressable only when there's itemized detail to actually show --
               allowanceDetail is optional (older cached data, or a brief
               deploy-skew window, see its own comment in client.ts) and an
               employee with no allowance entries that month has nothing to
               expand into either way, so this falls back to the same plain,
-              non-interactive box the other stats use. The hint line shows
-              the Unpaid Leave Deduction (red) in place of "Tap for
-              details" whenever nonzero this month -- see
-              hasUnpaidLeaveDeduction's own comment above -- the box's
-              tappability is unaffected either way, still gated only by
-              hasAllowanceDetail. Deliberately English-only (unlike every
-              other bilingual label/hint on this screen) and a plain ASCII
-              "-" (not "−", U+2212, which this font has no guarantee of
-              mapping, and which the Dashboard's own formatBaht()
-              deliberately avoids for the same reason) -- this string
-              scales with the actual Baht amount, which can run long for a
-              high-salary employee with several Unpaid Leave days, and
-              adjustsFontSizeToFit (below) only has so much room to shrink
-              into before truncating; keeping it short in the first place
-              is what actually guarantees the full figure stays visible. */}
+              non-interactive box the other stats use. */}
           {renderMyScheduleStatBox(
             'Special Allowance / เงินพิเศษ',
             `฿${scheduleData.allowanceTotal.toLocaleString(undefined, { maximumFractionDigits: 2 })}`,
             SCHEDULE_ACCENT_DARK,
-            hasUnpaidLeaveDeduction
-              ? `-฿${unpaidLeaveDeduction!.toLocaleString(undefined, { maximumFractionDigits: 2 })} Unpaid Leave`
-              : hasAllowanceDetail ? 'Tap for details / แตะเพื่อดูรายละเอียด' : '',
-            hasAllowanceDetail ? () => setShowAllowanceDetail(true) : undefined,
-            hasUnpaidLeaveDeduction ? LATE_RED : undefined
+            hasAllowanceDetail ? 'Tap for details / แตะเพื่อดูรายละเอียด' : '',
+            hasAllowanceDetail ? () => setShowAllowanceDetail(true) : undefined
           )}
         </View>
 
-        {/* Itemized Allowance breakdown -- entries always add up to
-            allowanceTotal above (see allowanceDetail's own comment,
-            client.ts, for why: both come from the same source list
-            server-side). Transparent Modal + its own backdrop Pressable
-            (not a 3rd-party library -- nothing else on this screen needed
-            one either) so tapping outside the card closes it, same as the
-            hardware back button (onRequestClose) and the Close button.
-            onTouchStart/onTouchMove on the backdrop -- without them, time
-            spent reading this modal doesn't count as activity (RN's Modal
-            renders in its own native layer, outside the LinearGradient
-            container the idle timer's own touch handlers are bound to
-            below), so SCHEDULE_IDLE_TIMEOUT_MS could fire and yank the
-            screen back to PIN entry out from under someone still reading
-            it -- same handlers, same reasoning as that container's own. */}
-        <Modal
-          visible={showAllowanceDetail}
-          transparent
-          animationType="fade"
-          onRequestClose={() => setShowAllowanceDetail(false)}
-        >
-          <Pressable
-            style={styles.allowanceModalBackdrop}
-            onPress={() => setShowAllowanceDetail(false)}
-            onTouchStart={resetScheduleIdleTimer}
-            onTouchMove={resetScheduleIdleTimer}
-          >
-            {/* Swallows the tap so it doesn't bubble to the backdrop Pressable
-                above and close the card the instant it's opened. */}
-            <Pressable style={styles.allowanceModalCard} onPress={() => {}}>
-              <Text style={styles.allowanceModalTitle}>Special Allowance / เงินพิเศษ</Text>
-              <Text style={styles.allowanceModalSubtitle}>
-                {scheduleData && `${MONTH_NAMES[scheduleData.month - 1]} ${scheduleData.year}`}
+        {/* Allowance + Unpaid Leave detail popups -- both built from the
+            one shared renderDetailModal below (extracted 2026-11-16, real
+            review catch: these two used to be ~40 lines of hand-copied,
+            near-identical Modal JSX each, with only their *styles*
+            centralized). monthYearSubtitle computed once, reused by both. */}
+        {renderDetailModal(
+          showAllowanceDetail,
+          () => setShowAllowanceDetail(false),
+          resetScheduleIdleTimer,
+          'Special Allowance / เงินพิเศษ',
+          monthYearSubtitle,
+          // Scrollable list, not a plain View -- CLAUDE.md: one employee can
+          // have several differently-named entries in the same month, and
+          // the card's own maxHeight: '80%' cap would otherwise just let a
+          // long list visually spill out past it (RN Views default to
+          // overflow:'visible') instead of scrolling -- renderDetailModal's
+          // ScrollView wrapper handles that for every row list passed in.
+          (scheduleData?.allowanceDetail ?? []).map((entry, i) => (
+            <View key={i} style={styles.detailModalRow}>
+              <Text style={styles.detailModalRowLabel} numberOfLines={2}>{entry.label}</Text>
+              <Text style={styles.detailModalRowAmount}>
+                ฿{entry.amount.toLocaleString(undefined, { maximumFractionDigits: 2 })}
               </Text>
-              {/* Scrollable, not a plain View -- CLAUDE.md: one employee can
-                  have several differently-named entries in the same month,
-                  and this card's own maxHeight: '80%' cap would otherwise
-                  just let a long list visually spill out past it (RN Views
-                  default to overflow:'visible') instead of scrolling. */}
-              <ScrollView style={styles.allowanceModalList}>
-                {(scheduleData?.allowanceDetail ?? []).map((entry, i) => (
-                  <View key={i} style={styles.allowanceModalRow}>
-                    <Text style={styles.allowanceModalRowLabel} numberOfLines={2}>{entry.label}</Text>
-                    <Text style={styles.allowanceModalRowAmount}>
-                      ฿{entry.amount.toLocaleString(undefined, { maximumFractionDigits: 2 })}
-                    </Text>
-                  </View>
-                ))}
-              </ScrollView>
-              <View style={styles.allowanceModalTotalRow}>
-                <Text style={styles.allowanceModalTotalLabel}>Total / รวม</Text>
-                <Text style={styles.allowanceModalTotalAmount}>
-                  ฿{(scheduleData?.allowanceTotal ?? 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}
-                </Text>
-              </View>
-              <Pressable style={styles.allowanceModalCloseButton} onPress={() => setShowAllowanceDetail(false)}>
-                <Text style={styles.buttonText}>Close / ปิด</Text>
-              </Pressable>
-            </Pressable>
-          </Pressable>
-        </Modal>
+            </View>
+          )),
+          'Total / รวม',
+          `฿${(scheduleData?.allowanceTotal ?? 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}`
+        )}
+
+        {renderDetailModal(
+          showUnpaidLeaveDetail,
+          () => setShowUnpaidLeaveDetail(false),
+          resetScheduleIdleTimer,
+          'Unpaid Leave / ลาไม่รับค่าจ้าง',
+          monthYearSubtitle,
+          // No per-row amount, unlike the Allowance rows above -- Unpaid
+          // Leave isn't itemized money per day in the data model, only a
+          // single computed total (unpaidLeaveDeduction), so fabricating a
+          // per-day split here risks not summing exactly to it.
+          (scheduleData?.unpaidLeaveDetail ?? []).map((entry, i) => (
+            <View key={i} style={styles.detailModalRow}>
+              <Text style={styles.detailModalRowLabel} numberOfLines={2}>
+                {entry.day} {scheduleData && MONTH_NAMES[scheduleData.month - 1]}
+                {entry.half ? ' · Half Day / ครึ่งวัน' : ''}
+              </Text>
+            </View>
+          )),
+          'Total Deduction / ยอดหักรวม',
+          // null (not eligible, no Salary on file this month) reads as "—",
+          // same convention the Dashboard/Summary tab use for this figure --
+          // never "฿0.00", which would misreport "eligible, zero deduction."
+          scheduleData?.unpaidLeaveDeduction == null
+            ? '—'
+            : `฿${scheduleData.unpaidLeaveDeduction.toLocaleString(undefined, { maximumFractionDigits: 2 })}`
+        )}
 
         <Pressable
           style={styles.doneButton}
@@ -3728,14 +3775,19 @@ const styles = StyleSheet.create({
   miniStat: { alignItems: 'center' },
   miniStatValue: { fontSize: 20, fontFamily: FONT_DISPLAY_EXTRABOLD },
   miniStatLabel: { fontSize: 10, fontFamily: FONT_BODY_BOLD, marginTop: 1 },
-  allowanceModalBackdrop: {
+  // Renamed from allowanceModal* 2026-11-14 -- this style set now backs
+  // both the Allowance detail modal AND the Unpaid Leave detail modal
+  // (KioskScreen's renderMyScheduleMergedStatBox/statsGrid above), which
+  // are structurally identical, so one generic set replaces what would
+  // otherwise be two near-duplicate copies.
+  detailModalBackdrop: {
     flex: 1,
     backgroundColor: 'rgba(80, 58, 46, 0.5)', // TEXT at 50% -- a warm dark overlay rather than plain black, consistent with this app's warm palette elsewhere
     alignItems: 'center',
     justifyContent: 'center',
     padding: 24
   },
-  allowanceModalCard: {
+  detailModalCard: {
     width: '100%',
     maxWidth: 420,
     maxHeight: '80%',
@@ -3746,15 +3798,15 @@ const styles = StyleSheet.create({
     padding: 24,
     alignItems: 'center'
   },
-  allowanceModalTitle: { color: TEXT, fontSize: 18, fontFamily: FONT_DISPLAY_BOLD },
-  allowanceModalSubtitle: { color: TEXT_MUTED, fontSize: 13, fontFamily: FONT_BODY_SEMIBOLD, marginTop: 2 },
+  detailModalTitle: { color: TEXT, fontSize: 18, fontFamily: FONT_DISPLAY_BOLD },
+  detailModalSubtitle: { color: TEXT_MUTED, fontSize: 13, fontFamily: FONT_BODY_SEMIBOLD, marginTop: 2 },
   // Explicit maxHeight (not just relying on the card's own maxHeight:'80%'
   // further up the tree, which a plain View child wouldn't respect anyway --
   // RN Views default to overflow:'visible') -- bounds this ScrollView so a
   // long itemized list scrolls within the card instead of spilling past it
   // and overlapping the Total row/Close button below.
-  allowanceModalList: { width: '100%', marginTop: 18, maxHeight: 320 },
-  allowanceModalRow: {
+  detailModalList: { width: '100%', marginTop: 18, maxHeight: 320 },
+  detailModalRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
@@ -3763,9 +3815,9 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: SCHEDULE_BORDER
   },
-  allowanceModalRowLabel: { flex: 1, color: TEXT, fontSize: 14, fontFamily: FONT_BODY_SEMIBOLD },
-  allowanceModalRowAmount: { color: TEXT, fontSize: 14, fontFamily: FONT_BODY_BOLD },
-  allowanceModalTotalRow: {
+  detailModalRowLabel: { flex: 1, color: TEXT, fontSize: 14, fontFamily: FONT_BODY_SEMIBOLD },
+  detailModalRowAmount: { color: TEXT, fontSize: 14, fontFamily: FONT_BODY_BOLD },
+  detailModalTotalRow: {
     width: '100%',
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -3773,12 +3825,12 @@ const styles = StyleSheet.create({
     marginTop: 4,
     paddingTop: 12
   },
-  allowanceModalTotalLabel: { color: TEXT_MUTED, fontSize: 13, fontFamily: FONT_BODY_SEMIBOLD },
+  detailModalTotalLabel: { color: TEXT_MUTED, fontSize: 13, fontFamily: FONT_BODY_SEMIBOLD },
   // Same accent/size pairing otSummaryValue uses for a month total -- this
   // modal's own total should read with the same weight as the number on
   // the box that opened it.
-  allowanceModalTotalAmount: { color: SCHEDULE_ACCENT_DARK, fontSize: 20, fontFamily: FONT_DISPLAY_EXTRABOLD },
-  allowanceModalCloseButton: {
+  detailModalTotalAmount: { color: SCHEDULE_ACCENT_DARK, fontSize: 20, fontFamily: FONT_DISPLAY_EXTRABOLD },
+  detailModalCloseButton: {
     marginTop: 20,
     backgroundColor: SCHEDULE_ACCENT_DARK,
     borderRadius: 999,

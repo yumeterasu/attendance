@@ -1289,21 +1289,32 @@ function countLeavesForEmployee_(scheduledShiftsForMonth, employeeId) {
 }
 
 /**
- * Just the Unpaid Leave day count, for a caller that already has ONE
- * employee's own { day: shift } object (not the whole-roster
- * { employeeId: { day: shift } } shape countLeavesForEmployee_ above
- * expects) -- added 2026-11-14 for handleKioskMyAttendance_/
- * handleKioskMyAttendanceBulk_ (Attendance.gs), both of which only ever
- * have this one employee's slice at hand. Still reuses
- * countLeavesForEmployee_ itself (via a single-key wrapper, kept in this
- * one place instead of being hand-rolled at each call site) rather than
- * re-walking the HALF_DAY_LEAVE_COUNTS_AS_ mapping separately -- that
- * mapping covers several legacy/AM-PM-variant keys (see its own doc
- * comment above), and a second, independent day-loop here would risk
- * silently drifting from it over time.
+ * Which specific days were Unpaid Leave this month, for a caller that
+ * already has ONE employee's own { day: shift } object (not the whole-
+ * roster { employeeId: { day: shift } } shape leaveDetailForEmployee_
+ * below expects) -- wraps leaveDetailForEmployee_ in a single-key object
+ * (not countLeavesForEmployee_ above, which has the same whole-roster
+ * shape but only keeps a running count, not which day each cell fell
+ * on). Filters its full LEAVE_COUNT_TYPES result
+ * down to just 'Unpaid Leave' and drops the now-redundant `type` field --
+ * added 2026-11-14 for the Kiosk My Schedule's Days Worked & Unpaid Leave
+ * tap-to-expand box/popup (kioskUnpaidLeaveFields_, Attendance.gs), which
+ * derives BOTH the day count shown on the box and the day list shown in
+ * the popup from this one array (1 per full-day entry, 0.5 per half-day
+ * entry) -- a short-lived sibling, countUnpaidLeaveDaysForEmployee_,
+ * independently re-scanned the same data via countLeavesForEmployee_ to
+ * get just the count; removed 2026-11-16 once review pointed out that
+ * two separately-written scans of the same HALF_DAY_LEAVE_COUNTS_AS_
+ * branching could silently drift apart from each other over time, same
+ * risk this function's own original comment already warned about for a
+ * hand-rolled second scan. Returns [{ day, half }], sorted by day
+ * ascending (leaveDetailForEmployee_ already sorts; filtering
+ * afterward preserves that order).
  */
-function countUnpaidLeaveDaysForEmployee_(scheduledShiftsForEmployee) {
-  return countLeavesForEmployee_({ employee: scheduledShiftsForEmployee || {} }, 'employee')['Unpaid Leave'];
+function unpaidLeaveDetailForEmployee_(scheduledShiftsForEmployee) {
+  return leaveDetailForEmployee_({ employee: scheduledShiftsForEmployee || {} }, 'employee')
+    .filter(function (d) { return d.type === 'Unpaid Leave'; })
+    .map(function (d) { return { day: d.day, half: d.half }; });
 }
 
 /**

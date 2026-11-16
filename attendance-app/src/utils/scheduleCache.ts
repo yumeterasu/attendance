@@ -1,5 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { ScheduleDay, OtUnit, ScheduleSyncEmployee, AllowanceDetailEntry } from '../api/client';
+import { ScheduleDay, ScheduleSyncEmployee, KioskMonthFields } from '../api/client';
 
 // Keyed by PIN + year + month -- past months only (the current month is
 // never read from here, see KioskScreen's goToScheduleMonth: it changes
@@ -29,7 +29,20 @@ import { ScheduleDay, OtUnit, ScheduleSyncEmployee, AllowanceDetailEntry } from 
 // Bumped v3 -> v4, 2026-11-03: daysWorked (added below) is now a REQUIRED
 // field too, for the summary grid's new Days Worked box -- same reasoning,
 // a v3 tablet cache has no such field at all.
-const KEY_PREFIX = 'kiosk_schedule_cache_v4';
+// Bumped v4 -> v5, 2026-11-16 (real review catch): unpaidLeaveDeduction
+// shipped first (2026-11-14) as OPTIONAL, reasoning that a cached month
+// without it would just show no Unpaid Leave hint -- a harmless, honest
+// "nothing to show" degradation. That reasoning broke the moment the UI
+// redesigned the SAME day to show unpaidLeaveDays (new) as its own
+// number instead: a month cached by that first build has a real nonzero
+// unpaidLeaveDeduction but no unpaidLeaveDays/unpaidLeaveDetail at all,
+// so reading it back under the OLD key would render "0" for Unpaid
+// Leave and leave the box non-tappable -- actively WRONG (hiding a real,
+// already-known pay figure), not a graceful "nothing to show" -- exactly
+// the failure mode every other bump above exists to prevent. Starting
+// clean under v5 is simpler and safer than a migration, same reasoning
+// every prior bump gives.
+const KEY_PREFIX = 'kiosk_schedule_cache_v5';
 
 // otUnit/otMinutesTotal/otQuartersTotal cached alongside days (added
 // 2026-10-07) so the month-total summary shown below the calendar is
@@ -42,12 +55,12 @@ const KEY_PREFIX = 'kiosk_schedule_cache_v4';
 // (2026-10-20) is intentionally OPTIONAL -- not part of any of these
 // required-fields bumps, since the tap-to-expand breakdown it backs
 // degrades gracefully (just not tappable) rather than needing yet another
-// cache wipe for a nice-to-have. unpaidLeaveDeduction (2026-11-14) is
-// OPTIONAL for the same reason -- a cached month without it just shows
-// no Unpaid Leave line, rather than forcing a v4->v5 wipe of every
-// employee's whole 12-month cache for one new line that matters most for
-// the always-live-fetched current month anyway.
-export type CachedMonth = { name: string; year: number; month: number; days: ScheduleDay[]; otUnit: OtUnit; daysWorked: number; otMinutesTotal: number; otQuartersTotal: number; lateCount: number; overCount: number; allowanceTotal: number; allowanceDetail?: AllowanceDetailEntry[]; unpaidLeaveDeduction?: number | null };
+// cache wipe for a nice-to-have. unpaidLeaveDays/unpaidLeaveDeduction/
+// unpaidLeaveDetail stay OPTIONAL in the type (KioskMonthFields, client.ts)
+// for the same graceful-degradation reason on a FUTURE field that might
+// be missing -- the v4->v5 bump just above exists so that specific
+// scenario can't actually happen for *this* trio on *this* rollout.
+export type CachedMonth = { name: string; year: number; month: number; days: ScheduleDay[] } & KioskMonthFields;
 
 function keyFor(pin: string, year: number, month: number): string {
   return `${KEY_PREFIX}_${pin}_${year}_${month}`;
@@ -80,8 +93,13 @@ export async function getCachedScheduleMonth(pin: string, year: number, month: n
 // Bumped v1 -> v2 alongside KEY_PREFIX above, same reason and same day.
 // Bumped v2 -> v3 alongside KEY_PREFIX above too, same reason and same day.
 // Bumped v3 -> v4 alongside KEY_PREFIX above too, same reason and same day.
-const CURRENT_KEY_PREFIX = 'kiosk_schedule_current_v4';
-export type CurrentSnapshot = { name: string; year: number; month: number; days: ScheduleDay[]; otUnit: OtUnit; daysWorked: number; otMinutesTotal: number; otQuartersTotal: number; lateCount: number; overCount: number; allowanceTotal: number; allowanceDetail?: AllowanceDetailEntry[]; unpaidLeaveDeduction?: number | null; fetchedAt: number };
+// Bumped v4 -> v5 alongside KEY_PREFIX above too, same reason and same day
+// (2026-11-16) -- this is the slot goToScheduleMonth/the stale banner
+// fall back to after a failed live fetch, so it's just as capable of
+// surfacing a stale, pre-redesign unpaidLeaveDeduction with no
+// unpaidLeaveDays/unpaidLeaveDetail alongside it.
+const CURRENT_KEY_PREFIX = 'kiosk_schedule_current_v5';
+export type CurrentSnapshot = { name: string; year: number; month: number; days: ScheduleDay[]; fetchedAt: number } & KioskMonthFields;
 
 function currentKeyFor(pin: string): string {
   return `${CURRENT_KEY_PREFIX}_${pin}`;
