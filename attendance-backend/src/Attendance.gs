@@ -600,7 +600,7 @@ function handleKioskLookupPin_(params) {
  * only, deliberately never feeds Late/OT/duration (Late/OT/Duration columns
  * are left blank on these rows). Every existing Type-column consumer
  * (findTodayInLog_, findStintStartInLog_, findLogEntryForDate_,
- * getEmployeeIdsWithInOnDate_, recomputeLateAndOt_, Report.gs's
+ * getEmployeeIdsWithTypeOnDate_, recomputeLateAndOt_, Report.gs's
  * sumMonthTotals_/dashboard readers) filters
  * on exact Type equality against 'IN'/'OUT', so these new Type values are
  * inert to all of them without any further changes there.
@@ -2833,13 +2833,14 @@ function findStintStartInLog_(employeeId, now, log) {
 
 /**
  * Reads AttendanceLog once and returns the set of EmployeeIDs (string keys)
- * who have at least one IN row on `date`. Use instead of calling
- * findLogEntryForDate_ inside a loop over many employees -- that helper
- * re-reads the whole AttendanceLog sheet on every single call, which is
- * fine for a one-off lookup but not for checking dozens of employees at
- * once (see menuBulkMarkAttendance_).
+ * who have at least one row of `type` ('IN' or 'OUT') on `date`. Use instead
+ * of calling findLogEntryForDate_ inside a loop over many employees -- that
+ * helper re-reads the whole AttendanceLog sheet on every single call, which
+ * is fine for a one-off lookup but not for checking dozens of employees at
+ * once (see menuBulkMarkAttendance_, which calls this once for IN and once
+ * for OUT -- an employee can have one without the other).
  */
-function getEmployeeIdsWithInOnDate_(date) {
+function getEmployeeIdsWithTypeOnDate_(date, type) {
   var sheet = getSheet_('AttendanceLog');
   var values = sheet.getDataRange().getValues();
   var headers = values[0];
@@ -2849,7 +2850,7 @@ function getEmployeeIdsWithInOnDate_(date) {
 
   var ids = {};
   for (var i = 1; i < values.length; i++) {
-    if (values[i][typeCol] !== 'IN') continue;
+    if (values[i][typeCol] !== type) continue;
     var ts = new Date(values[i][tsCol]);
     if (!isSameDay_(ts, date)) continue;
     ids[String(values[i][idCol])] = true;

@@ -1719,14 +1719,26 @@ function menuFillMissedPunches_() {
 
 /**
  * For days the kiosk was completely unreachable (internet outage) -- lets an
- * admin bulk-record IN for everyone scheduled that day in one pass,
- * defaulting to "on time" for each person, with text-based overrides for
- * late arrival or absence. OUT is deliberately left out -- arrival is
- * predictable (people show up when scheduled), but departure time varies too
- * much to safely assume everyone left at exactly shift-end (OT, early leave,
- * etc.); check-out still gets recorded normally once the kiosk is back, or
- * backfilled individually via Add Backdated Check-in/Check-out if needed.
- * Never overwrites an IN that's already recorded for someone that day.
+ * admin bulk-record IN *and* OUT for everyone scheduled that day in one
+ * pass, defaulting IN to "on time" and OUT to exactly the shift's own end
+ * time, with text-based overrides for late arrival or absence. No prompt
+ * for OUT time or OT -- departure time varies too much per person to ask
+ * for safely in a bulk flow (OT, early leave, etc.), so this always writes
+ * the clean official end-of-shift OUT with no OT attached (`ot: false` to
+ * recordBackdatedAttendance_); anyone who genuinely worked OT that day gets
+ * it added afterward via "Add Backdated Check-in/Check-out", which writes a
+ * second OUT row carrying the real OT -- the same "latest row wins" pattern
+ * already relied on elsewhere (findAllOutRowsForDate_, Cancel Wrong OT/
+ * Convert OUT to OUT OT), not a new concept introduced here.
+ * Never overwrites an IN or OUT that's already recorded for someone that
+ * day -- each is checked independently (getEmployeeIdsWithTypeOnDate_), so
+ * someone already fully punched is skipped entirely, and someone with only
+ * one half already recorded (e.g. a real IN tap before the kiosk died) gets
+ * just the missing half filled in.
+ *
+ * An overnight shift (end clock-time <= start clock-time, e.g. a picked
+ * "Special 22:00-06:00") gets its OUT written on the following calendar
+ * day, not the same day as IN.
  *
  * Uses a chain of native ui.prompt()/ui.alert() calls rather than an
  * HtmlService dialog -- see menuAddBackdatedAttendance_'s comment for why
@@ -1749,7 +1761,7 @@ function menuBulkMarkAttendance_() {
   if (isNaN(date.getTime())) { ui.alert('That date did not parse -- double check the values.'); return; }
 
   // Read Schedule and AttendanceLog once each here, not once per employee
-  // (see getScheduledShiftsForMonth_/getEmployeeIdsWithInOnDate_) -- this
+  // (see getScheduledShiftsForMonth_/getEmployeeIdsWithTypeOnDate_) -- this
   // command is meant for marking many employees at once (a full outage
   // day), so a per-employee re-read of either sheet was the same trap that
   // "Recompute Late/OT for ALL Months" used to fall into.
@@ -1794,8 +1806,9 @@ function menuBulkMarkAttendance_() {
     if (name && minutes) lateMinutesByName[name] = minutes;
   });
 
-  var added = 0, skippedExisting = 0, absentCount = 0, errors = [];
-  var checkedInIds = getEmployeeIdsWithInOnDate_(date);
+  var inAdded = 0, inSkipped = 0, outAdded = 0, outSkipped = 0, absentCount = 0, errors = [];
+  var checkedInIds = getEmployeeIdsWithTypeOnDate_(date, 'IN');
+  var checkedOutIds = getEmployeeIdsWithTypeOnDate_(date, 'OUT');
 
   scheduled.forEach(function (s) {
     var emp = s.employee;
@@ -1807,23 +1820,41 @@ function menuBulkMarkAttendance_() {
       return;
     }
 
-    var startMatch = s.shift.match(/(\d{1,2}):(\d{2})/);
-    if (!startMatch) { errors.push(emp.Name + ': could not read shift start time'); return; }
+    var startTime = getShiftStartTime_(s.shift);
+    if (!startTime) { errors.push(emp.Name + ': could not read shift start time'); return; }
 
     var lateMinutes = lateMinutesByName[key] || lateMinutesByName[idKey] || 0;
-    var inTime = new Date(year, month - 1, day, Number(startMatch[1]), Number(startMatch[2]), 0);
+    var inTime = new Date(year, month - 1, day, startTime.hour, startTime.minute, 0);
     inTime = new Date(inTime.getTime() + lateMinutes * 60000);
 
     if (checkedInIds[String(emp.EmployeeID)]) {
-      skippedExisting++;
+      inSkipped++;
     } else {
       recordBackdatedAttendance_(emp.EmployeeID, 'IN', inTime, false, s.shift);
-      added++;
+      inAdded++;
+    }
+
+    var endTime = getShiftEndTime_(s.shift);
+    if (!endTime) { errors.push(emp.Name + ': could not read shift end time'); return; }
+
+    // Overnight shift (e.g. a picked "Special 22:00-06:00") -- end clock-
+    // time at or before start clock-time means the OUT really belongs to
+    // the following calendar day, not the same day as IN.
+    var startMinutes = startTime.hour * 60 + startTime.minute;
+    var endMinutes = endTime.hour * 60 + endTime.minute;
+    var outDay = day + (endMinutes <= startMinutes ? 1 : 0);
+    var outTime = new Date(year, month - 1, outDay, endTime.hour, endTime.minute, 0);
+
+    if (checkedOutIds[String(emp.EmployeeID)]) {
+      outSkipped++;
+    } else {
+      recordBackdatedAttendance_(emp.EmployeeID, 'OUT', outTime, false, s.shift);
+      outAdded++;
     }
   });
 
-  var msg = 'Added ' + added + ' record(s).\n' +
-    'Skipped ' + skippedExisting + ' (already recorded).\n' +
+  var msg = 'IN: added ' + inAdded + ', skipped ' + inSkipped + ' (already recorded).\n' +
+    'OUT: added ' + outAdded + ', skipped ' + outSkipped + ' (already recorded).\n' +
     'Marked absent (skipped): ' + absentCount + '.';
   if (errors.length) msg += '\n\nErrors:\n' + errors.join('\n');
   ui.alert('Done', msg, ui.ButtonSet.OK);
