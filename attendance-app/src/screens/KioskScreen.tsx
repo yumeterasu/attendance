@@ -593,7 +593,13 @@ function renderDetailModal(
   subtitle: string,
   rows: React.ReactNode[],
   totalLabel: string,
-  totalValue: string
+  totalValue: string,
+  // Defaults to detailModalTotalAmount's own baked-in SCHEDULE_ACCENT_DARK
+  // (Allowance's total -- money owed TO the employee) when omitted.
+  // Unpaid Leave's own call site overrides this to LATE_RED (added
+  // 2026-11-16) -- a deduction reads as a warning, not the same accent
+  // color a positive Allowance figure uses.
+  totalColor?: string
 ) {
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
@@ -624,7 +630,7 @@ function renderDetailModal(
           <ScrollView style={styles.detailModalList}>{rows}</ScrollView>
           <View style={styles.detailModalTotalRow}>
             <Text style={styles.detailModalTotalLabel}>{totalLabel}</Text>
-            <Text style={styles.detailModalTotalAmount}>{totalValue}</Text>
+            <Text style={[styles.detailModalTotalAmount, totalColor ? { color: totalColor } : null]}>{totalValue}</Text>
           </View>
           <Pressable style={styles.detailModalCloseButton} onPress={onClose}>
             <Text style={styles.buttonText}>Close / ปิด</Text>
@@ -2637,7 +2643,8 @@ export default function KioskScreen({ navigation }: Props) {
           // never "฿0.00", which would misreport "eligible, zero deduction."
           scheduleData?.unpaidLeaveDeduction == null
             ? '—'
-            : `฿${scheduleData.unpaidLeaveDeduction.toLocaleString(undefined, { maximumFractionDigits: 2 })}`
+            : `฿${scheduleData.unpaidLeaveDeduction.toLocaleString(undefined, { maximumFractionDigits: 2 })}`,
+          LATE_RED
         )}
 
         <Pressable
