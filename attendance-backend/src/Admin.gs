@@ -62,7 +62,7 @@ function fixAttendanceLogTimestampFormat() {
 /**
  * Scheduled deactivation sweep: for every employee still Active with a
  * LastWorkingDay before today, flips Active to FALSE. Time-driven trigger
- * target (see setupDailyDeactivationTrigger), so it can't use
+ * target (see setupDailyEmployeeLifecycleTrigger), so it can't use
  * SpreadsheetApp.getUi() -- logs a summary to View > Logs instead. Also
  * called directly by menuDeactivateEmployee_ right after saving a date, so a
  * past/today date takes effect immediately instead of waiting for tomorrow's
@@ -102,21 +102,91 @@ function applyScheduledDeactivations_() {
 }
 
 /**
- * One-off: installs a daily trigger that runs applyScheduledDeactivations_
- * every morning. Safe to run more than once -- clears any existing trigger
- * for the same function first. Run once from the editor: select
- * setupDailyDeactivationTrigger in the toolbar dropdown, click Run.
+ * Scheduled activation sweep: the mirror image of
+ * applyScheduledDeactivations_ above -- for every employee still Inactive
+ * with a FirstWorkingDay that's arrived, flips Active to TRUE. Lets an
+ * admin pre-create someone who hasn't started yet (see menuAddNewEmployee_'s
+ * optional start-date prompt) without the Kiosk/Fill Missed Punches/Health
+ * Check treating every day before their real start as a missed day.
+ *
+ * Deliberately skips any row with a real LastWorkingDay set, even an old
+ * one -- without this guard, an already-departed employee (Active=false,
+ * LastWorkingDay long past) would also have a FirstWorkingDay from their
+ * original hire that's now ALSO in the past, and a plain "Active=false +
+ * FirstWorkingDay<=today" check would wrongly reactivate them every single
+ * day forever. FirstWorkingDay is cleared the moment it fires (one-shot),
+ * so once used it can never matter again even if LastWorkingDay gets set
+ * later -- but the LastWorkingDay guard is kept anyway as the real safety
+ * net, since it doesn't depend on that ordering.
  */
-function setupDailyDeactivationTrigger() {
+function applyScheduledActivations_() {
+  ensureColumns_('Employees', ['FirstWorkingDay', 'LastWorkingDay']);
+  var sheet = getSheet_('Employees');
+  var values = sheet.getDataRange().getValues();
+  var headers = values[0];
+  var activeCol = headers.indexOf('Active');
+  var firstDayCol = headers.indexOf('FirstWorkingDay');
+  var lastDayCol = headers.indexOf('LastWorkingDay');
+  var nameCol = headers.indexOf('Name');
+
+  var now = new Date();
+  var today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+  var activated = [];
+  for (var i = 1; i < values.length; i++) {
+    if (isTrue_(values[i][activeCol])) continue;
+    if (values[i][lastDayCol]) continue;
+    var firstDayRaw = values[i][firstDayCol];
+    if (!firstDayRaw) continue;
+    var firstDay = new Date(firstDayRaw);
+    if (isNaN(firstDay.getTime())) continue;
+    var firstDayOnly = new Date(firstDay.getFullYear(), firstDay.getMonth(), firstDay.getDate());
+    if (firstDayOnly.getTime() > today.getTime()) continue;
+    sheet.getRange(i + 1, activeCol + 1).setValue(true);
+    sheet.getRange(i + 1, firstDayCol + 1).setValue('');
+    activated.push(values[i][nameCol]);
+  }
+
+  if (activated.length > 0) {
+    invalidateEmployeesCache_();
+    Logger.log('Activated ' + activated.length + ' employee(s) as of their first working day: ' + activated.join(', '));
+  }
+  return activated;
+}
+
+/** Daily trigger target -- runs both lifecycle sweeps, activation then deactivation (order doesn't matter, the two never touch the same row: one only acts on Inactive rows, the other only on Active ones). See setupDailyEmployeeLifecycleTrigger below. */
+function applyScheduledEmployeeLifecycleChanges_() {
+  applyScheduledActivations_();
+  applyScheduledDeactivations_();
+}
+
+/**
+ * One-off: installs a daily trigger that runs
+ * applyScheduledEmployeeLifecycleChanges_ every morning (both the
+ * activation and deactivation sweeps). Safe to run more than once --
+ * clears any existing trigger for either this function OR the old
+ * pre-2026-11-17 target (applyScheduledDeactivations_ alone) first, so a
+ * Sheet that already had the old trigger installed gets cleanly migrated
+ * instead of ending up with two daily triggers. Must be re-run once from
+ * the editor after this change ships for that migration to actually
+ * happen -- until then, the old trigger keeps deactivating people fine on
+ * its own, it just won't auto-activate anyone's FirstWorkingDay. Run from
+ * the editor: select setupDailyEmployeeLifecycleTrigger in the toolbar
+ * dropdown, click Run.
+ */
+function setupDailyEmployeeLifecycleTrigger() {
   ScriptApp.getProjectTriggers().forEach(function (t) {
-    if (t.getHandlerFunction() === 'applyScheduledDeactivations_') ScriptApp.deleteTrigger(t);
+    var handler = t.getHandlerFunction();
+    if (handler === 'applyScheduledEmployeeLifecycleChanges_' || handler === 'applyScheduledDeactivations_') {
+      ScriptApp.deleteTrigger(t);
+    }
   });
-  ScriptApp.newTrigger('applyScheduledDeactivations_')
+  ScriptApp.newTrigger('applyScheduledEmployeeLifecycleChanges_')
     .timeBased()
     .everyDays(1)
     .atHour(2)
     .create();
-  Logger.log('Daily deactivation trigger created -- runs every day around 2am, deactivating anyone past their LastWorkingDay.');
+  Logger.log('Daily employee lifecycle trigger created -- runs every day around 2am, activating anyone past their FirstWorkingDay and deactivating anyone past their LastWorkingDay.');
 }
 
 function handleAdminResetCode_(params) {

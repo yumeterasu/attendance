@@ -288,7 +288,26 @@ function menuAddNewEmployee_() {
     return;
   }
 
-  ensureColumns_('Employees', ['KioskPIN', 'CreatedAt']);
+  // Optional -- lets an admin pre-create someone who hasn't actually
+  // started yet (e.g. hired today, starts 1 Dec) without leaving them
+  // Active (and therefore flagged by Fill Missed Punches/Health Check for
+  // every day between now and their real start) in the meantime.
+  // applyScheduledActivations_ (Admin.gs) flips Active on automatically
+  // once this date arrives, mirroring LastWorkingDay/Deactivate Employee's
+  // own auto-deactivation -- a date typed here isn't just reference data.
+  var startResp = ui.prompt(title, name + ' -- Start date (DD/MM/YYYY), or leave blank to start today:', ui.ButtonSet.OK_CANCEL);
+  if (startResp.getSelectedButton() !== ui.Button.OK) return;
+  var firstWorkingDay = null;
+  if (startResp.getResponseText().trim()) {
+    firstWorkingDay = parseStrictDdMmYyyy_(startResp.getResponseText().trim());
+    if (!firstWorkingDay) { ui.alert('Enter the start date as DD/MM/YYYY.'); return; }
+  }
+
+  var now = new Date();
+  var today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  var startsInFuture = !!firstWorkingDay && firstWorkingDay.getTime() > today.getTime();
+
+  ensureColumns_('Employees', ['KioskPIN', 'CreatedAt', 'FirstWorkingDay']);
   var sheet = getSheet_('Employees');
   var values = sheet.getDataRange().getValues();
   var headers = values[0];
@@ -327,21 +346,25 @@ function menuAddNewEmployee_() {
     'Branch: ' + branch + '\n' +
     'EmployeeID: ' + newId + ' (auto)\n' +
     'Kiosk PIN: ' + newPin + ' (auto)\n' +
-    'Active: Yes',
+    (startsInFuture
+      ? 'Active: No (starts ' + Utilities.formatDate(firstWorkingDay, Session.getScriptTimeZone(), 'dd/MM/yyyy') + ' -- turns on automatically that day)'
+      : 'Active: Yes'),
     ui.ButtonSet.YES_NO
   );
   if (confirm !== ui.Button.YES) return;
 
-  appendRow_('Employees', {
+  var newEmployeeFields = {
     EmployeeID: newId,
     Name: name,
     Department: department,
-    Active: true,
+    Active: !startsInFuture,
     Branch: branch,
     KioskPIN: newPin,
     CreatedAt: new Date(),
     OTEligible: true
-  });
+  };
+  if (firstWorkingDay) newEmployeeFields.FirstWorkingDay = firstWorkingDay; // recorded either way (even a today/past date) as a real join-date record -- only startsInFuture actually holds Active off because of it
+  appendRow_('Employees', newEmployeeFields);
 
   // Force plain-text format on the PIN cell and re-set the value -- setting
   // the format on the row *before* appendRow_ wrote to it didn't reliably
@@ -368,7 +391,7 @@ function menuAddNewEmployee_() {
  * Deactivates an employee, optionally effective on a future date -- they
  * stay Active (can keep checking in/out normally) through their entered
  * last working day, and Active switches off automatically the day after via
- * the daily trigger (see setupDailyDeactivationTrigger in Admin.gs). If the
+ * the daily trigger (see setupDailyEmployeeLifecycleTrigger in Admin.gs). If the
  * date entered is today or already in the past, Active switches off right
  * away instead of waiting for the next trigger run.
  *

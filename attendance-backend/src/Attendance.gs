@@ -2638,7 +2638,7 @@ function runRecomputeCurrentMonthAutomatic_() {
  * runRecomputeCurrentMonthAutomatic_ above). Safe to run more than once --
  * clears any existing trigger for the same function first. Run once from
  * the editor: select setupDailyRecomputeCurrentMonthTrigger in the toolbar
- * dropdown, click Run. Same pattern as setupDailyDeactivationTrigger
+ * dropdown, click Run. Same pattern as setupDailyEmployeeLifecycleTrigger
  * (Admin.gs) and setupMonthlyBackupTrigger (Backup.gs) -- atHour(11) means
  * "sometime in the 11:00 hour," not an exact minute, same as those.
  */
