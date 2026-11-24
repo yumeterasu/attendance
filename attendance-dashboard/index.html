@@ -884,6 +884,14 @@
   }
   .modal-row:last-child { border-bottom: none; }
   .modal-row .amt { font-variant-numeric: tabular-nums; font-weight: 700; flex-shrink: 0; }
+  /* Late/Over detail rows only (requested 2026-11-24) -- reuses the same
+     --late-text red the Late/Over pills in the table itself already use, so
+     the popup's numbers read as the same "needs attention" signal as the
+     pill the admin clicked to open it. Unpaid Leave's own rows (same shared
+     .amt class, "Half day" label) deliberately stay unstyled, same as the
+     Leave modal's type labels -- this is specifically for the two
+     minutes-based figures, not every value this modal can show. */
+  .modal-row .amt.warn { color: var(--late-text); }
   .modal-total {
     display: flex;
     justify-content: space-between;
@@ -2705,13 +2713,18 @@
         // shift-start comparison this was first built with read as more detail
         // than needed; the backend (Report.gs) still computes/sends
         // d.timeIn/d.shiftStart too, in case a future ask wants them back.
-        valueLabel = d.lateMinutes !== null ? ('+' + d.lateMinutes + ' ' + t('detailModalMinutesSuffix')) : '';
+        valueLabel = d.lateMinutes !== null ? (d.lateMinutes + ' ' + t('detailModalMinutesSuffix')) : '';
       } else if (kind === 'over') {
         valueLabel = d.breakMinutes + ' ' + t('detailModalMinutesSuffix');
       } else if (kind === 'unpaidLeave' && d.half) {
         valueLabel = t('leaveModalHalfDay');
       }
-      var valueHtml = valueLabel ? '<span class="amt">' + escapeHtml(valueLabel) + '</span>' : '';
+      // Late/Over's own minutes figure gets the red "needs attention" tint
+      // (.amt.warn, see that class's own comment above) -- Unpaid Leave's
+      // "Half day" label stays the plain/unstyled .amt, same as the Leave
+      // modal's own type labels.
+      var valueClass = (kind === 'late' || kind === 'over') ? 'amt warn' : 'amt';
+      var valueHtml = valueLabel ? '<span class="' + valueClass + '">' + escapeHtml(valueLabel) + '</span>' : '';
       return '<div class="modal-row"><span>' + escapeHtml(dateStr) + '</span>' + valueHtml + '</div>';
     }).join('');
   }
