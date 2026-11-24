@@ -58,6 +58,23 @@
        columns), its own token since every other bordered element on the
        page (cards, inputs, .stat-tile) should keep the lighter one. */
     --calendar-border: #B9C8E8;
+    /* Monthly table's own header row (requested 2026-11-24 -- a dark bar
+       makes the column labels read as a distinct "frame" above the data,
+       and gives the table a stronger visual anchor on the page). Deliberately
+       its own tokens, not --text/--text-muted, which stay tuned for dark
+       text on a LIGHT ground elsewhere on the page -- this is the one place
+       on the page with light text on a dark ground, so it needs its own
+       contrast-checked pair. --thead-accent is a lighter blue than the
+       page's own --accent-dark, which would read as too low-contrast for a
+       hovered/active sort label against this dark navy. Scoped to the
+       generic `thead th` rule below -- #calendarTable's own thead th rule
+       (further down) already re-declares its light background/text, so the
+       Calendar view is untouched by this. */
+    --thead-bg: #1C2A4A;
+    --thead-text: #FFFFFF;
+    --thead-text-dim: #AEBBDD;
+    --thead-border: rgba(255, 255, 255, 0.14);
+    --thead-accent: #8FB4FF;
   }
 
   * { box-sizing: border-box; }
@@ -586,9 +603,16 @@
 
   .card {
     background: var(--card);
-    border: 1px solid var(--border);
+    /* Thicker, darker outer frame than the page's other hairline borders
+       (requested 2026-11-24, alongside the dark thead above) -- the plain
+       1px var(--border) used to read as barely-there against the page's
+       own light --bg, especially next to a now much darker header. A
+       subtle shadow reinforces the same "this is a distinct, raised panel"
+       read, rather than relying on the border alone. */
+    border: 2px solid var(--thead-bg);
     border-radius: 16px;
     overflow: hidden;
+    box-shadow: 0 2px 10px rgba(28, 42, 74, 0.1);
   }
   #dailyContent .card + .card { margin-top: 16px; }
 
@@ -624,11 +648,11 @@
     font-size: 11px;
     text-transform: uppercase;
     letter-spacing: 0.04em;
-    color: var(--text-muted);
-    background: #F4F7FD;
+    color: var(--thead-text-dim);
+    background: var(--thead-bg);
     padding: 12px 14px;
-    border-bottom: 1px solid var(--border);
-    border-right: 1px solid var(--border);
+    border-bottom: 1px solid var(--thead-border);
+    border-right: 1px solid var(--thead-border);
     white-space: nowrap;
     /* Stays visible while scrolling through a long Monthly table (real
        feedback -- the column headers used to scroll away, leaving the
@@ -701,7 +725,7 @@
   thead th[data-sort="leaveTotal"] { min-width: 78px; }
   /* Rounds the corners #monthlyView .card's overflow:hidden used to clip
      for free (see that rule's own comment) -- top corners only need it on
-     thead (opaque #F4F7FD background); tbody td itself has no background,
+     thead (opaque --thead-bg background); tbody td itself has no background,
      but tbody tr:hover's #FAFBFF (below) IS opaque, so the bottom corners
      need the same treatment for whenever the last row is hovered. */
   #summaryTable thead th:first-child { border-top-left-radius: 16px; }
@@ -710,7 +734,7 @@
     cursor: pointer;
     user-select: none;
   }
-  thead th.sortable:hover { color: var(--accent-dark); }
+  thead th.sortable:hover { color: var(--thead-accent); }
   /* Faint ⇅ on every sortable header at rest, so it reads as clickable
      before anyone hovers or sorts anything -- not just an empty space
      reserved for a state that hasn't happened yet. */
@@ -725,7 +749,7 @@
   thead th.sortable:hover::after { opacity: 0.7; }
   thead th.sortable.sort-asc::after { content: '▲'; opacity: 1; }
   thead th.sortable.sort-desc::after { content: '▼'; opacity: 1; }
-  thead th.sortable.sort-asc, thead th.sortable.sort-desc { color: var(--accent-dark); }
+  thead th.sortable.sort-asc, thead th.sortable.sort-desc { color: var(--thead-accent); }
 
   tbody td {
     padding: 11px 7px;
