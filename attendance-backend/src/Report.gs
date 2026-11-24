@@ -1542,7 +1542,28 @@ function sumMonthTotals_(dayLogs, scheduledShiftsForEmployee, daysInMonth) {
       var isNoLateOtDay = isNoLateNoOtShift_(scheduledShift);
       if (entry.late && !isNoLateOtDay) {
         lateCount++;
-        lateDays.push({ day: day });
+        // entry.shift is the shift actually resolved/recorded on this IN row
+        // at check-in time (resolveSpecialOrPickedShift_, Attendance.gs) --
+        // the same value isLate_ was originally compared against to set
+        // entry.late in the first place -- NOT scheduledShift (the Schedule
+        // sheet's current cell, which can have been edited since and would
+        // then silently disagree with why this day was actually marked
+        // late). getShiftStartTime_ (Attendance.gs) is the same "first H:MM
+        // in the string" extraction every other shift-start lookup in this
+        // codebase already uses.
+        var lateShiftStart = getShiftStartTime_(entry.shift || '');
+        var lateMinutes = null, shiftStartLabel = null;
+        if (lateShiftStart && entry.timeIn) {
+          var shiftStartTs = new Date(entry.timeIn.getFullYear(), entry.timeIn.getMonth(), entry.timeIn.getDate(), lateShiftStart.hour, lateShiftStart.minute, 0);
+          lateMinutes = Math.round((entry.timeIn.getTime() - shiftStartTs.getTime()) / 60000);
+          shiftStartLabel = Utilities.formatDate(shiftStartTs, Session.getScriptTimeZone(), 'HH:mm');
+        }
+        lateDays.push({
+          day: day,
+          timeIn: entry.timeIn ? Utilities.formatDate(entry.timeIn, Session.getScriptTimeZone(), 'HH:mm') : null,
+          shiftStart: shiftStartLabel,
+          lateMinutes: lateMinutes
+        });
       }
       if (!isNoLateOtDay) {
         otMinutesTotal += entry.otMinutes || 0;
@@ -3122,7 +3143,9 @@ function getDashboardSummaryData_(year, month) {
     // crash. Extending this to the yearly view later would mean threading
     // the same per-day collection through aggregateYearSummary_'s own
     // day-by-day loop (Report.gs) the same way sumMonthTotals_ already does.
-    var lateDetail = (totals.lateDays || []).map(function (d) { return { day: d.day, month: month, year: year }; });
+    var lateDetail = (totals.lateDays || []).map(function (d) {
+      return { day: d.day, month: month, year: year, timeIn: d.timeIn, shiftStart: d.shiftStart, lateMinutes: d.lateMinutes };
+    });
     var overDetail = (totals.overDays || []).map(function (d) { return { day: d.day, breakMinutes: d.breakMinutes, month: month, year: year }; });
     if (isAllMonths) {
       var fiscalRank = function (month) { return (month - 1 - FISCAL_YEAR_START_MONTH + 12) % 12; };

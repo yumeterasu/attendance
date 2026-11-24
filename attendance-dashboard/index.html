@@ -1681,7 +1681,8 @@
       allowanceModalPeriodAll: function (year) { return 'All (fiscal year) ' + year; },
       leaveModalTotal: 'Total days',
       leaveModalHalfDay: 'Half day',
-      detailModalMinutesSuffix: 'min'
+      detailModalMinutesSuffix: 'min',
+      detailModalShiftLabel: 'shift'
     },
     ja: {
       brandTitle: '勤怠ダッシュボード',
@@ -1765,7 +1766,8 @@
       allowanceModalPeriodAll: function (year) { return '全期間(会計年度) ' + year; },
       leaveModalTotal: '合計日数',
       leaveModalHalfDay: '半休',
-      detailModalMinutesSuffix: '分'
+      detailModalMinutesSuffix: '分',
+      detailModalShiftLabel: 'シフト'
     }
   };
 
@@ -2680,11 +2682,15 @@
   var DETAIL_MODAL_KIND_LABEL_KEY = { late: 'tableLate', over: 'tableOver', unpaidLeave: 'tableUnpaidLeave' };
   var DETAIL_MODAL_DEEPLINK_PARAM = { late: 'late', over: 'over', unpaidLeave: 'unpaidLeave' };
 
-  // One row per date; `over` additionally shows that day's real,
-  // undiscounted break minutes (same figure sumMonthTotals_ thresholded
-  // against DAILY_BREAK_BUDGET_MINUTES to produce this count in the first
-  // place -- see Report.gs -- deliberately NOT the Daily view's
-  // BREAK_WALK_DISCOUNT_MINUTES-discounted figure), `unpaidLeave` shows a
+  // One row per date; `late` shows the actual clock-in time against that
+  // day's own shift start (requested 2026-11-24, right after the plain
+  // date-list shipped -- a bare date wasn't enough to see how late, or
+  // against which shift, since a flexible employee can pick a different
+  // shift on different days); `over` shows that day's real, undiscounted
+  // break minutes (same figure sumMonthTotals_ thresholded against
+  // DAILY_BREAK_BUDGET_MINUTES to produce this count in the first place --
+  // see Report.gs -- deliberately NOT the Daily view's
+  // BREAK_WALK_DISCOUNT_MINUTES-discounted figure); `unpaidLeave` shows a
   // "(Half day)" suffix the same way the Leave modal's own rows do.
   function buildDetailModalRows(kind, detail) {
     if (!detail || !detail.length) return '';
@@ -2692,8 +2698,20 @@
     return detail.map(function (d) {
       var dateStr = monthNames[d.month - 1] + ' ' + d.day;
       var valueLabel = '';
-      if (kind === 'over') valueLabel = d.breakMinutes + ' ' + t('detailModalMinutesSuffix');
-      else if (kind === 'unpaidLeave' && d.half) valueLabel = t('leaveModalHalfDay');
+      if (kind === 'late') {
+        // d.shiftStart/d.lateMinutes can be null (an unparseable/blank
+        // recorded shift -- see getShiftStartTime_, Attendance.gs) even
+        // though entry.late was true; falls back to just the clock-in time
+        // with no comparison rather than hiding the row entirely.
+        valueLabel = d.timeIn || '';
+        if (d.shiftStart && d.lateMinutes !== null) {
+          valueLabel += ' (' + t('detailModalShiftLabel') + ' ' + d.shiftStart + ', +' + d.lateMinutes + ' ' + t('detailModalMinutesSuffix') + ')';
+        }
+      } else if (kind === 'over') {
+        valueLabel = d.breakMinutes + ' ' + t('detailModalMinutesSuffix');
+      } else if (kind === 'unpaidLeave' && d.half) {
+        valueLabel = t('leaveModalHalfDay');
+      }
       var valueHtml = valueLabel ? '<span class="amt">' + escapeHtml(valueLabel) + '</span>' : '';
       return '<div class="modal-row"><span>' + escapeHtml(dateStr) + '</span>' + valueHtml + '</div>';
     }).join('');
