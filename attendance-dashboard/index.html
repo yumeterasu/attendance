@@ -1681,8 +1681,7 @@
       allowanceModalPeriodAll: function (year) { return 'All (fiscal year) ' + year; },
       leaveModalTotal: 'Total days',
       leaveModalHalfDay: 'Half day',
-      detailModalMinutesSuffix: 'min',
-      detailModalShiftLabel: 'shift'
+      detailModalMinutesSuffix: 'min'
     },
     ja: {
       brandTitle: '勤怠ダッシュボード',
@@ -1766,8 +1765,7 @@
       allowanceModalPeriodAll: function (year) { return '全期間(会計年度) ' + year; },
       leaveModalTotal: '合計日数',
       leaveModalHalfDay: '半休',
-      detailModalMinutesSuffix: '分',
-      detailModalShiftLabel: 'シフト'
+      detailModalMinutesSuffix: '分'
     }
   };
 
@@ -2682,11 +2680,11 @@
   var DETAIL_MODAL_KIND_LABEL_KEY = { late: 'tableLate', over: 'tableOver', unpaidLeave: 'tableUnpaidLeave' };
   var DETAIL_MODAL_DEEPLINK_PARAM = { late: 'late', over: 'over', unpaidLeave: 'unpaidLeave' };
 
-  // One row per date; `late` shows the actual clock-in time against that
-  // day's own shift start (requested 2026-11-24, right after the plain
-  // date-list shipped -- a bare date wasn't enough to see how late, or
-  // against which shift, since a flexible employee can pick a different
-  // shift on different days); `over` shows that day's real, undiscounted
+  // One row per date; `late` shows how many minutes late that day was
+  // (requested 2026-11-24, right after the plain date-list shipped -- a
+  // bare date wasn't enough to see how late; an initial clock-in-time-vs-
+  // shift-start version was then simplified, same day, back down to just
+  // the minutes figure); `over` shows that day's real, undiscounted
   // break minutes (same figure sumMonthTotals_ thresholded against
   // DAILY_BREAK_BUDGET_MINUTES to produce this count in the first place --
   // see Report.gs -- deliberately NOT the Daily view's
@@ -2699,14 +2697,15 @@
       var dateStr = monthNames[d.month - 1] + ' ' + d.day;
       var valueLabel = '';
       if (kind === 'late') {
-        // d.shiftStart/d.lateMinutes can be null (an unparseable/blank
-        // recorded shift -- see getShiftStartTime_, Attendance.gs) even
-        // though entry.late was true; falls back to just the clock-in time
-        // with no comparison rather than hiding the row entirely.
-        valueLabel = d.timeIn || '';
-        if (d.shiftStart && d.lateMinutes !== null) {
-          valueLabel += ' (' + t('detailModalShiftLabel') + ' ' + d.shiftStart + ', +' + d.lateMinutes + ' ' + t('detailModalMinutesSuffix') + ')';
-        }
+        // d.lateMinutes can be null (an unparseable/blank recorded shift --
+        // see getShiftStartTime_, Attendance.gs) even though entry.late was
+        // true; falls back to no value shown rather than hiding the row
+        // entirely. Simplified 2026-11-24 to just the minutes-late figure
+        // (matching Over's own plain "N min" style) -- the clock-in time and
+        // shift-start comparison this was first built with read as more detail
+        // than needed; the backend (Report.gs) still computes/sends
+        // d.timeIn/d.shiftStart too, in case a future ask wants them back.
+        valueLabel = d.lateMinutes !== null ? ('+' + d.lateMinutes + ' ' + t('detailModalMinutesSuffix')) : '';
       } else if (kind === 'over') {
         valueLabel = d.breakMinutes + ' ' + t('detailModalMinutesSuffix');
       } else if (kind === 'unpaidLeave' && d.half) {
