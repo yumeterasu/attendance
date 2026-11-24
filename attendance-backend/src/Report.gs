@@ -1459,6 +1459,12 @@ function autoResizeColumnsWithPadding_(sheet, numCols) {
  */
 function sumMonthTotals_(dayLogs, scheduledShiftsForEmployee, daysInMonth) {
   var daysWorked = 0, lateCount = 0, overCount = 0, otMinutesTotal = 0, otQuartersTotal = 0;
+  // Mirrors lateCount/overCount exactly, one entry per day that incremented
+  // the count -- lets the Dashboard's Monthly popup show an admin WHICH
+  // dates a "4" actually refers to instead of just the bare number. Pushed
+  // at the same two sites as the counts themselves so the two can never
+  // drift apart.
+  var lateDays = [], overDays = [];
   for (var day = 1; day <= daysInMonth; day++) {
     var entry = dayLogs[day];
     var scheduledShift = scheduledShiftsForEmployee && scheduledShiftsForEmployee[day];
@@ -1467,7 +1473,16 @@ function sumMonthTotals_(dayLogs, scheduledShiftsForEmployee, daysInMonth) {
     // was scheduled as, so an over-budget break on an Event day must still
     // count -- unlike Late/OT, which the Event-day branch's `continue`
     // deliberately overrides because those are about official clock times.
-    if (entry && entry.breakMinutes > DAILY_BREAK_BUDGET_MINUTES) overCount++;
+    if (entry && entry.breakMinutes > DAILY_BREAK_BUDGET_MINUTES) {
+      overCount++;
+      // entry.breakMinutes here is the real, undiscounted figure (see this
+      // function's own doc comment reference in CLAUDE.md) -- deliberately
+      // NOT run through discountedBreakMinutes_ the way the Daily view's
+      // live red flag is, so the popup's per-day minutes agree with this
+      // same overCount and with the Report tab's own Break (min) column,
+      // not with the Daily view's discounted total.
+      overDays.push({ day: day, breakMinutes: entry.breakMinutes });
+    }
     // Checked next: an Event day always counts as a full day worked, never
     // late, no OT, no matter what (or how little) of it got actually logged
     // -- including the edge case of a stray OUT-only row with no matching IN
@@ -1525,14 +1540,21 @@ function sumMonthTotals_(dayLogs, scheduledShiftsForEmployee, daysInMonth) {
       // covered here, disagreeing with every other view for the same
       // employee/day.
       var isNoLateOtDay = isNoLateNoOtShift_(scheduledShift);
-      if (entry.late && !isNoLateOtDay) lateCount++;
+      if (entry.late && !isNoLateOtDay) {
+        lateCount++;
+        lateDays.push({ day: day });
+      }
       if (!isNoLateOtDay) {
         otMinutesTotal += entry.otMinutes || 0;
         otQuartersTotal += entry.otQuarters || 0;
       }
     }
   }
-  return { daysWorked: daysWorked, lateCount: lateCount, overCount: overCount, otMinutesTotal: otMinutesTotal, otQuartersTotal: otQuartersTotal };
+  return {
+    daysWorked: daysWorked, lateCount: lateCount, overCount: overCount,
+    otMinutesTotal: otMinutesTotal, otQuartersTotal: otQuartersTotal,
+    lateDays: lateDays, overDays: overDays
+  };
 }
 
 /**
@@ -3092,6 +3114,16 @@ function getDashboardSummaryData_(year, month) {
     // least one leave day was found, leaveDetailForEmployee_/
     // leaveCountsAndDetailForYear_ above).
     var leaveDetail = leaveDetailByEmployee[emp.EmployeeID] || [];
+    // Late/Over per-day detail behind the Dashboard's Late/Over popups --
+    // Monthly-only by design (scope confirmed with the user 2026-11-24): the
+    // yearly "All" branch's totals come from getEffectiveYearTotals_, which
+    // never populates lateDays/overDays, so totals.lateDays is simply
+    // undefined there and these fall back to an empty list rather than a
+    // crash. Extending this to the yearly view later would mean threading
+    // the same per-day collection through aggregateYearSummary_'s own
+    // day-by-day loop (Report.gs) the same way sumMonthTotals_ already does.
+    var lateDetail = (totals.lateDays || []).map(function (d) { return { day: d.day, month: month, year: year }; });
+    var overDetail = (totals.overDays || []).map(function (d) { return { day: d.day, breakMinutes: d.breakMinutes, month: month, year: year }; });
     if (isAllMonths) {
       var fiscalRank = function (month) { return (month - 1 - FISCAL_YEAR_START_MONTH + 12) % 12; };
       specialAllowanceDetail.sort(function (a, b) { return fiscalRank(a.month) - fiscalRank(b.month); });
@@ -3110,7 +3142,9 @@ function getDashboardSummaryData_(year, month) {
       branch: emp.Branch || '', // 'PP'/'TL' -- see BRANCHES in Attendance.gs; the Dashboard maps these to Phrom Phong/Thonglor for display
       daysWorked: totals.daysWorked,
       lateCount: totals.lateCount,
+      lateDetail: lateDetail,
       overCount: totals.overCount,
+      overDetail: overDetail,
       otMinutes: totals.otMinutesTotal,
       otQuarters: totals.otQuartersTotal,
       otPay: otPay === '' ? null : otPay, // null = not eligible (e.g. Thai staff with no Salary on file), not zero

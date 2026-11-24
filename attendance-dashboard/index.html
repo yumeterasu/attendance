@@ -1551,6 +1551,35 @@
   </div>
 </div>
 
+<!-- Generic per-day detail popup -- shared by the Late/Over/Unpaid Leave
+     pills in Monthly (click a nonzero count to see which dates it covers).
+     One modal reused by all three rather than three near-duplicate copies,
+     since all three just render a plain "date -- value" list; title/subtitle/
+     rows/total are filled in by openDetailModal (see the JS section below)
+     for whichever pill was clicked. Same .modal-* structure as
+     Allowance/Leave above for visual consistency, own ids so it can coexist
+     with those two. -->
+<div class="modal-overlay" id="detailModalOverlay">
+  <div class="modal-card">
+    <div class="modal-head">
+      <div>
+        <h3 id="detailModalName"></h3>
+        <p class="modal-sub" id="detailModalSub"></p>
+      </div>
+      <button type="button" class="modal-close" id="detailModalCloseX" aria-label="Close">✕</button>
+    </div>
+    <div class="modal-list" id="detailModalList"></div>
+    <div class="modal-total">
+      <span id="detailModalTotalLabel"></span>
+      <span id="detailModalTotalAmt"></span>
+    </div>
+    <div class="modal-footer">
+      <button type="button" class="btn" id="detailModalCloseBtn" data-i18n="allowanceModalClose">Close</button>
+      <button type="button" class="btn primary" id="detailModalCopyBtn" data-i18n="allowanceModalCopyLink">Copy link</button>
+    </div>
+  </div>
+</div>
+
 <!-- Annual-leave-over-budget popover -- one shared element reused for
      whichever row's warning icon was last clicked (not a per-row modal
      like Allowance/Leave above, since this is a single line of text, not
@@ -1651,7 +1680,8 @@
       allowanceModalPeriod: function (monthName, year) { return monthName + ' ' + year; },
       allowanceModalPeriodAll: function (year) { return 'All (fiscal year) ' + year; },
       leaveModalTotal: 'Total days',
-      leaveModalHalfDay: 'Half day'
+      leaveModalHalfDay: 'Half day',
+      detailModalMinutesSuffix: 'min'
     },
     ja: {
       brandTitle: '勤怠ダッシュボード',
@@ -1734,7 +1764,8 @@
       allowanceModalPeriod: function (monthName, year) { return year + '年' + monthName; },
       allowanceModalPeriodAll: function (year) { return '全期間(会計年度) ' + year; },
       leaveModalTotal: '合計日数',
-      leaveModalHalfDay: '半休'
+      leaveModalHalfDay: '半休',
+      detailModalMinutesSuffix: '分'
     }
   };
 
@@ -2263,14 +2294,21 @@
         ? '<button type="button" class="leave-badges-btn">' + leaveBadges.map(function (b) { return '<span class="leave-badge">' + b + '</span>'; }).join('') + '</button>'
         : '<span class="pill zero">—</span>';
 
+      // Monthly-only detail (lateDetail/overDetail are only ever populated
+      // by the single-month branch of getDashboardSummaryData_ -- the "All"
+      // fiscal-year branch leaves them empty, see Report.gs) -- so these stay
+      // plain, non-clickable spans in the "All" view even when the count
+      // itself is non-zero, same as before this feature existed.
+      var lateClickable = monthSelect.value !== 'All' && emp.lateCount > 0;
       var lateHtml = emp.lateCount > 0
-        ? '<span class="pill late">' + emp.lateCount + '</span>'
+        ? (lateClickable ? '<button type="button" class="pill late late-detail-btn">' + emp.lateCount + '</button>' : '<span class="pill late">' + emp.lateCount + '</span>')
         : '<span class="pill zero">0</span>';
 
       // Same pill styling as lateCount above -- same table/style family, not
       // the Daily view's separate .chip-break.over-budget treatment.
+      var overClickable = monthSelect.value !== 'All' && emp.overCount > 0;
       var overHtml = emp.overCount > 0
-        ? '<span class="pill late">' + emp.overCount + '</span>'
+        ? (overClickable ? '<button type="button" class="pill late over-detail-btn">' + emp.overCount + '</button>' : '<span class="pill late">' + emp.overCount + '</span>')
         : '<span class="pill zero">0</span>';
 
       var otPayHtml = emp.otPay === null
@@ -2298,8 +2336,15 @@
       // Unpaid Leave's own dedicated day-count column -- plain pill, same
       // "day count, not money" styling the Late/Over columns use, not the
       // Allowance/OT Pay money styling (that's unpaidDeductionHtml below).
+      // Unlike Late/Over, the underlying data (leaveDetail, filtered to type
+      // === 'Unpaid Leave') actually already exists in the "All" view too --
+      // still gated the same monthSelect.value !== 'All' way regardless, so
+      // all three new popups turn on/off together rather than two of three
+      // working in "All" and one not (scope confirmed Monthly-only with the
+      // user, 2026-11-24).
+      var unpaidLeaveClickable = monthSelect.value !== 'All' && emp.leave.unpaid > 0;
       var unpaidLeaveHtml = emp.leave.unpaid
-        ? '<span class="pill late">' + formatLeaveCount(emp.leave.unpaid) + '</span>'
+        ? (unpaidLeaveClickable ? '<button type="button" class="pill late unpaid-leave-detail-btn">' + formatLeaveCount(emp.leave.unpaid) + '</button>' : '<span class="pill late">' + formatLeaveCount(emp.leave.unpaid) + '</span>')
         : '<span class="pill zero">0</span>';
 
       // Same null-means-not-eligible convention as otPayHtml above (no
@@ -2342,6 +2387,15 @@
       }
       if (leaveBadges.length) {
         tr.querySelector('.leave-badges-btn').addEventListener('click', function () { openLeaveModal(emp); });
+      }
+      if (lateClickable) {
+        tr.querySelector('.late-detail-btn').addEventListener('click', function () { openDetailModal('late', emp); });
+      }
+      if (overClickable) {
+        tr.querySelector('.over-detail-btn').addEventListener('click', function () { openDetailModal('over', emp); });
+      }
+      if (unpaidLeaveClickable) {
+        tr.querySelector('.unpaid-leave-detail-btn').addEventListener('click', function () { openDetailModal('unpaidLeave', emp); });
       }
       if (annualLeaveOverBudget) {
         tr.querySelector('.annual-leave-warn').addEventListener('click', function (e) {
@@ -2601,6 +2655,130 @@
     });
   });
 
+  // ---------- Late/Over/Unpaid Leave detail modal ----------
+  //
+  // One shared modal for all three pills (requested 2026-11-24, right after
+  // the Leave detail modal above solved the same "which dates?" question for
+  // the Leave badges) -- all three are just "date (+ value)" lists, so one
+  // generic opener avoids three near-duplicate copies of buildLeaveModalRows/
+  // openLeaveModal/closeLeaveModal. `kind` is 'late' | 'over' | 'unpaidLeave',
+  // stashed on the overlay's dataset (like empName below) so the Copy link
+  // button and the deep-link consumer further down know which one to
+  // rebuild. Monthly-only by design (see sumMonthTotals_/getEffectiveMonthTotals_,
+  // Report.gs/HistoricalSummary.gs) -- the pills themselves are only made
+  // clickable when monthSelect.value !== 'All', so this modal never has to
+  // handle the yearly aggregate's own (undetailed) Late/Over counts.
+  var detailModalOverlay = document.getElementById('detailModalOverlay');
+  var detailModalName = document.getElementById('detailModalName');
+  var detailModalSub = document.getElementById('detailModalSub');
+  var detailModalList = document.getElementById('detailModalList');
+  var detailModalTotalLabel = document.getElementById('detailModalTotalLabel');
+  var detailModalTotalAmt = document.getElementById('detailModalTotalAmt');
+  var detailModalCopyBtn = document.getElementById('detailModalCopyBtn');
+  var detailModalKeydownHandler = null;
+
+  var DETAIL_MODAL_KIND_LABEL_KEY = { late: 'tableLate', over: 'tableOver', unpaidLeave: 'tableUnpaidLeave' };
+  var DETAIL_MODAL_DEEPLINK_PARAM = { late: 'late', over: 'over', unpaidLeave: 'unpaidLeave' };
+
+  // One row per date; `over` additionally shows that day's real,
+  // undiscounted break minutes (same figure sumMonthTotals_ thresholded
+  // against DAILY_BREAK_BUDGET_MINUTES to produce this count in the first
+  // place -- see Report.gs -- deliberately NOT the Daily view's
+  // BREAK_WALK_DISCOUNT_MINUTES-discounted figure), `unpaidLeave` shows a
+  // "(Half day)" suffix the same way the Leave modal's own rows do.
+  function buildDetailModalRows(kind, detail) {
+    if (!detail || !detail.length) return '';
+    var monthNames = t('months');
+    return detail.map(function (d) {
+      var dateStr = monthNames[d.month - 1] + ' ' + d.day;
+      var valueLabel = '';
+      if (kind === 'over') valueLabel = d.breakMinutes + ' ' + t('detailModalMinutesSuffix');
+      else if (kind === 'unpaidLeave' && d.half) valueLabel = t('leaveModalHalfDay');
+      var valueHtml = valueLabel ? '<span class="amt">' + escapeHtml(valueLabel) + '</span>' : '';
+      return '<div class="modal-row"><span>' + escapeHtml(dateStr) + '</span>' + valueHtml + '</div>';
+    }).join('');
+  }
+
+  // `unpaidLeave`'s total uses the same Half-Day-counts-as-0.5 rule as the
+  // Leave modal's own leaveDetailTotalDays (reused directly, not
+  // reimplemented) so the two always agree on the same employee/month;
+  // late/over just count days, matching the pill's own plain integer.
+  function detailTotal(kind, detail) {
+    return kind === 'unpaidLeave' ? leaveDetailTotalDays(detail) : (detail || []).length;
+  }
+
+  function openDetailModal(kind, emp) {
+    var detail = kind === 'late' ? emp.lateDetail
+      : kind === 'over' ? emp.overDetail
+      : emp.leaveDetail.filter(function (d) { return d.type === 'Unpaid Leave'; });
+
+    detailModalName.textContent = emp.name;
+    detailModalSub.textContent = t(DETAIL_MODAL_KIND_LABEL_KEY[kind]) + ' — ' + t('allowanceModalPeriod')(t('months')[Number(monthSelect.value) - 1], yearSelect.value);
+    detailModalList.innerHTML = buildDetailModalRows(kind, detail);
+    detailModalTotalLabel.textContent = t('leaveModalTotal');
+    detailModalTotalAmt.textContent = formatLeaveCount(detailTotal(kind, detail));
+    // Read back by the "Copy link" button and by setLanguage()'s re-render
+    // hook -- same reasoning as allowanceModalOverlay.dataset.empName.
+    detailModalOverlay.dataset.empName = emp.name;
+    detailModalOverlay.dataset.kind = kind;
+    detailModalOverlay.classList.add('open');
+
+    detailModalKeydownHandler = function (e) {
+      if (e.key === 'Escape') closeDetailModal();
+    };
+    document.addEventListener('keydown', detailModalKeydownHandler);
+  }
+
+  function closeDetailModal() {
+    detailModalOverlay.classList.remove('open');
+    if (detailModalKeydownHandler) {
+      document.removeEventListener('keydown', detailModalKeydownHandler);
+      detailModalKeydownHandler = null;
+    }
+  }
+
+  detailModalOverlay.addEventListener('click', function (e) {
+    if (e.target === detailModalOverlay) closeDetailModal();
+  });
+  document.getElementById('detailModalCloseBtn').addEventListener('click', closeDetailModal);
+  document.getElementById('detailModalCloseX').addEventListener('click', closeDetailModal);
+
+  // Same deep-link shape as the Allowance/Leave modals' own Copy link --
+  // the query param name itself varies with dataset.kind (late/over/
+  // unpaidLeave) so the three stay distinguishable in a shared URL scheme.
+  detailModalCopyBtn.addEventListener('click', function () {
+    var kind = detailModalOverlay.dataset.kind;
+    var url = new URL(location.pathname, location.origin);
+    url.searchParams.set('view', 'monthly');
+    url.searchParams.set('year', yearSelect.value);
+    url.searchParams.set('month', monthSelect.value);
+    url.searchParams.set(DETAIL_MODAL_DEEPLINK_PARAM[kind], detailModalOverlay.dataset.empName);
+    var original = detailModalCopyBtn.textContent;
+    navigator.clipboard.writeText(url.toString()).then(function () {
+      detailModalCopyBtn.textContent = t('allowanceModalCopied');
+      detailModalCopyBtn.classList.add('copied');
+      setTimeout(function () {
+        detailModalCopyBtn.textContent = original;
+        detailModalCopyBtn.classList.remove('copied');
+      }, 1400);
+    });
+  });
+
+  // Same one-shot deep-link shape as pendingAllowanceDeepLink/pendingLeaveDeepLink
+  // above, generalized with a `kind` field since all three (late/over/
+  // unpaidLeave) share this one modal. The three query params are mutually
+  // exclusive by construction (each Copy link button only ever sets its own),
+  // so at most one of these can ever match.
+  var pendingDetailDeepLink = (function () {
+    var params = new URLSearchParams(location.search);
+    if (params.get('view') !== 'monthly') return null;
+    for (var kind in DETAIL_MODAL_DEEPLINK_PARAM) {
+      var param = DETAIL_MODAL_DEEPLINK_PARAM[kind];
+      if (params.get(param)) return { kind: kind, year: params.get('year'), month: params.get('month'), name: params.get(param) };
+    }
+    return null;
+  })();
+
   function escapeHtml(s) {
     var div = document.createElement('div');
     div.textContent = s;
@@ -2734,6 +2912,15 @@
       pendingLeaveDeepLink = null;
       var targetLeaveEmp = data.employees.find(function (e) { return e.name === targetLeaveName; });
       if (targetLeaveEmp) openLeaveModal(targetLeaveEmp);
+    }
+    // Same one-shot consume as the two above, for the shared Late/Over/
+    // Unpaid Leave detail modal's own deep link.
+    if (pendingDetailDeepLink) {
+      var targetDetailKind = pendingDetailDeepLink.kind;
+      var targetDetailName = pendingDetailDeepLink.name;
+      pendingDetailDeepLink = null;
+      var targetDetailEmp = data.employees.find(function (e) { return e.name === targetDetailName; });
+      if (targetDetailEmp) openDetailModal(targetDetailKind, targetDetailEmp);
     }
   }
 
@@ -3401,11 +3588,16 @@
       if (pendingLeaveDeepLink.year) yearSelect.value = pendingLeaveDeepLink.year;
       if (pendingLeaveDeepLink.month) monthSelect.value = pendingLeaveDeepLink.month;
     }
+    // Same pre-selection for a Late/Over/Unpaid Leave "Copy link" URL.
+    if (pendingDetailDeepLink) {
+      if (pendingDetailDeepLink.year) yearSelect.value = pendingDetailDeepLink.year;
+      if (pendingDetailDeepLink.month) monthSelect.value = pendingDetailDeepLink.month;
+    }
     updateFiscalHint();
-    // Daily opens by default; a copied Allowance/Leave link jumps straight
-    // to Monthly instead, where renderSummaryResult() picks the deep link
-    // back up once that first load actually renders.
-    setDashboardView((pendingAllowanceDeepLink || pendingLeaveDeepLink) ? 'monthly' : 'daily');
+    // Daily opens by default; a copied Allowance/Leave/Late/Over/Unpaid-Leave
+    // link jumps straight to Monthly instead, where renderSummaryResult()
+    // picks the deep link back up once that first load actually renders.
+    setDashboardView((pendingAllowanceDeepLink || pendingLeaveDeepLink || pendingDetailDeepLink) ? 'monthly' : 'daily');
   }
 
   // ---------- Update check ----------

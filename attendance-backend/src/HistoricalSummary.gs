@@ -260,6 +260,12 @@ function getHistoricalSummaryForMonth_(year, month) {
  * it never rewrites the real AttendanceLog data sumMonthTotals_ read, same
  * precedent as the Report tab's "Break (min)" column staying real while
  * the Dashboard's break-budget flag uses a discounted figure instead.
+ *
+ * lateDays/overDays (added 2026-11-24, for the Dashboard's Monthly Late/Over
+ * popups): the real branch's day-number arrays straight from sumMonthTotals_;
+ * always [] on the Historical-fallback branch, since a backfilled month has
+ * no day-level data to offer -- same "total only" limitation leaveDetail
+ * already has for a Historical month elsewhere in this file.
  */
 function getEffectiveMonthTotals_(emp, dayLogsForEmployee, scheduledShiftsForEmployee, daysInMonth, salaryForMonth, scheduledShiftsForMonth, historicalByEmployee, otEligibleThisMonth) {
   var hasRealData = (dayLogsForEmployee && Object.keys(dayLogsForEmployee).length > 0) ||
@@ -274,7 +280,8 @@ function getEffectiveMonthTotals_(emp, dayLogsForEmployee, scheduledShiftsForEmp
     result = {
       daysWorked: realTotals.daysWorked, lateCount: realTotals.lateCount, overCount: realTotals.overCount,
       otMinutesTotal: realTotals.otMinutesTotal, otQuartersTotal: realTotals.otQuartersTotal,
-      otPay: realOtPay, leaveCounts: realLeaveCounts
+      otPay: realOtPay, leaveCounts: realLeaveCounts,
+      lateDays: realTotals.lateDays, overDays: realTotals.overDays
     };
   } else {
     var historical = historicalByEmployee[emp.EmployeeID];
@@ -286,13 +293,21 @@ function getEffectiveMonthTotals_(emp, dayLogsForEmployee, scheduledShiftsForEmp
       result = {
         daysWorked: realTotals.daysWorked, lateCount: realTotals.lateCount, overCount: realTotals.overCount,
         otMinutesTotal: realTotals.otMinutesTotal, otQuartersTotal: realTotals.otQuartersTotal,
-        otPay: realOtPay, leaveCounts: realLeaveCounts
+        otPay: realOtPay, leaveCounts: realLeaveCounts,
+        lateDays: realTotals.lateDays, overDays: realTotals.overDays
       };
     } else {
       result = {
         daysWorked: historical.daysWorked, lateCount: historical.lateCount, overCount: historical.overCount,
         otMinutesTotal: historical.otMinutesTotal, otQuartersTotal: historical.otQuartersTotal,
-        otPay: historical.otPay, leaveCounts: historical.leaveCounts
+        otPay: historical.otPay, leaveCounts: historical.leaveCounts,
+        // A Historical Summary row is a flat admin-typed number with no
+        // day-level data behind it at all -- same precedent as leaveDetail
+        // staying empty for a backfilled month (see leaveCountsAndDetailForYear_,
+        // Report.gs). The Dashboard's Late/Over popup renders whatever it's
+        // given, so an empty list here is the correct "nothing to show", not
+        // a bug to work around.
+        lateDays: [], overDays: []
       };
     }
   }
